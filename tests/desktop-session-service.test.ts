@@ -120,7 +120,11 @@ class FakeBridge implements DesktopSessionTransport {
 
 class FakeTeam implements DesktopSessionTeamSource {
   readonly recorded: Parameters<DesktopSessionTeamSource['recordComposerBinding']>[0][] = []
-  private snapshot = teamSnapshot()
+  private snapshot: TeamControlSnapshot
+
+  constructor(snapshot = teamSnapshot()) {
+    this.snapshot = snapshot
+  }
 
   getSnapshot(): TeamControlSnapshot { return structuredClone(this.snapshot) }
   subscribe(): () => void { return () => undefined }
@@ -247,6 +251,37 @@ describe('desktop Cursor session enrichment', () => {
       const second = service.getSnapshot()
       expect(second.sessions[0]).not.toBe(first.sessions[0])
       expect(second.sessions[0]?.online).toBe(false)
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('rebuilds the session view when live Cursor work text changes without a length change', () => {
+    let text = '检查 A'
+    let updatedAt = 30
+    const service = new DesktopSessionService(new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')), {
+      readWorkspace: () => {
+        const next = telemetry()
+        return {
+          ...next,
+          updatedAt: updatedAt++,
+          composers: [{
+            ...next.composers[0]!,
+            workEntries: [
+              { kind: 'text', text, line: 2, at: 40, turn: 'turn-live' }
+            ]
+          }]
+        }
+      }
+    })
+    try {
+      service.refreshTelemetry()
+      const first = service.getSnapshot().sessions[0]
+      text = '检查 B'
+      service.refreshTelemetry()
+      const second = service.getSnapshot().sessions[0]
+      expect(second).not.toBe(first)
+      expect(second?.workEntries?.[0]?.text).toBe('检查 B')
     } finally {
       service.dispose()
     }

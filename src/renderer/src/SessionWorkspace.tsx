@@ -72,6 +72,10 @@ function cursorWorkGroupTimestamp(group: CursorWorkGroup): number {
   return timestamps.length ? Math.min(...timestamps) : 0
 }
 
+function cursorWorkGroupRunning(group: CursorWorkGroup): boolean {
+  return group.entries.some((entry) => entry.status === 'running')
+}
+
 /**
  * 长文本气泡内容：超过限高默认折叠，用户点击「展开全文」查看完整内容。
  * 测量在 useLayoutEffect 中按 text 重测；折叠态 scrollHeight 仍是全文高度，不受 max-height 影响。
@@ -189,7 +193,17 @@ export function SessionWorkspace({
   const queuedTransport = session.deliveryMode === 'queued'
   // live 过程流指纹：块数/状态翻转都改变它，驱动贴底滚动跟上实时过程
   const liveProcessKey = liveProcess
-    ? `${liveProcess.turn}:${liveProcess.blocks.length}:${liveProcess.updatedAt}`
+    ? [
+        liveProcess.turn,
+        liveProcess.updatedAt,
+        ...liveProcess.blocks.slice(-8).map((block) => [
+          block.id,
+          block.status,
+          'summary' in block ? block.summary : '',
+          'text' in block ? block.text : '',
+          'output' in block ? block.output : ''
+        ].join(':'))
+      ].join('|')
     : ''
   const liveCursorWorkEntries = liveProcess ? cursorWorkByTurn.get(liveProcess.turn) : undefined
   const looseCursorWorkGroups = useMemo(
@@ -199,8 +213,9 @@ export function SessionWorkspace({
     [cursorWorkGroups, liveProcess?.turn, replyTurns]
   )
   const pendingVisibleUser = visibleEntries.at(-1)?.role === 'user'
+  const lastVisibleTimestamp = visibleEntries.at(-1)?.timestamp ?? 0
   const hasLooseLiveWork = looseCursorWorkGroups.some((group) => (
-    group.entries.some((entry) => entry.status === 'running')
+    cursorWorkGroupRunning(group)
   ))
   const showRunningPlaceholder = pendingVisibleUser
     && session.online
@@ -216,11 +231,15 @@ export function SessionWorkspace({
       order: index * 10
     }))
     looseCursorWorkGroups.forEach((group, index) => {
+      const rawTimestamp = cursorWorkGroupTimestamp(group)
+      const timestamp = pendingVisibleUser && cursorWorkGroupRunning(group)
+        ? Math.max(rawTimestamp, lastVisibleTimestamp + 1)
+        : rawTimestamp
       items.push({
         type: 'cursor-work',
         key: `cursor-work:${group.key}`,
         group,
-        timestamp: cursorWorkGroupTimestamp(group),
+        timestamp,
         order: index * 10 + 5
       })
     })
@@ -228,7 +247,7 @@ export function SessionWorkspace({
       items.push({
         type: 'live-process',
         key: `live-process:${liveProcess.turn}`,
-        timestamp: liveProcess.updatedAt,
+        timestamp: Math.max(liveProcess.updatedAt, lastVisibleTimestamp + 1),
         order: Number.MAX_SAFE_INTEGER - 1
       })
     } else if (showRunningPlaceholder) {
@@ -244,7 +263,7 @@ export function SessionWorkspace({
       || left.order - right.order
       || left.key.localeCompare(right.key)
     ))
-  }, [visibleEntries, looseCursorWorkGroups, liveProcess, showRunningPlaceholder, session.id])
+  }, [visibleEntries, looseCursorWorkGroups, liveProcess, showRunningPlaceholder, session.id, pendingVisibleUser, lastVisibleTimestamp])
   const canSend = (session.online || queuedTransport) && !submitting
   const disconnected = agentOffline && !queuedTransport
   const queuedOffline = agentOffline && queuedTransport
@@ -541,7 +560,7 @@ export function SessionWorkspace({
           <p>
             {session.composerTitle || session.id} · {session.roleName} · {session.online
               ? formatRelativeTime(session.lastSeenAt)
-              : queuedTransport ? '等待 Cursor 会话下次轮询' : 'Agent 当前离线'}
+              : 'Agent 当前离线'}
           </p>
         </div>
       </header>
@@ -555,7 +574,7 @@ export function SessionWorkspace({
         aria-hidden={!disconnected && !queuedOffline && !notWaiting}
       >
         <strong>{queuedOffline
-          ? 'Cursor Agent 暂无心跳，消息会先进入队列'
+          ? 'Cursor Agent 已离线，消息会先进入队列'
           : agentOffline
           ? 'Cursor Agent 已离线，这条会话此刻不能发送'
           : 'Cursor Agent 在线，但没有进入待命'}</strong>

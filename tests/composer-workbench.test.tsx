@@ -87,8 +87,8 @@ describe('ComposerWorkbench', () => {
     )
 
     expect(html).toContain('<strong>qingtian</strong>')
-    expect(html).toContain('Agent 待轮询')
-    expect(html).not.toContain('<strong>Agent 待轮询</strong>')
+    expect(html).toContain('Agent 离线')
+    expect(html).not.toContain('<strong>Agent 离线</strong>')
   })
 
   it('extracts copied or dropped files from DataTransfer files first', () => {

@@ -96,7 +96,6 @@ function SendIcon(): React.JSX.Element {
 }
 
 function agentState(session: AgentSession): string {
-  if (!session.online && session.deliveryMode === 'queued') return 'Agent 待轮询'
   if (!session.online) return 'Agent 离线'
   if (session.waiting) return 'Agent 待命'
   return `Agent ${statusLabel(session.status)}`
@@ -317,7 +316,7 @@ export function ComposerWorkbench({
       <div className="composer-topbar">
         <div className="composer-topbar__left">
           <span
-            className={`composer-agent-chip ${session.online ? 'is-online' : queuedOffline ? 'is-queued' : 'is-offline'}`}
+            className={`composer-agent-chip ${session.online ? 'is-online' : 'is-offline'}`}
             title={`${projectLabel} · ${session.roleName} · CH-${session.channelId} · ${stateLabel}`}
           >
             <WindowIcon />

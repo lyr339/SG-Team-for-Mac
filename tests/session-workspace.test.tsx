@@ -94,10 +94,67 @@ describe('SessionWorkspace', () => {
     expect(html).not.toContain('live-process-idle')
   })
 
+  it('live 过程时间早于用户消息时仍锚在当前待回复消息之后', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({ id: 'u1', role: 'user', source: 'desktop', text: '请继续实现', timestamp: 1_000_000 })],
+      liveProcess: {
+        turn: 'turn-live',
+        updatedAt: 999_000,
+        blocks: [
+          { kind: 'thinking', id: 'b1', text: '正在分析', status: 'running' }
+        ]
+      }
+    })
+
+    expect(html.indexOf('请继续实现')).toBeLessThan(html.indexOf('实时过程中 · 1 步'))
+  })
+
+  it('未归档的运行中 Cursor 过程时间偏早时也跟随当前待回复消息', () => {
+    const html = renderWorkspace({
+      session: {
+        status: 'running',
+        waiting: false,
+        connectionPhase: 'processing',
+        workEntries: [
+          {
+            kind: 'tool',
+            text: 'Shell npm run test',
+            toolName: 'Shell',
+            toolKind: 'command',
+            status: 'running',
+            line: 88,
+            at: 999_000,
+            turn: 'implicit-live'
+          }
+        ]
+      },
+      entries: [entry({ id: 'u1', role: 'user', source: 'desktop', text: '请跑测试', timestamp: 1_000_000 })]
+    })
+
+    expect(html.indexOf('请跑测试')).toBeLessThan(html.indexOf('Cursor 实时过程'))
+  })
+
   it('Agent 待命时不显示过程占位', () => {
     const html = renderWorkspace()
     expect(html).not.toContain('正在处理')
     expect(html).not.toContain('实时过程中 ·')
+  })
+
+  it('离线但可排队时仍显示 Agent 离线，而不是把传输方式当状态', () => {
+    const html = renderWorkspace({
+      session: {
+        online: false,
+        connected: false,
+        waiting: false,
+        status: 'offline',
+        deliveryMode: 'queued'
+      }
+    })
+
+    expect(html).toContain('Agent 当前离线')
+    expect(html).toContain('Cursor Agent 已离线，消息会先进入队列')
+    expect(html).not.toContain('待轮询')
   })
 
   it('长文本消息包裹折叠结构（clamped-message）', () => {

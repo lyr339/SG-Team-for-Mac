@@ -14,7 +14,7 @@ import type { CursorComposerTelemetrySource } from '../infrastructure/cursor/cur
 import type { ChannelMessageRelay } from './channel-message-relay'
 import { verifyAgentRuntime } from './verify-agent-runtime'
 
-const DEFAULT_TELEMETRY_POLL_MS = 2_000
+const DEFAULT_TELEMETRY_POLL_MS = 1_000
 /** 空闲档（无活跃 TeamRun）：遥测降频到 10s——没有活跃 Agent 时没有可刷新的内容。 */
 const IDLE_TELEMETRY_POLL_MS = 10_000
 
@@ -48,6 +48,21 @@ function activeWorkspaceOf(team: TeamControlSnapshot) {
 
 function bindingByChannel(team: TeamControlSnapshot): Map<string, RuntimeBinding> {
   return new Map(team.bindings.map((binding) => [binding.channelId, binding]))
+}
+
+function workEntriesFingerprint(entries: AgentSession['workEntries']): string {
+  if (!entries?.length) return ''
+  return entries.slice(-12).map((entry) => JSON.stringify({
+    kind: entry.kind,
+    text: entry.text,
+    toolName: entry.toolName,
+    toolKind: entry.toolKind,
+    status: entry.status,
+    line: entry.line,
+    turn: entry.turn,
+    details: entry.details,
+    todos: entry.todos
+  })).join('\n')
 }
 
 function telemetryStatus(input: {
@@ -229,10 +244,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
           session.changes?.additions ?? '',
           session.changes?.deletions ?? '',
           session.workEntries?.length ?? 0,
-          session.workEntries?.at(-1)?.turn ?? '',
-          session.workEntries?.at(-1)?.line ?? '',
-          session.workEntries?.at(-1)?.text.length ?? '',
-          session.workEntries?.at(-1)?.status ?? '',
+          workEntriesFingerprint(session.workEntries),
           session.healthEvidence.length,
           session.healthEvidence.at(-1) ?? '',
           activeDurationMs === undefined ? '' : Math.floor(activeDurationMs / 60_000)

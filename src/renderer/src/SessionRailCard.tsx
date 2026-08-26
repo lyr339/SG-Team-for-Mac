@@ -20,7 +20,7 @@ interface SessionRailCardProps {
 
 /** 状态徽章色调：待命→绿；启动/执行→蓝（呼吸点）；空闲/阻塞/待验收/恢复→琥珀；离线/停止→灰。 */
 function stateTone(session: AgentSession): 'waiting' | 'active' | 'attention' | 'offline' {
-  if (!session.online) return session.deliveryMode === 'queued' ? 'attention' : 'offline'
+  if (!session.online) return 'offline'
   if (session.status === 'waiting') return 'waiting'
   if (session.status === 'running' || session.status === 'starting') return 'active'
   if (session.status === 'offline' || session.status === 'stopped') return 'offline'
@@ -55,7 +55,7 @@ function SessionRailCardView({
   const badges = executionBadges(session.executionProfile, session.modelName)
   const state = session.online
     ? statusLabel(session.status)
-    : session.deliveryMode === 'queued' ? '待轮询' : '已离线'
+    : '已离线'
   const tone = stateTone(session)
   const digest = sessionDigest(session)
   const percent = contextPercent(session.contextUsage)
