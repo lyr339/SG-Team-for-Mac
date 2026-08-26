@@ -38,6 +38,12 @@ interface CursorWorkGroup {
   entries: CursorWorkEntryView[]
 }
 
+type TimelineItem =
+  | { type: 'entry'; key: string; entry: ConversationEntry; timestamp: number; order: number }
+  | { type: 'cursor-work'; key: string; group: CursorWorkGroup; timestamp: number; order: number }
+  | { type: 'live-process'; key: string; timestamp: number; order: number }
+  | { type: 'running-placeholder'; key: string; timestamp: number; order: number }
+
 function cursorWorkTurnKey(entry: CursorWorkEntryView): string {
   return entry.turn ?? `line:${entry.line}`
 }
@@ -57,6 +63,13 @@ function groupCursorWorkEntries(entries: CursorWorkEntryView[]): CursorWorkGroup
     groups.push(group)
   }
   return groups
+}
+
+function cursorWorkGroupTimestamp(group: CursorWorkGroup): number {
+  const timestamps = group.entries
+    .map((entry) => entry.at)
+    .filter((value) => Number.isFinite(value))
+  return timestamps.length ? Math.min(...timestamps) : 0
 }
 
 /**
@@ -141,11 +154,12 @@ export function SessionWorkspace({
   const [submitting, setSubmitting] = useState(false)
   const [awayFromBottom, setAwayFromBottom] = useState(false)
   const [copiedId, setCopiedId] = useState('')
+  const visibleEntries = useMemo(() => entries.filter((entry) => !entry.silent), [entries])
   const timelineRef = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
-  const seenCount = useRef(entries.length)
+  const seenCount = useRef(visibleEntries.length)
   const agentOffline = !session.online
-  const lastEntry = entries.at(-1)
+  const lastEntry = visibleEntries.at(-1)
   const lastEntryKey = lastEntry
     ? `${lastEntry.id}:${lastEntry.status}:${lastEntry.text.length}`
     : 'empty'
@@ -169,18 +183,68 @@ export function SessionWorkspace({
     () => new Map(cursorWorkGroups.map((group) => [group.key, group.entries] as const)),
     [cursorWorkGroups]
   )
-  const replyTurns = useMemo(() => new Set(entries.flatMap((entry) => (
+  const replyTurns = useMemo(() => new Set(visibleEntries.flatMap((entry) => (
     entry.role === 'assistant' && entry.turn ? [entry.turn] : []
-  ))), [entries])
+  ))), [visibleEntries])
   const queuedTransport = session.deliveryMode === 'queued'
   // live 过程流指纹：块数/状态翻转都改变它，驱动贴底滚动跟上实时过程
   const liveProcessKey = liveProcess
     ? `${liveProcess.turn}:${liveProcess.blocks.length}:${liveProcess.updatedAt}`
     : ''
   const liveCursorWorkEntries = liveProcess ? cursorWorkByTurn.get(liveProcess.turn) : undefined
-  const looseCursorWorkGroups = cursorWorkGroups.filter((group) => (
-    !replyTurns.has(group.key) && group.key !== liveProcess?.turn
+  const looseCursorWorkGroups = useMemo(
+    () => cursorWorkGroups.filter((group) => (
+      !replyTurns.has(group.key) && group.key !== liveProcess?.turn
+    )),
+    [cursorWorkGroups, liveProcess?.turn, replyTurns]
+  )
+  const pendingVisibleUser = visibleEntries.at(-1)?.role === 'user'
+  const hasLooseLiveWork = looseCursorWorkGroups.some((group) => (
+    group.entries.some((entry) => entry.status === 'running')
   ))
+  const showRunningPlaceholder = pendingVisibleUser
+    && session.online
+    && session.status === 'running'
+    && !liveProcess?.blocks.length
+    && !hasLooseLiveWork
+  const timelineItems = useMemo<TimelineItem[]>(() => {
+    const items: TimelineItem[] = visibleEntries.map((entry, index) => ({
+      type: 'entry',
+      key: `entry:${entry.id}`,
+      entry,
+      timestamp: entry.timestamp,
+      order: index * 10
+    }))
+    looseCursorWorkGroups.forEach((group, index) => {
+      items.push({
+        type: 'cursor-work',
+        key: `cursor-work:${group.key}`,
+        group,
+        timestamp: cursorWorkGroupTimestamp(group),
+        order: index * 10 + 5
+      })
+    })
+    if (liveProcess?.blocks.length) {
+      items.push({
+        type: 'live-process',
+        key: `live-process:${liveProcess.turn}`,
+        timestamp: liveProcess.updatedAt,
+        order: Number.MAX_SAFE_INTEGER - 1
+      })
+    } else if (showRunningPlaceholder) {
+      items.push({
+        type: 'running-placeholder',
+        key: `running-placeholder:${session.id}`,
+        timestamp: (visibleEntries.at(-1)?.timestamp ?? Date.now()) + 1,
+        order: Number.MAX_SAFE_INTEGER
+      })
+    }
+    return items.sort((left, right) => (
+      left.timestamp - right.timestamp
+      || left.order - right.order
+      || left.key.localeCompare(right.key)
+    ))
+  }, [visibleEntries, looseCursorWorkGroups, liveProcess, showRunningPlaceholder, session.id])
   const canSend = (session.online || queuedTransport) && !submitting
   const disconnected = agentOffline && !queuedTransport
   const queuedOffline = agentOffline && queuedTransport
@@ -197,7 +261,7 @@ export function SessionWorkspace({
 
   useLayoutEffect(() => {
     stickToBottom.current = true
-    seenCount.current = entries.length
+    seenCount.current = visibleEntries.length
     setAwayFromBottom(false)
     scrollTimelineTo(timelineRef.current?.scrollHeight ?? 0, 'auto')
   }, [session.composerId, session.id])
@@ -205,9 +269,9 @@ export function SessionWorkspace({
   useEffect(() => {
     if (stickToBottom.current) {
       scrollTimelineTo(timelineRef.current?.scrollHeight ?? 0)
-      seenCount.current = entries.length
+      seenCount.current = visibleEntries.length
     }
-  }, [entries.length, lastEntryKey, session.composerId, session.id, workEntriesKey, liveProcessKey])
+  }, [visibleEntries.length, lastEntryKey, session.composerId, session.id, workEntriesKey, liveProcessKey])
 
   useEffect(() => {
     if (!copiedId) return
@@ -215,11 +279,11 @@ export function SessionWorkspace({
     return () => clearTimeout(timer)
   }, [copiedId])
 
-  const pendingBelow = awayFromBottom ? Math.max(0, entries.length - seenCount.current) : 0
+  const pendingBelow = awayFromBottom ? Math.max(0, visibleEntries.length - seenCount.current) : 0
 
   const jumpToBottom = (): void => {
     stickToBottom.current = true
-    seenCount.current = entries.length
+    seenCount.current = visibleEntries.length
     setAwayFromBottom(false)
     scrollTimelineTo(timelineRef.current?.scrollHeight ?? 0)
   }
@@ -270,8 +334,8 @@ export function SessionWorkspace({
   }
 
   const exportTranscript = (): void => {
-    const header = `# ${session.displayName} · CH-${session.channelId} 会话记录\n\n导出于 ${new Date().toLocaleString()} · 共 ${entries.length} 条\n\n---\n`
-    const body = entries.map((entry) => {
+    const header = `# ${session.displayName} · CH-${session.channelId} 会话记录\n\n导出于 ${new Date().toLocaleString()} · 共 ${visibleEntries.length} 条\n\n---\n`
+    const body = visibleEntries.map((entry) => {
       const time = new Date(entry.timestamp).toLocaleString()
       return `\n## ${entryLabel(entry)} · ${time}\n\n${entry.text || '（空）'}\n`
     }).join('')
@@ -282,6 +346,180 @@ export function SessionWorkspace({
     anchor.download = `wedge-ch${session.channelId}-transcript.md`
     anchor.click()
     URL.revokeObjectURL(url)
+  }
+
+  const renderEntryRow = (entry: ConversationEntry, previous: ConversationEntry | undefined): React.JSX.Element => {
+    const gap = previous ? entry.timestamp - previous.timestamp : Number.POSITIVE_INFINITY
+    const needDivider = gap > DIVIDER_WINDOW_MS
+    const grouped = !needDivider
+      && previous?.role === entry.role
+      && previous?.source === entry.source
+      && gap < GROUP_WINDOW_MS
+    const mine = entry.role === 'user'
+    const rowTone = entry.role === 'error' ? 'error' : mine ? 'mine' : 'agent'
+    const cursorWorkForEntry = entry.role === 'assistant' && entry.turn
+      ? cursorWorkByTurn.get(entry.turn)
+      : undefined
+    const hasCursorWork = Boolean(cursorWorkForEntry?.length)
+    const hasProcess = hasCursorWork || Boolean(entry.processBlocks?.length)
+    return (
+      <div key={`entry-wrap:${entry.id}`}>
+        {needDivider && (
+          <div className="chat-divider"><span>{dividerLabel(entry.timestamp)}</span></div>
+        )}
+        <div className={`chat-row chat-row--${rowTone} ${hasProcess ? 'chat-row--process' : ''} ${grouped ? 'is-grouped' : ''}`}>
+          <span className="chat-gutter" aria-hidden={grouped}>
+            {!grouped && (
+              mine
+                ? <i className="chat-face chat-face--mine">你</i>
+                : entry.role === 'error'
+                  ? <i className="chat-face chat-face--error">!</i>
+                  : <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
+            )}
+          </span>
+          <div className="chat-col">
+            {!grouped && (
+              <div className="chat-name">
+                <strong>{entryLabel(entry)}</strong>
+                <time>{formatClock(entry.timestamp)}</time>
+              </div>
+            )}
+            <div className="chat-bubble">
+              {hasCursorWork ? (
+                <CursorProcessPanel entries={cursorWorkForEntry!} title="Cursor 过程" variant="inline" />
+              ) : entry.processBlocks && entry.processBlocks.length > 0 ? (
+                <ProcessBlocks blocks={entry.processBlocks} />
+              ) : null}
+              {entry.text
+                ? <ClampedMessage text={entry.text} />
+                : entry.status === 'streaming' ? '正在生成…' : '（空）'}
+              {entry.attachments && entry.attachments.length > 0 && (
+                <div className="chat-attachments">
+                  {entry.attachments.map((attachment) => (
+                    <div key={attachment.id} className="chat-attachment">
+                      {attachment.mimeType.startsWith('image/') && attachment.previewUrl ? (
+                        <img src={attachment.previewUrl} alt={attachment.name} className="chat-attachment-image" />
+                      ) : (
+                        <div className="chat-attachment-file">
+                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.2"/><path d="M9 2v3h3" fill="none" stroke="currentColor" strokeWidth="1.2"/></svg>
+                          <span>{attachment.name}</span>
+                          <small>{formatFileSize(attachment.size)}</small>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {entry.status === 'streaming' && (
+                <span className="typing-indicator"><i /><i /><i /></span>
+              )}
+            </div>
+            <div className="chat-tail">
+              {entry.text && (
+                <button
+                  className="chat-action"
+                  title="复制消息全文"
+                  onClick={() => void copyEntry(entry)}
+                >
+                  <CopyIcon />{copiedId === entry.id ? '已复制' : '复制'}
+                </button>
+              )}
+              {entry.role === 'assistant' && entry.status === 'complete' && entry.text && (
+                <button
+                  className="chat-action"
+                  title="引用这条消息回复"
+                  onClick={() => quoteEntry(entry)}
+                >
+                  <QuoteIcon />引用
+                </button>
+              )}
+              <span className={`chat-state ${entry.status === 'failed' ? 'is-failed' : ''}`}>
+                {entry.status === 'pending' && '发送中…'}
+                {entry.status === 'complete' && mine && `已发送 ${formatClock(entry.timestamp)}`}
+                {entry.status === 'streaming' && '实时生成中'}
+                {entry.status === 'failed' && `发送失败：${entry.error || '未知原因'}`}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderCursorWorkRow = (group: CursorWorkGroup): React.JSX.Element => {
+    const running = group.entries.some((entry) => entry.status === 'running')
+    return (
+      <div className="chat-row chat-row--agent chat-row--process cursor-work-row" key={`cursor-work:${group.key}`}>
+        <span className="chat-gutter">
+          <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
+        </span>
+        <div className="chat-col">
+          <div className="chat-name">
+            <strong>Agent</strong>
+            <span className="live-process-badge"><i className="process-pulse" />{running ? 'Cursor 实时过程' : 'Cursor 过程'} · {group.entries.length} 条</span>
+          </div>
+          <div className="chat-bubble">
+            <CursorProcessPanel
+              entries={group.entries}
+              title={running ? 'Cursor 实时过程' : 'Cursor 过程'}
+              variant="inline"
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderLiveProcessRow = (): React.JSX.Element => (
+    <div className="chat-row chat-row--agent live-process-row" key={`live-process:${liveProcess?.turn ?? session.id}`}>
+      <span className="chat-gutter">
+        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
+      </span>
+      <div className="chat-col">
+        <div className="chat-name">
+          <strong>Agent</strong>
+          <span className="live-process-badge"><i className="process-pulse" />实时过程中 · {Math.max(liveProcess?.blocks.length ?? 0, liveCursorWorkEntries?.length ?? 0)} 步</span>
+        </div>
+        <div className="chat-bubble">
+          {liveCursorWorkEntries?.length ? (
+            <CursorProcessPanel entries={liveCursorWorkEntries} title="Cursor 实时过程" variant="inline" />
+          ) : null}
+          {liveProcess ? <ProcessBlocks blocks={liveProcess.blocks} /> : null}
+        </div>
+      </div>
+    </div>
+  )
+
+  const renderRunningPlaceholder = (): React.JSX.Element => (
+    <div className="chat-row chat-row--agent live-process-row" key={`running-placeholder:${session.id}`}>
+      <span className="chat-gutter">
+        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
+      </span>
+      <div className="chat-col">
+        <div className="chat-name">
+          <strong>Agent</strong>
+          <span className="live-process-badge"><i className="process-pulse" />正在处理</span>
+        </div>
+        <div className="chat-bubble live-process-idle">
+          <span className="typing-indicator"><i /><i /><i /></span>
+          <span className="live-process-idle__hint">过程流就绪后将在此实时展示</span>
+        </div>
+      </div>
+    </div>
+  )
+
+  const renderTimelineItems = (): React.JSX.Element[] => {
+    let previousEntry: ConversationEntry | undefined
+    return timelineItems.map((item) => {
+      if (item.type === 'entry') {
+        const rendered = renderEntryRow(item.entry, previousEntry)
+        previousEntry = item.entry
+        return rendered
+      }
+      if (item.type === 'cursor-work') return renderCursorWorkRow(item.group)
+      if (item.type === 'live-process') return renderLiveProcessRow()
+      return renderRunningPlaceholder()
+    })
   }
 
   return (
@@ -301,7 +539,9 @@ export function SessionWorkspace({
             <span className={`status-pill status-pill--${session.status}`}>{statusLabel(session.status)}</span>
           </div>
           <p>
-            {session.composerTitle || session.id} · {session.roleName} · {session.online ? formatRelativeTime(session.lastSeenAt) : 'Agent 当前离线'}
+            {session.composerTitle || session.id} · {session.roleName} · {session.online
+              ? formatRelativeTime(session.lastSeenAt)
+              : queuedTransport ? '等待 Cursor 会话下次轮询' : 'Agent 当前离线'}
           </p>
         </div>
       </header>
@@ -334,179 +574,18 @@ export function SessionWorkspace({
             const element = event.currentTarget
             const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 90
             stickToBottom.current = nearBottom
-            if (nearBottom) seenCount.current = entries.length
+            if (nearBottom) seenCount.current = visibleEntries.length
             setAwayFromBottom(!nearBottom)
           }}
         >
-          {entries.length === 0 && workCount === 0 && !liveProcess?.blocks.length ? (
+          {timelineItems.length === 0 ? (
             <div className="timeline-empty">
               <h2>本轮尚无消息</h2>
               <p>这里只显示当前 TeamRun 的新消息；旧对话仍保留在 Cursor 历史中。</p>
             </div>
-          ) : entries.length > 0 ? (
-            <>
-              {
-            entries.map((entry, index) => {
-              const previous = entries[index - 1]
-              const gap = previous ? entry.timestamp - previous.timestamp : Number.POSITIVE_INFINITY
-              const needDivider = gap > DIVIDER_WINDOW_MS
-              const grouped = !needDivider
-                && previous?.role === entry.role
-                && previous?.source === entry.source
-                && gap < GROUP_WINDOW_MS
-              const mine = entry.role === 'user'
-              const rowTone = entry.role === 'error' ? 'error' : mine ? 'mine' : 'agent'
-              const cursorWorkForEntry = entry.role === 'assistant' && entry.turn
-                ? cursorWorkByTurn.get(entry.turn)
-                : undefined
-              const hasCursorWork = Boolean(cursorWorkForEntry?.length)
-              const hasProcess = hasCursorWork || Boolean(entry.processBlocks?.length)
-              return (
-                <div key={entry.id}>
-                  {needDivider && (
-                    <div className="chat-divider"><span>{dividerLabel(entry.timestamp)}</span></div>
-                  )}
-                  <div className={`chat-row chat-row--${rowTone} ${hasProcess ? 'chat-row--process' : ''} ${grouped ? 'is-grouped' : ''}`}>
-                    <span className="chat-gutter" aria-hidden={grouped}>
-                      {!grouped && (
-                        mine
-                          ? <i className="chat-face chat-face--mine">你</i>
-                          : entry.role === 'error'
-                            ? <i className="chat-face chat-face--error">!</i>
-                            : <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
-                      )}
-                    </span>
-                    <div className="chat-col">
-                      {!grouped && (
-                        <div className="chat-name">
-                          <strong>{entryLabel(entry)}</strong>
-                          <time>{formatClock(entry.timestamp)}</time>
-                        </div>
-                      )}
-                      <div className="chat-bubble">
-                        {hasCursorWork ? (
-                          <CursorProcessPanel entries={cursorWorkForEntry!} title="Cursor 过程" variant="inline" />
-                        ) : entry.processBlocks && entry.processBlocks.length > 0 ? (
-                          <ProcessBlocks blocks={entry.processBlocks} />
-                        ) : null}
-                        {entry.text
-                          ? <ClampedMessage text={entry.text} />
-                          : entry.status === 'streaming' ? '正在生成…' : '（空）'}
-                        {entry.attachments && entry.attachments.length > 0 && (
-                          <div className="chat-attachments">
-                            {entry.attachments.map((attachment) => (
-                              <div key={attachment.id} className="chat-attachment">
-                                {attachment.mimeType.startsWith('image/') && attachment.previewUrl ? (
-                                  <img src={attachment.previewUrl} alt={attachment.name} className="chat-attachment-image" />
-                                ) : (
-                                  <div className="chat-attachment-file">
-                                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.2"/><path d="M9 2v3h3" fill="none" stroke="currentColor" strokeWidth="1.2"/></svg>
-                                    <span>{attachment.name}</span>
-                                    <small>{formatFileSize(attachment.size)}</small>
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {entry.status === 'streaming' && (
-                          <span className="typing-indicator"><i /><i /><i /></span>
-                        )}
-                      </div>
-                      <div className="chat-tail">
-                        {entry.text && (
-                          <button
-                            className="chat-action"
-                            title="复制消息全文"
-                            onClick={() => void copyEntry(entry)}
-                          >
-                            <CopyIcon />{copiedId === entry.id ? '已复制' : '复制'}
-                          </button>
-                        )}
-                        {entry.role === 'assistant' && entry.status === 'complete' && entry.text && (
-                          <button
-                            className="chat-action"
-                            title="引用这条消息回复"
-                            onClick={() => quoteEntry(entry)}
-                          >
-                            <QuoteIcon />引用
-                          </button>
-                        )}
-                        <span className={`chat-state ${entry.status === 'failed' ? 'is-failed' : ''}`}>
-                          {entry.status === 'pending' && '发送中…'}
-                          {entry.status === 'complete' && mine && `已发送 ${formatClock(entry.timestamp)}`}
-                          {entry.status === 'streaming' && '实时生成中'}
-                          {entry.status === 'failed' && `发送失败：${entry.error || '未知原因'}`}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )
-            })
-              }
-            </>
-          ) : null}
-          {looseCursorWorkGroups.map((group) => {
-            const running = group.entries.some((entry) => entry.status === 'running')
-            return (
-              <div className="chat-row chat-row--agent chat-row--process cursor-work-row" key={`cursor-work:${group.key}`}>
-                <span className="chat-gutter">
-                  <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
-                </span>
-                <div className="chat-col">
-                  <div className="chat-name">
-                    <strong>Agent</strong>
-                    <span className="live-process-badge"><i className="process-pulse" />{running ? '实时过程' : '会话过程'} · {group.entries.length} 条</span>
-                  </div>
-                  <div className="chat-bubble">
-                    <CursorProcessPanel
-                      entries={group.entries}
-                      title={running ? 'Cursor 实时过程' : 'Cursor 过程'}
-                      variant="inline"
-                    />
-                  </div>
-                </div>
-              </div>
-            )
-          })}
-          {liveProcess && liveProcess.blocks.length > 0 ? (
-            <div className="chat-row chat-row--agent live-process-row">
-              <span className="chat-gutter">
-                <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
-              </span>
-              <div className="chat-col">
-                <div className="chat-name">
-                  <strong>Agent</strong>
-                  <span className="live-process-badge"><i className="process-pulse" />实时过程中 · {Math.max(liveProcess.blocks.length, liveCursorWorkEntries?.length ?? 0)} 步</span>
-                </div>
-                <div className="chat-bubble">
-                  {liveCursorWorkEntries?.length ? (
-                    <CursorProcessPanel entries={liveCursorWorkEntries} title="Cursor 实时过程" variant="inline" />
-                  ) : null}
-                  <ProcessBlocks blocks={liveProcess.blocks} />
-                </div>
-              </div>
-            </div>
-          ) : session.online && session.status === 'running' ? (
-            <div className="chat-row chat-row--agent live-process-row">
-              <span className="chat-gutter">
-                <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
-              </span>
-              <div className="chat-col">
-                <div className="chat-name">
-                  <strong>Agent</strong>
-                  <span className="live-process-badge"><i className="process-pulse" />正在处理</span>
-                </div>
-                <div className="chat-bubble live-process-idle">
-                  <span className="typing-indicator"><i /><i /><i /></span>
-                  <span className="live-process-idle__hint">过程流就绪后将在此实时展示</span>
-                </div>
-              </div>
-            </div>
-          ) : null}
+          ) : renderTimelineItems()}
         </div>
-        {awayFromBottom && entries.length > 0 && (
+        {awayFromBottom && visibleEntries.length > 0 && (
           <button className="timeline-jump" role="status" aria-live="polite" onClick={jumpToBottom}>
             {pendingBelow > 0 ? `${pendingBelow} 条新消息` : '回到底部'} ↓
           </button>
@@ -524,7 +603,7 @@ export function SessionWorkspace({
         onDraftChange={onDraftChange}
         onSubmit={() => void submit()}
         onExport={exportTranscript}
-        exportEnabled={entries.length > 0}
+        exportEnabled={visibleEntries.length > 0}
         onHandoff={onHandoff}
         attachments={attachments}
         onAttachmentsChange={onAttachmentsChange}

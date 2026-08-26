@@ -40,9 +40,16 @@ export interface ProcessBlockCommand {
 export type ProcessBlock = ProcessBlockTool | ProcessBlockThinking | ProcessBlockCommand
 
 export function normalizeEscapedNewlines(text: string): string {
-  return text
-    .replace(/\r\n?/g, '\n')
-    .replace(/\\n/g, '\n')
+  let normalized = text.replace(/\r\n?/g, '\n')
+  for (let index = 0; index < 3; index += 1) {
+    const next = normalized
+      .replace(/\\{1,2}r\\{1,2}n/g, '\n')
+      .replace(/\\{1,2}n/g, '\n')
+      .replace(/\\{1,2}r/g, '\n')
+    if (next === normalized) break
+    normalized = next
+  }
+  return normalized
 }
 
 function normalizeOptionalText(text: string | undefined): string | undefined {

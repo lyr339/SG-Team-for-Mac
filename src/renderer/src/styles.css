@@ -562,7 +562,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 
 .chat-col { min-width: 0; max-width: min(720px, 82%); display: flex; flex-direction: column; align-items: flex-start; }
 .chat-row--mine .chat-col { align-items: flex-end; }
-.chat-row--process .chat-col, .live-process-row .chat-col { width: min(720px, 82%); }
+.chat-row--process .chat-col, .live-process-row .chat-col { width: min(1040px, 94%); max-width: min(1040px, 94%); }
 .chat-row--process .chat-bubble, .live-process-row .chat-bubble { width: 100%; }
 
 .chat-name { display: flex; align-items: baseline; gap: 8px; margin: 2px 2px 5px; }

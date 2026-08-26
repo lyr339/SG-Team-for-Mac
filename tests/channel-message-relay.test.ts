@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
+import { ChannelMessageService } from '../src/application/channel-message-service'
 import { ChannelMessageRelay } from '../src/application/channel-message-relay'
 import { CHANNEL_PRESENCE_STALE_MS, CHANNEL_PROCESSING_STALE_MS } from '../src/domain/channel-message'
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
@@ -175,6 +176,22 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('consumes hidden background replies without projecting them into the visible timeline', () => {
+    const { repository, relay } = fixture()
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      const service = new ChannelMessageService(repository)
+      service.recordReply({ channelId: '1', content: '继续监控，无需用户处理' })
+
+      relay.pollReplies()
+      const snapshot = relay.applyTo(baseSnapshot())
+      expect(snapshot.conversations['1']).toBeUndefined()
+      expect(repository.listUnconsumedReplies()).toHaveLength(0)
+    } finally {
+      repository.close()
+    }
+  })
+
   it('suppresses repeated identical assistant replies in the visible timeline', () => {
     const { repository, relay } = fixture()
     try {
@@ -330,6 +347,11 @@ describe('ChannelMessageRelay', () => {
     const { repository, relay } = fixture()
     try {
       repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      repository.touchPresence('1', {
+        pendingReplySyncSince: 50,
+        connectionPhase: 'processing',
+        waiting: false
+      }, 50)
       repository.recordProcessEvent({
         channelId: '1',
         turn: 'turn-a',
@@ -358,6 +380,38 @@ describe('ChannelMessageRelay', () => {
       expect(snapshot.conversations['1']?.[0]).toMatchObject({ text: '测试全绿' })
       expect(snapshot.conversations['1']?.[0]?.processBlocks).toHaveLength(1)
       expect(snapshot.conversations['1']?.[0]?.processBlocks?.[0]).toMatchObject({ id: 'tool-1', summary: 'npm test\nwatch', status: 'done' })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('does not expose live process events from background-only collaboration turns', () => {
+    const { repository, relay } = fixture()
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      repository.recordProcessEvent({
+        channelId: '1',
+        turn: 'background-turn',
+        block: { kind: 'thinking', id: 't1', text: '处理团队内部消息', status: 'running' }
+      }, 100)
+      relay.pollReplies()
+      expect(relay.applyTo(baseSnapshot()).liveProcess?.['1']).toBeUndefined()
+
+      repository.touchPresence('1', {
+        pendingReplySyncSince: 150,
+        connectionPhase: 'processing',
+        waiting: false
+      }, 150)
+      repository.recordProcessEvent({
+        channelId: '1',
+        turn: 'user-turn',
+        block: { kind: 'thinking', id: 't2', text: '处理用户消息', status: 'running' }
+      }, 200)
+      relay.pollReplies()
+      expect(relay.applyTo(baseSnapshot()).liveProcess?.['1']).toMatchObject({
+        turn: 'user-turn',
+        blocks: [{ id: 't2', text: '处理用户消息' }]
+      })
     } finally {
       repository.close()
     }

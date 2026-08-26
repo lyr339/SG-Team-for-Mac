@@ -284,6 +284,10 @@ describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
       const content = result.content as ToolContentBlock[]
       const image = content.find((block) => block.type === 'image')
       const text = textOf(result)
+      expect(content[0]).toMatchObject({ type: 'text', text: '请识别这张截图' })
+      expect(content[1]).toMatchObject({ type: 'image', data: pngBase64, mimeType: 'image/png' })
+      expect(content[2]?.text).toContain('1 个图片附件作为本次 MCP image 内容块直接附加')
+      expect(content.at(-1)?.text).toContain('持续对话协议')
       expect(text).toContain('请识别这张截图')
       expect(text).toContain('1 个图片附件作为本次 MCP image 内容块直接附加')
       expect(image).toMatchObject({ type: 'image', data: pngBase64, mimeType: 'image/png' })

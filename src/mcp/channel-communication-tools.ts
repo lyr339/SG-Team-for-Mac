@@ -154,6 +154,43 @@ function inlineImageContentBlocks(attachments?: MessageAttachment[]): ToolImageC
   return blocks
 }
 
+function deliveredContentBlocks(input: {
+  messageText: string
+  attachments?: MessageAttachment[]
+  imageBlocks: ToolImageContent[]
+  fileText: InlineFileText
+  mergedCount: number
+  suffix: string
+  turnCount: number
+  remainingQueue: number
+}): ToolContent[] {
+  const blocks: ToolContent[] = []
+  const userText = input.messageText.trim()
+  if (userText) {
+    blocks.push({ type: 'text', text: userText })
+  } else if (input.imageBlocks.length) {
+    blocks.push({ type: 'text', text: '用户发送了图片附件，请直接分析随后的图片内容。' })
+  }
+  blocks.push(...input.imageBlocks)
+  const attachmentText = input.fileText.text
+    + buildAttachmentManifest(input.attachments, {
+        inlineImageCount: input.imageBlocks.length,
+        inlineTextFileCount: input.fileText.textFileCount,
+        inlineBinaryFileCount: input.fileText.binaryFileCount,
+        omittedFileCount: input.fileText.omittedFileCount
+      })
+  if (attachmentText.trim()) {
+    blocks.push({ type: 'text', text: attachmentText.trimStart() })
+  }
+  const protocolText = buildMergedNote(input.mergedCount)
+    + input.suffix
+    + buildTurnNote(input.turnCount, input.remainingQueue)
+  if (protocolText.trim()) {
+    blocks.push({ type: 'text', text: protocolText.trimStart() })
+  }
+  return blocks.length ? blocks : [{ type: 'text', text: input.suffix.trimStart() }]
+}
+
 const channelSchema = {
   channel_id: z.string().regex(/^\d+$/)
     .describe('群枢分配给当前 Agent 的通道号（如 "2"），启动指令中声明，每次调用必传')
@@ -228,18 +265,18 @@ export function registerChannelCommunicationTools(
             })
         const imageBlocks = inlineImageContentBlocks(result.message.attachments)
         const fileText = inlineFileText(result.message.attachments)
-        const text = result.message.text
-          + fileText.text
-          + buildAttachmentManifest(result.message.attachments, {
-              inlineImageCount: imageBlocks.length,
-              inlineTextFileCount: fileText.textFileCount,
-              inlineBinaryFileCount: fileText.binaryFileCount,
-              omittedFileCount: fileText.omittedFileCount
-            })
-          + buildMergedNote(result.mergedCount)
-          + suffix
-          + buildTurnNote(result.turnCount, result.remainingQueue)
-        return { content: [{ type: 'text' as const, text }, ...imageBlocks] }
+        return {
+          content: deliveredContentBlocks({
+            messageText: result.message.text,
+            attachments: result.message.attachments,
+            imageBlocks,
+            fileText,
+            mergedCount: result.mergedCount,
+            suffix,
+            turnCount: result.turnCount,
+            remainingQueue: result.remainingQueue
+          })
+        }
       }
       case 'keepalive':
         return { content: [{ type: 'text' as const, text: buildKeepaliveText(result.round) }] }
@@ -336,6 +373,7 @@ export function registerChannelCommunicationTools(
             type: 'agent_reply',
             channelId: reply.channelId,
             title: reply.title ?? null,
+            visible: reply.visible !== false,
             createdAt: reply.createdAt,
             processBlocks: reply.process?.length ?? 0
           },

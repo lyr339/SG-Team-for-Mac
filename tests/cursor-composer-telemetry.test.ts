@@ -617,6 +617,108 @@ describe('CursorComposerTelemetryReader', () => {
     expect(entries.at(-1)?.status).toBe('running')
   })
 
+  it('starts a new implicit turn after returning to check_messages', () => {
+    const data = fixture()
+    const composerId = 'composer-implicit-turn-boundary-123'
+    const runtime = { ...binding('1'), composerId }
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    writeTranscript(data.projectsRoot, data.workspace, composerId, [
+      JSON.stringify({
+        role: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: '第一轮开始。' },
+            { type: 'tool_use', name: 'Shell', input: { command: 'npm test' } }
+          ]
+        }
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: '这条消息我已经读过了。继续轮询。' },
+            {
+              type: 'tool_use',
+              name: 'CallDynamicTool',
+              input: { namespace: 'user-qunshu', toolName: 'check_messages', arguments: { channel_id: '1' } }
+            }
+          ]
+        }
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: '第二轮开始。' },
+            { type: 'tool_use', name: 'Read', input: { path: '/repo/src/b.ts' } }
+          ]
+        }
+      })
+    ].join('\n') + '\n')
+
+    const entries = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
+    expect(entries.map((entry) => entry.text)).toEqual([
+      '第一轮开始。',
+      'Shell npm test',
+      '第二轮开始。',
+      'Read /repo/src/b.ts'
+    ])
+    expect(entries.some((entry) => entry.text.includes('继续轮询'))).toBe(false)
+    expect(new Set(entries.map((entry) => entry.turn)).size).toBe(2)
+    expect(entries[1]!.status).toBe('done')
+    expect(entries[0]!.turn).not.toBe(entries[2]!.turn)
+  })
+
+  it('does not create visible work entries for repeated empty polling', () => {
+    const data = fixture()
+    const composerId = 'composer-empty-polling-123'
+    const runtime = { ...binding('1'), composerId }
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    writeTranscript(data.projectsRoot, data.workspace, composerId, [
+      JSON.stringify({
+        role: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: '继续等待用户回复。' },
+            {
+              type: 'tool_use',
+              name: 'CallDynamicTool',
+              input: { namespace: 'user-qunshu', toolName: 'check_messages', arguments: { channel_id: '1' } }
+            }
+          ]
+        }
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: '这条消息我已经读过了。让我继续轮询等待用户的回复。' },
+            {
+              type: 'tool_use',
+              name: 'CallDynamicTool',
+              input: { namespace: 'user-qunshu', toolName: 'record_reply', arguments: { channel_id: '1', content: 'noop' } }
+            }
+          ]
+        }
+      }),
+      JSON.stringify({
+        role: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              name: 'CallDynamicTool',
+              input: { namespace: 'user-qunshu', toolName: 'check_messages', arguments: { channel_id: '1' } }
+            }
+          ]
+        }
+      })
+    ].join('\n') + '\n')
+
+    const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]
+    expect(composer?.workEntries).toBeUndefined()
+  })
+
   it('hides qingtian/team MCP calls from Cursor work entries while keeping external MCP calls', () => {
     const data = fixture()
     const composerId = 'composer-filter-internal-mcp-123'

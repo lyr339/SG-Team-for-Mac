@@ -98,6 +98,7 @@ interface CachedTranscriptWork {
   entries: CursorWorkEntry[]
   activeTurn?: string
   activeTurnEntryStart?: number
+  pendingListenBoundaryLine?: number
   updatedAt: number
 }
 
@@ -105,6 +106,7 @@ interface ParsedTranscriptWorkLine {
   entries: CursorWorkEntry[]
   explicitTurn?: string
   closesTurn: boolean
+  listenBoundary: boolean
 }
 
 /** 工具名 → 动作分组（图标/中文动作名由渲染层按组决定）。 */
@@ -317,13 +319,14 @@ function visibleToolSummary(block: UnknownRecord):
 
 function parseTranscriptWorkLine(line: string, lineNumber: number, at: number): ParsedTranscriptWorkLine {
   let entry: UnknownRecord | undefined
-  try { entry = recordOf(JSON.parse(line)) } catch { return { entries: [], closesTurn: false } }
-  if (!entry || entry.role !== 'assistant') return { entries: [], closesTurn: false }
+  try { entry = recordOf(JSON.parse(line)) } catch { return { entries: [], closesTurn: false, listenBoundary: false } }
+  if (!entry || entry.role !== 'assistant') return { entries: [], closesTurn: false, listenBoundary: false }
   const message = recordOf(entry.message)
   const content = Array.isArray(message?.content) ? recordArray(message.content) : []
   const entries: CursorWorkEntry[] = []
   let explicitTurn: string | undefined
   let closesTurn = false
+  let listenBoundary = false
   let protocolOnly = false
   let hasRecordProcess = false
   let hasVisibleTool = false
@@ -334,6 +337,7 @@ function parseTranscriptWorkLine(line: string, lineNumber: number, at: number): 
     const turn = protocolTurn(block)
     if (turn) explicitTurn = turn
     if (toolName === 'record_reply') closesTurn = true
+    if (toolName === 'check_messages' || toolName === 'wait_messages') listenBoundary = true
     if (toolName === 'record_process') hasRecordProcess = true
     const visibleSummary = visibleToolSummary(block)
     if (visibleSummary) hasVisibleTool = true
@@ -372,7 +376,7 @@ function parseTranscriptWorkLine(line: string, lineNumber: number, at: number): 
       at
     })
   }
-  return { entries, explicitTurn, closesTurn }
+  return { entries, explicitTurn, closesTurn, listenBoundary }
 }
 
 /**
@@ -1714,6 +1718,17 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
             for (const line of complete.split('\n')) {
               cached.line += 1
               const parsedLine = parseTranscriptWorkLine(line, cached.line, observedAt)
+              if (parsedLine.listenBoundary && !parsedLine.entries.length) {
+                // check_messages / wait_messages 表示 Agent 已回到监听队列。它本身
+                // 不产生可见过程，但下一条真实工作输出必须开启新隐式回合；
+                // 否则没有显式 turn 的 Cursor transcript 会把多次用户对话串成一段。
+                for (const entry of cached.entries) {
+                  if (entry.status === 'running') entry.status = 'done'
+                }
+                cached.activeTurn = undefined
+                cached.activeTurnEntryStart = undefined
+                cached.pendingListenBoundaryLine = cached.line
+              }
               if (parsedLine.explicitTurn) {
                 if (cached.activeTurn?.startsWith('implicit:')) {
                   const start = cached.activeTurnEntryStart ?? cached.entries.length
@@ -1726,10 +1741,12 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
                 cached.activeTurnEntryStart = turnChanged
                   ? cached.entries.length
                   : cached.activeTurnEntryStart ?? cached.entries.length
+                cached.pendingListenBoundaryLine = undefined
               }
               if (!cached.activeTurn && parsedLine.entries.length) {
-                cached.activeTurn = `implicit:${cached.line}`
+                cached.activeTurn = `implicit:${cached.pendingListenBoundaryLine ?? cached.line}`
                 cached.activeTurnEntryStart = cached.entries.length
+                cached.pendingListenBoundaryLine = undefined
               }
               const parsed = parsedLine.entries.map((entry) => ({
                 ...entry,

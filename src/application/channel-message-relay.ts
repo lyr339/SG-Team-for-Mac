@@ -247,7 +247,8 @@ export class ChannelMessageRelay {
         this.repository.markReplyConsumed(reply.id)
         continue
       }
-      this.appendEntry(this.entryFromReply(reply))
+      const entry = this.entryFromReply(reply)
+      if (entry) this.appendEntry(entry)
       this.repository.markReplyConsumed(reply.id)
     }
     this.pollProcessEvents()
@@ -277,7 +278,8 @@ export class ChannelMessageRelay {
     }
     for (const reply of this.repository.listRepliesSince(threshold, limit)) {
       if (!embeddedChannels.has(reply.channelId)) continue
-      push(this.entryFromReply(reply))
+      const entry = this.entryFromReply(reply)
+      if (entry) push(entry)
       if (reply.consumedAt === undefined) this.repository.markReplyConsumed(reply.id, this.now())
     }
 
@@ -315,7 +317,8 @@ export class ChannelMessageRelay {
     }
   }
 
-  private entryFromReply(reply: ChannelInboundReply): ConversationEntry {
+  private entryFromReply(reply: ChannelInboundReply): ConversationEntry | undefined {
+    if (reply.visible === false) return undefined
     const processBlocks = reply.process?.length
       ? reply.process.map(normalizeProcessBlockText)
       : reply.turn
@@ -341,6 +344,8 @@ export class ChannelMessageRelay {
   private pollProcessEvents(): void {
     const activeChannels = new Set<string>()
     for (const channelId of this.repository.listEmbeddedChannels()) {
+      const presence = this.repository.getPresence(channelId)
+      if (presence?.pendingReplySyncSince === undefined) continue
       const events = this.repository.listLiveProcessEvents(channelId)
       if (!events.length) continue
       const latestUpdated = Math.max(...events.map((event) => event.updatedAt))

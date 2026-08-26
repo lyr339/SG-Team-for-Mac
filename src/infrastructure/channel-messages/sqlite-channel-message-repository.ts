@@ -105,6 +105,7 @@ function outboundOf(row: SqliteRow): ChannelOutboundMessage {
 }
 
 function replyOf(row: SqliteRow): ChannelInboundReply {
+  const visible = row.visible === undefined || row.visible === null || numberOf(row.visible) !== 0
   return {
     id: String(row.id),
     channelId: String(row.channel_id),
@@ -115,6 +116,7 @@ function replyOf(row: SqliteRow): ChannelInboundReply {
     files: stringArrayOf(row.files_json),
     process: processBlocksOf(row.process_json),
     turn: optionalString(row.turn),
+    visible: visible ? undefined : false,
     createdAt: numberOf(row.created_at),
     consumedAt: row.consumed_at === null ? undefined : numberOf(row.consumed_at)
   }
@@ -149,6 +151,8 @@ export interface RecordReplyInput {
   process?: ProcessBlock[]
   /** 流式过程回合标识：落地时把该 turn 的过程事件整批归档（archived=1）。 */
   turn?: string
+  /** false 表示后台/内部同步，不进入用户可见时间线；缺省为 true。 */
+  visible?: boolean
 }
 
 export interface PresencePatch {
@@ -377,12 +381,13 @@ export class SqliteChannelMessageRepository {
     const files = (input.files ?? []).map(String).filter(Boolean).slice(0, 32)
     const process = input.process?.length ? input.process.slice(0, 200) : undefined
     const turn = input.turn?.trim() || undefined
+    const visible = input.visible !== false
 
     this.database.exec('BEGIN IMMEDIATE')
     try {
       const presence = this.getPresence(channelId)
       const allowContentDedupe = !turn && presence?.pendingReplySyncSince === undefined
-      const duplicate = this.findDuplicateReply(channelId, content, turn, now, allowContentDedupe)
+      const duplicate = this.findDuplicateReply(channelId, content, turn, visible, now, allowContentDedupe)
       if (duplicate && !turn) {
         this.database.exec('COMMIT')
         return duplicate
@@ -391,7 +396,7 @@ export class SqliteChannelMessageRepository {
         // 同 turn 重试可能携带更完整的过程块/附件，覆盖内容字段但保留行身份与 created_at
         this.database.prepare(`
           UPDATE channel_replies
-          SET content = ?, title = ?, group_id = ?, task_id = ?, files_json = ?, process_json = ?
+          SET content = ?, title = ?, group_id = ?, task_id = ?, files_json = ?, process_json = ?, visible = ?
           WHERE id = ?
         `).run(
           content,
@@ -400,6 +405,7 @@ export class SqliteChannelMessageRepository {
           input.taskId?.trim() || null,
           JSON.stringify(files),
           process ? JSON.stringify(process) : null,
+          visible ? 1 : 0,
           duplicate.id
         )
         this.archiveProcessEvents(channelId, turn, now)
@@ -411,7 +417,8 @@ export class SqliteChannelMessageRepository {
           groupId: input.groupId?.trim() || undefined,
           taskId: input.taskId?.trim() || undefined,
           files,
-          process
+          process,
+          visible: visible ? undefined : false
         }
       }
 
@@ -425,11 +432,12 @@ export class SqliteChannelMessageRepository {
         files,
         process,
         turn,
+        visible: visible ? undefined : false,
         createdAt: now
       }
       this.database.prepare(`
-        INSERT INTO channel_replies (id, channel_id, content, title, group_id, task_id, files_json, process_json, turn, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO channel_replies (id, channel_id, content, title, group_id, task_id, files_json, process_json, turn, visible, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         reply.id,
         reply.channelId,
@@ -440,6 +448,7 @@ export class SqliteChannelMessageRepository {
         JSON.stringify(reply.files),
         reply.process ? JSON.stringify(reply.process) : null,
         reply.turn ?? null,
+        visible ? 1 : 0,
         reply.createdAt
       )
       if (turn) {
@@ -459,6 +468,7 @@ export class SqliteChannelMessageRepository {
     channelId: string,
     content: string,
     turn: string | undefined,
+    visible: boolean,
     now: number,
     allowContentDedupe = true
   ): ChannelInboundReply | undefined {
@@ -471,10 +481,10 @@ export class SqliteChannelMessageRepository {
     if (!allowContentDedupe) return undefined
     const rows = this.database.prepare(`
       SELECT * FROM channel_replies
-      WHERE channel_id = ? AND created_at > ?
+      WHERE channel_id = ? AND visible = ? AND created_at > ?
       ORDER BY created_at DESC
       LIMIT 50
-    `).all(channelId, now - CHANNEL_REPLY_DEDUPE_WINDOW_MS) as SqliteRow[]
+    `).all(channelId, visible ? 1 : 0, now - CHANNEL_REPLY_DEDUPE_WINDOW_MS) as SqliteRow[]
     const canonical = canonicalReplyContent(content)
     const duplicate = rows.find((row) => canonicalReplyContent(String(row.content)) === canonical)
     return duplicate ? replyOf(duplicate) : undefined
@@ -787,6 +797,7 @@ export class SqliteChannelMessageRepository {
         files_json TEXT NOT NULL,
         process_json TEXT,
         turn TEXT,
+        visible INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL,
         consumed_at INTEGER
       );
@@ -839,6 +850,7 @@ export class SqliteChannelMessageRepository {
     this.migrateAttachmentsColumn()
     this.migrateOutboundSilentColumn()
     this.migrateReplyTurnColumn()
+    this.migrateReplyVisibleColumn()
   }
 
   /** 老库增量迁移：channel_replies 补 process_json 列（新库建表已含）。 */
@@ -849,6 +861,11 @@ export class SqliteChannelMessageRepository {
   /** 老库增量迁移：channel_replies 补 turn 列（流式过程回合标识）。 */
   private migrateReplyTurnColumn(): void {
     this.migrateColumn('channel_replies', 'turn')
+  }
+
+  /** 老库增量迁移：channel_replies 补 visible 列，用于隐藏后台 record_reply。 */
+  private migrateReplyVisibleColumn(): void {
+    this.migrateColumn('channel_replies', 'visible', 'INTEGER NOT NULL DEFAULT 1')
   }
 
   /** 老库增量迁移：channel_outbox 补 attachments_json 列（新库建表已含）。 */

@@ -57,4 +57,12 @@ describe('MessageContent', () => {
     expect(html).toContain('<ul>')
     expect(html).not.toContain('\\n')
   })
+
+  it('converges double-escaped newlines before parsing markdown', () => {
+    const text = '进展更新：\\\\n\\\\n- backend：10%\\\\n- reviewer：待命'
+    expect(normalizeMessageText(text)).toBe('进展更新：\n\n- backend：10%\n- reviewer：待命')
+    const html = renderToStaticMarkup(<MessageContent text={text} />)
+    expect(html).toContain('<ul>')
+    expect(html).not.toContain('\\n')
+  })
 })

@@ -43,6 +43,8 @@ export interface ChannelInboundReply {
   process?: import('./conversation-entry').ProcessBlock[]
   /** 流式过程回合标识：record_process 上报的 turn，归档后用于从事件表重建 processBlocks。 */
   turn?: string
+  /** false 表示后台/内部同步回复：落库留痕并消费，但不进入用户可见会话时间线。 */
+  visible?: boolean
   createdAt: number
   consumedAt?: number
 }

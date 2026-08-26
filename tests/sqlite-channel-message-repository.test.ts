@@ -320,12 +320,14 @@ describe('SqliteChannelMessageRepository', () => {
       expect(legacyRow?.content).toBe('历史回复')
       expect(legacyRow?.process).toBeUndefined()
       expect(legacyRow?.turn).toBeUndefined()
-      // process_json 与 turn 两列均补齐；过程事件表也已就绪
+      expect(legacyRow?.visible).toBeUndefined()
+      // process_json、turn 与 visible 列均补齐；过程事件表也已就绪
       repository.recordReply({
         channelId: '1',
         content: '新回复',
         process: [{ kind: 'thinking', id: 't', text: '迁移后可写', status: 'done' }],
-        turn: 'turn-legacy-1'
+        turn: 'turn-legacy-1',
+        visible: false
       })
       repository.recordProcessEvent({
         channelId: '1',
@@ -336,6 +338,7 @@ describe('SqliteChannelMessageRepository', () => {
       const migrated = rows.find((reply) => reply.content === '新回复')
       expect(migrated?.process).toHaveLength(1)
       expect(migrated?.turn).toBe('turn-legacy-1')
+      expect(migrated?.visible).toBe(false)
       expect(repository.listLiveProcessEvents('1')).toHaveLength(1)
     } finally {
       repository.close()

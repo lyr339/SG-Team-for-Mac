@@ -59,11 +59,22 @@ function renderWorkspace(overrides: {
 describe('SessionWorkspace', () => {
   it('Agent 运行中且无过程块时显示「正在处理」占位气泡', () => {
     const html = renderWorkspace({
-      session: { status: 'running', waiting: false, connectionPhase: 'processing' }
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({ id: 'u1', role: 'user', source: 'desktop', text: '继续处理' })]
     })
     expect(html).toContain('正在处理')
     expect(html).toContain('live-process-idle')
     expect(html).not.toContain('实时过程中 ·')
+  })
+
+  it('后台运行但没有用户可见待回复消息时不显示处理中占位', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: []
+    })
+    expect(html).toContain('本轮尚无消息')
+    expect(html).not.toContain('正在处理')
+    expect(html).not.toContain('live-process-idle')
   })
 
   it('有 live 过程块时渲染实时过程气泡而非占位', () => {
@@ -185,6 +196,44 @@ describe('SessionWorkspace', () => {
     expect(html).toContain('workspace-worklog--inline')
     expect(html).not.toContain('workspace-worklog--primary')
     expect(html).not.toContain('<span>会话消息</span>')
+  })
+
+  it('把未归档 Cursor 过程按时间插入会话附近，而不是统一堆到消息尾部', () => {
+    const html = renderWorkspace({
+      session: {
+        workEntries: [
+          {
+            kind: 'tool',
+            text: 'Shell npm run test',
+            toolName: 'Shell',
+            toolKind: 'command',
+            status: 'running',
+            line: 88,
+            at: 1_000_500,
+            turn: 'implicit-live'
+          }
+        ]
+      },
+      entries: [
+        entry({ id: 'u1', role: 'user', source: 'desktop', text: '请跑测试', timestamp: 1_000_000 }),
+        entry({ id: 'a1', role: 'assistant', source: 'cursor', text: '测试完成', timestamp: 1_002_000, turn: 'turn-other' })
+      ]
+    })
+
+    expect(html.indexOf('请跑测试')).toBeLessThan(html.indexOf('Cursor 实时过程'))
+    expect(html.indexOf('Cursor 实时过程')).toBeLessThan(html.indexOf('测试完成'))
+  })
+
+  it('不渲染 silent 内部协作条目', () => {
+    const html = renderWorkspace({
+      entries: [
+        entry({ id: 's1', role: 'user', source: 'desktop', text: '【群枢内部协作通知】消息 ID：x', silent: true }),
+        entry({ id: 'u1', role: 'user', source: 'desktop', text: '用户真实消息' })
+      ]
+    })
+
+    expect(html).not.toContain('群枢内部协作通知')
+    expect(html).toContain('用户真实消息')
   })
 
   it('渲染消息附件：图片走预览图，文件显示名称与大小', () => {

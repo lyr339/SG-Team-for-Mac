@@ -147,6 +147,27 @@ describe('ChannelMessageService', () => {
     }
   })
 
+  it('marks record_reply as hidden unless it is answering a visible delivered user message', async () => {
+    const { repository, service } = fixture()
+    try {
+      service.recordReply({ channelId: '1', content: '后台协作状态，不应进入用户对话' })
+      expect(repository.listUnconsumedReplies()[0]).toMatchObject({
+        content: '后台协作状态，不应进入用户对话',
+        visible: false
+      })
+
+      repository.enqueueOutbound('1', '用户真实问题', 1_000)
+      await service.checkMessages({ channelId: '1' })
+      service.recordReply({ channelId: '1', content: '这是给用户的回复' })
+      expect(repository.listUnconsumedReplies().at(-1)).toMatchObject({
+        content: '这是给用户的回复',
+        visible: undefined
+      })
+    } finally {
+      repository.close()
+    }
+  })
+
   it('accepts the inline reply parameter as a reply sync equivalent', async () => {
     const { repository, service } = fixture()
     try {
