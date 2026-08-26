@@ -1,0 +1,77 @@
+{
+  "name": "qingtian-team",
+  "version": "0.2.0",
+  "private": true,
+  "author": "群枢",
+  "type": "module",
+  "description": "群枢：面向 Cursor 多 Agent 的外置协作中枢",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "preview:ui": "vite --config vite.preview.config.ts",
+    "build": "npm run typecheck && electron-vite build && npm run build:mcp",
+    "build:mcp": "vite build --config mcp.vite.config.ts",
+    "smoke:mcp": "tsx scripts/verify-built-mcp.ts",
+    "smoke:channel": "tsx scripts/verify-channel-mcp.ts",
+    "pack:mac": "npm run build && electron-builder --dir --mac --arm64 --config.electronDist=node_modules/electron/dist",
+    "smoke:mcp:packaged": "QINGTIAN_MCP_SMOKE_PACKAGED=1 tsx scripts/verify-built-mcp.ts",
+    "verify:mac": "npm run pack:mac && npm run smoke:mcp:packaged",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "ws": "^8.21.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "jsdom": "^30.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11"
+  },
+  "build": {
+    "appId": "shop.qingtian.team",
+    "productName": "群枢",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/main/**/*",
+      "out/preload/**/*",
+      "out/renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "out/mcp/index.mjs",
+        "to": "mcp/index.mjs"
+      },
+      {
+        "from": "build/icon-team-1024.png",
+        "to": "dock-icon.png"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dir",
+      "icon": "build/icon-team.icns",
+      "identity": null
+    }
+  }
+}

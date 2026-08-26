@@ -1,0 +1,260 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { ChannelMessageService } from '../src/application/channel-message-service'
+import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
+
+function fixture() {
+  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-service-')), 'channel.sqlite3')
+  const repository = new SqliteChannelMessageRepository(path)
+  const service = new ChannelMessageService(repository)
+  return { repository, service }
+}
+
+describe('ChannelMessageService', () => {
+  it('delivers one copy when recent duplicate text was collapsed at enqueue time', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.enqueueOutbound('1', '同一个问题', 1_000)
+      repository.enqueueOutbound('1', '同一个问题', 2_000)
+      repository.enqueueOutbound('1', '下一个问题', 3_000)
+      const result = await service.checkMessages({ channelId: '1' })
+      expect(result).toMatchObject({
+        type: 'delivered',
+        mergedCount: 1,
+        remainingQueue: 1,
+        turnCount: 1,
+        deliveredCount: 1
+      })
+      expect(repository.countPendingOutbound('1')).toBe(1)
+      const presence = repository.getPresence('1')
+      expect(presence).toMatchObject({
+        connectionPhase: 'processing',
+        deliveredCount: 1
+      })
+      expect(presence?.pendingReplySyncSince).toBeDefined()
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('never merges attachment messages even with identical empty text', async () => {
+    const { repository, service } = fixture()
+    try {
+      const image = (name: string) => ({
+        id: name,
+        name,
+        mimeType: 'image/png',
+        size: 100,
+        path: `/tmp/${name}`
+      })
+      // 纯图连发：text 均为空串，合并判据不得把它们当重复丢弃
+      repository.enqueueOutbound('1', '', 1_000, [image('a.png')])
+      repository.enqueueOutbound('1', '', 2_000, [image('b.png')])
+      const first = await service.checkMessages({ channelId: '1' })
+      expect(first).toMatchObject({ type: 'delivered', mergedCount: 1, remainingQueue: 1 })
+      expect(first.type === 'delivered' && first.message.attachments?.[0]?.name).toBe('a.png')
+
+      service.recordReply({ channelId: '1', content: '收到第一张图' })
+      const second = await service.checkMessages({ channelId: '1' })
+      expect(second).toMatchObject({ type: 'delivered', mergedCount: 1, remainingQueue: 0 })
+      expect(second.type === 'delivered' && second.message.attachments?.[0]?.name).toBe('b.png')
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('returns keepalive after the idle timeout with an empty queue', async () => {
+    const { repository, service } = fixture()
+    try {
+      const result = await service.checkMessages({
+        channelId: '1',
+        keepaliveTimeoutMs: 1_000,
+        pollIntervalMs: 100
+      })
+      expect(result).toMatchObject({ type: 'keepalive', round: 1 })
+      expect(repository.getPresence('1')).toMatchObject({
+        connectionPhase: 'keepalive',
+        keepaliveRound: 1
+      })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('does not open the reply-sync gate after a silent internal notification', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.enqueueOutbound('1', '【群枢内部协作通知】消息 ID：m1', 1_000, undefined, true)
+      const first = await service.checkMessages({ channelId: '1' })
+      expect(first).toMatchObject({ type: 'delivered' })
+      expect(first.type === 'delivered' && first.message.silent).toBe(true)
+      expect(repository.getPresence('1')?.pendingReplySyncSince).toBeUndefined()
+
+      repository.enqueueOutbound('1', '【群枢内部协作通知】消息 ID：m2', 2_000, undefined, true)
+      const second = await service.checkMessages({ channelId: '1' })
+      expect(second).toMatchObject({ type: 'delivered' })
+      expect(second.type === 'delivered' && second.message.text).toContain('m2')
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('treats legacy internal notification rows as silent and self-heals their stale sync gate', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.enqueueOutbound('1', '【群枢内部协作通知】消息 ID：legacy', 1_000)
+      const deliveredLegacy = await service.checkMessages({ channelId: '1' })
+      expect(deliveredLegacy).toMatchObject({ type: 'delivered' })
+      expect(deliveredLegacy.type === 'delivered' && deliveredLegacy.message.silent).toBe(true)
+      expect(repository.getPresence('1')?.pendingReplySyncSince).toBeUndefined()
+
+      // 模拟旧版本已经把这条内部通知错误地变成 reply-sync 守门。
+      repository.touchPresence('1', {
+        pendingReplySyncSince: repository.latestDeliveredOutbound('1')?.deliveredAt ?? Date.now(),
+        connectionPhase: 'need_reply_sync',
+        waiting: true
+      })
+      repository.enqueueOutbound('1', '真实用户下一条', 2_000)
+      const next = await service.checkMessages({ channelId: '1' })
+      expect(next).toMatchObject({ type: 'delivered' })
+      expect(next.type === 'delivered' && next.message.text).toBe('真实用户下一条')
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('fences the next check behind reply sync until record_reply clears the gate', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.enqueueOutbound('1', '第一条', 1_000)
+      const delivered = await service.checkMessages({ channelId: '1' })
+      expect(delivered.type).toBe('delivered')
+
+      repository.enqueueOutbound('1', '第二条', 2_000)
+      const fenced = await service.checkMessages({ channelId: '1' })
+      expect(fenced.type).toBe('reply_sync_required')
+      expect(repository.countPendingOutbound('1')).toBe(1)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('need_reply_sync')
+
+      service.recordReply({ channelId: '1', content: '完整回复' })
+      expect(repository.getPresence('1')?.pendingReplySyncSince).toBeUndefined()
+      const after = await service.checkMessages({ channelId: '1' })
+      expect(after).toMatchObject({ type: 'delivered' })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('accepts the inline reply parameter as a reply sync equivalent', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.enqueueOutbound('1', '第一条', 1_000)
+      await service.checkMessages({ channelId: '1' })
+      repository.enqueueOutbound('1', '第二条', 2_000)
+      const result = await service.checkMessages({ channelId: '1', reply: '顺带提交的上轮回复' })
+      expect(result.type).toBe('delivered')
+      expect(repository.listUnconsumedReplies().map((reply) => reply.content)).toEqual(['顺带提交的上轮回复'])
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('does not swallow the same short reply when it belongs to a newly delivered message', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.enqueueOutbound('1', '第一条', 1_000)
+      await service.checkMessages({ channelId: '1' })
+      service.recordReply({ channelId: '1', content: '收到' })
+
+      repository.enqueueOutbound('1', '第二条', 2_000)
+      await service.checkMessages({ channelId: '1' })
+      service.recordReply({ channelId: '1', content: '收到' })
+
+      expect(repository.listUnconsumedReplies().map((reply) => reply.content)).toEqual(['收到', '收到'])
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('auto-releases a stale reply gate instead of deadlocking', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.enqueueOutbound('1', '第一条', 1_000)
+      await service.checkMessages({ channelId: '1' })
+      // 手动把守门时间拨到宽限期之外，模拟 Agent 长时间未同步
+      const presence = repository.getPresence('1')!
+      repository.touchPresence('1', { pendingReplySyncSince: presence.pendingReplySyncSince! - 400_000 })
+      repository.enqueueOutbound('1', '第二条', 2_000)
+      const result = await service.checkMessages({ channelId: '1' })
+      expect(result.type).toBe('delivered')
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('stops the wait when the tool call is aborted', async () => {
+    const { repository, service } = fixture()
+    try {
+      const abort = new AbortController()
+      setTimeout(() => abort.abort(), 150)
+      const result = await service.checkMessages({
+        channelId: '1',
+        signal: abort.signal,
+        keepaliveTimeoutMs: 60_000,
+        pollIntervalMs: 50
+      })
+      expect(result).toMatchObject({ type: 'stopped', reason: 'tool_aborted' })
+      expect(repository.getPresence('1')?.connectionPhase).toBe('tool_aborted')
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('refreshes presence heartbeat evidence while polling', async () => {
+    const { repository, service } = fixture()
+    try {
+      const before = Date.now()
+      await service.checkMessages({ channelId: '2', keepaliveTimeoutMs: 1_000, pollIntervalMs: 100 })
+      const presence = repository.getPresence('2')!
+      expect(presence.lastSeenAt).toBeGreaterThanOrEqual(before)
+      expect(presence.turnCount).toBe(1)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('warns when a reply carries process blocks that were never streamed via record_process', () => {
+    const { repository, service } = fixture()
+    try {
+      // 断流场景：整批直带 process、同 turn 无任何流式事件 → 附 streamingWarning
+      const batchOnly = service.recordReply({
+        channelId: '1',
+        content: '整批归档的回复',
+        turn: 'turn-batch',
+        process: [{ kind: 'thinking', id: 't1', text: '未流式上报的思考', status: 'done' }]
+      })
+      expect((batchOnly as { streamingWarning?: string }).streamingWarning).toContain('record_process')
+
+      // 流式场景：先 record_process 逐块上报，record_reply 带同 turn → 无 warning
+      service.recordProcess({
+        channelId: '1',
+        turn: 'turn-live',
+        block: { kind: 'tool', id: 'tool-1', toolName: 'Read', toolKind: 'read', status: 'done' }
+      })
+      const streamed = service.recordReply({ channelId: '1', content: '流式回合的回复', turn: 'turn-live' })
+      expect((streamed as { streamingWarning?: string }).streamingWarning).toBeUndefined()
+
+      // 无 turn 的旧协议回合不骚扰
+      const legacy = service.recordReply({
+        channelId: '1',
+        content: '无 turn 回复',
+        process: [{ kind: 'thinking', id: 't2', text: '旧协议', status: 'done' }]
+      })
+      expect((legacy as { streamingWarning?: string }).streamingWarning).toBeUndefined()
+    } finally {
+      repository.close()
+    }
+  })
+})

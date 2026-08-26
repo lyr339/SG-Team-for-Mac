@@ -1,0 +1,210 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { DesktopSnapshot } from '../../shared/desktop-api'
+import type { CursorWorkspaceDetection } from '../../domain/cursor-workspace'
+import {
+  GridIcon,
+  SessionsIcon,
+  WorkspaceIcon
+} from './UiIcons'
+import { BrandMark } from './BrandMark'
+import { ResizableColumns } from './ResizableColumns'
+
+export type AppModule = 'lobby' | 'sessions'
+
+interface DesktopShellProps {
+  snapshot: DesktopSnapshot
+  activeModule: AppModule
+  sidebar: ReactNode
+  collaborationUnread?: number
+  cursorAccountLabel?: string
+  cursorAccountCount?: number
+  cursorWorkspace?: CursorWorkspaceDetection
+  displayedWorkspaceId?: string
+  wideContent?: boolean
+  teamChannelIds?: string[]
+  onModuleChange: (module: AppModule) => void
+  onOpenCursorAccounts: () => void
+  onDetectedWorkspaceClick: () => void
+  children: ReactNode
+}
+
+const CONNECTION_LABELS: Record<DesktopSnapshot['connection']['state'], string> = {
+  disconnected: '通信未连接',
+  connecting: '通信连接中',
+  connected: '通信已连接',
+  reconnecting: '通信重连中',
+  error: '通信异常'
+}
+
+const MODULE_LABELS: Record<AppModule, string> = {
+  lobby: '大厅',
+  sessions: 'Cursor 会话'
+}
+
+const MODULE_ORDER: AppModule[] = ['lobby', 'sessions']
+const CONTEXT_SIDEBAR_SPECS = [{ defaultSize: 270, minSize: 220, maxSize: 500 }] as const
+const SESSION_SIDEBAR_SPECS = [{ defaultSize: 326, minSize: 286, maxSize: 420 }] as const
+
+export function DesktopShell({
+  snapshot,
+  activeModule,
+  sidebar,
+  collaborationUnread = 0,
+  cursorAccountLabel,
+  cursorAccountCount = 0,
+  cursorWorkspace,
+  displayedWorkspaceId,
+  wideContent = false,
+  teamChannelIds,
+  onModuleChange,
+  onOpenCursorAccounts,
+  onDetectedWorkspaceClick,
+  children
+}: DesktopShellProps): React.JSX.Element {
+  const [showConnection, setShowConnection] = useState(false)
+  const popoverRef = useRef<HTMLElement>(null)
+  // 顶栏在线统计只按团队成员口径（备用/未编入通道不计入，避免 1/4 式困惑）
+  const teamSessions = teamChannelIds?.length
+    ? snapshot.sessions.filter((session) => teamChannelIds.includes(session.channelId))
+    : snapshot.sessions
+  const onlineCount = teamSessions.filter((session) => session.online).length
+  const connected = snapshot.connection.state === 'connected'
+  const issues = snapshot.protocolIssues
+  const detectedWorkspace = cursorWorkspace?.workspace
+  const workspaceMatches = Boolean(detectedWorkspace && detectedWorkspace.id === displayedWorkspaceId)
+  const showWorkspaceDetection = cursorWorkspace?.state === 'detected' || cursorWorkspace?.state === 'ambiguous'
+  const workspaceLabel = cursorWorkspace?.state === 'ambiguous'
+    ? `${cursorWorkspace.candidates.length || '多'} 个 Cursor 工程`
+    : detectedWorkspace ? `Cursor · ${detectedWorkspace.name}` : ''
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setShowConnection(false)
+        return
+      }
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+      const index = Number.parseInt(event.key, 10) - 1
+      const module = MODULE_ORDER[index]
+      if (index < 0 || !module) return
+      const target = event.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      event.preventDefault()
+      onModuleChange(module)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onModuleChange])
+
+  useEffect(() => {
+    if (!showConnection) return
+    const handler = (event: MouseEvent): void => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (popoverRef.current?.contains(target)) return
+      if ((target as HTMLElement).closest?.('.connection-chip')) return
+      setShowConnection(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showConnection])
+
+  const navButton = (module: AppModule, icon: ReactNode, label: string, badge?: number): ReactNode => (
+    <button
+      className={activeModule === module ? 'is-active' : ''}
+      title={`${MODULE_LABELS[module]} ⌘${MODULE_ORDER.indexOf(module) + 1}`}
+      onClick={() => onModuleChange(module)}
+    >
+      {icon}
+      <span>{label}</span>
+      {badge ? <em className="topbar-nav__badge">{badge > 99 ? '99+' : badge}</em> : null}
+    </button>
+  )
+
+  return (
+    <div className="desktop-shell">
+      <header className="topbar">
+        <div className="topbar__context">
+          <button className="brand" onClick={() => onModuleChange('lobby')} aria-label="返回群枢大厅">
+            <span className="brand__mark"><BrandMark /></span>
+            <strong>群枢</strong>
+          </button>
+          {showWorkspaceDetection ? (
+            <button
+              className={`workspace-detection-chip ${workspaceMatches ? 'is-current' : 'is-different'} ${cursorWorkspace?.state === 'ambiguous' ? 'is-ambiguous' : ''}`}
+              onClick={onDetectedWorkspaceClick}
+              title={cursorWorkspace?.detail}
+            >
+              <WorkspaceIcon />
+              <span>{workspaceLabel}</span>
+              <b>{workspaceMatches ? '当前' : cursorWorkspace?.state === 'ambiguous' ? '选择' : '切换'}</b>
+            </button>
+          ) : null}
+        </div>
+
+        <nav className="topbar-nav" aria-label="主要功能">
+          {navButton('lobby', <GridIcon />, '大厅', collaborationUnread)}
+          {navButton('sessions', <SessionsIcon />, '会话')}
+        </nav>
+
+        <div className="topbar__actions">
+          <button className="cursor-account-chip" onClick={onOpenCursorAccounts} title="管理本机 Cursor 账号凭据">
+            <i>@</i><span>{cursorAccountLabel || 'Cursor 账号'}</span>{cursorAccountCount > 0 ? <b>{cursorAccountCount}</b> : null}
+          </button>
+          <button
+            className={`connection-chip connection-chip--${snapshot.connection.state}`}
+            onClick={() => setShowConnection((value) => !value)}
+            title={issues.length ? `${issues.length} 条协议异常，点击查看` : undefined}
+            aria-expanded={showConnection}
+            aria-controls="connection-popover"
+          >
+            <i />
+            <span className="connection-chip__label">{CONNECTION_LABELS[snapshot.connection.state]}</span>
+            {connected && <span className="connection-chip__online">{onlineCount}/{teamSessions.length} Agent 在线</span>}
+            {issues.length > 0 && <b className="connection-chip__issues">{issues.length}</b>}
+          </button>
+        </div>
+
+        {showConnection && (
+          <section className="connection-popover" id="connection-popover" ref={popoverRef}>
+            <header>
+              <div>
+                <strong>群枢本地通道</strong>
+                <span>消息与活性经群枢内嵌 MCP 直达 Cursor；Agent 在线状态单独核验</span>
+              </div>
+              <button onClick={() => setShowConnection(false)}>×</button>
+            </header>
+            {issues.length > 0 && (
+              <div className="connection-popover__issues">
+                <strong>协议异常 · 最近 {Math.min(issues.length, 5)} / {issues.length} 条</strong>
+                <ul>
+                  {issues.slice(-5).reverse().map((issue, index) => <li key={`${index}-${issue}`}>{issue}</li>)}
+                </ul>
+              </div>
+            )}
+          </section>
+        )}
+      </header>
+
+      <div className={`desktop-body desktop-body--${activeModule} ${wideContent ? 'desktop-body--wide' : ''}`}>
+        {wideContent ? (
+          <div className="shell-columns shell-columns--wide">
+            <main className="content-stage">{children}</main>
+          </div>
+        ) : (
+          <ResizableColumns
+            className="shell-columns"
+            dividerLabels={[activeModule === 'sessions' ? '调整会话列表宽度' : '调整团队侧栏宽度']}
+            finalPaneMinSize={420}
+            key={activeModule === 'sessions' ? 'shell.sessions' : 'shell.context'}
+            paneSpecs={activeModule === 'sessions' ? SESSION_SIDEBAR_SPECS : CONTEXT_SIDEBAR_SPECS}
+            storageKey={activeModule === 'sessions' ? 'shell.sessions.v2' : 'shell.context'}
+          >
+            {sidebar}
+            <main className="content-stage">{children}</main>
+          </ResizableColumns>
+        )}
+      </div>
+    </div>
+  )
+}

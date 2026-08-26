@@ -1,0 +1,84 @@
+import type { AgentRegistrationBatch } from './agent-authorization'
+import type { AgentCheckInReceipt, AgentPresenceStore } from './agent-presence'
+import type {
+  TeamControlState,
+  TeamLaunchStatus,
+  WorkspaceTeamBundle
+} from '../domain/team-control'
+import type { ComposerBindingMethod } from '../domain/cursor-telemetry'
+import type { AgentAuthorizationIdentity, AgentRegistration } from './agent-authorization'
+import type { TeamFailoverRebindResult, TeamFailoverRecord, TeamFailoverStatus } from '../domain/team-failover'
+
+export interface TeamControlRepository extends AgentPresenceStore {
+  loadTeamControl(): TeamControlState
+  upsertWorkspaceTeam(bundle: WorkspaceTeamBundle): void
+  setActiveWorkspace(workspaceId: string): void
+  updateRunGoal(runId: string, goal: string): void
+  recordInstallation(batch: AgentRegistrationBatch): void
+  beginLaunch(runId: string, at: number, bindingKey: string): void
+  /** 幂等推进 run 到 launching（仅状态，不重置 bindings）；未达可启动条件时为空操作。 */
+  ensureRunLaunching(runId: string, at: number): void
+  recordLaunchDelivery(input: {
+    runId: string
+    slotId: string
+    status: Extract<TeamLaunchStatus, 'sending' | 'delivered' | 'uncertain' | 'failed'>
+    commandId?: string
+    detail: string
+  }): void
+  recordComposerBinding(input: {
+    runId: string
+    slotId: string
+    generation: string
+    bindingKey: string
+    composerId: string
+    method: ComposerBindingMethod
+    at: number
+  }): boolean
+  resolveAgentRuntimeIdentity(identityKey: string, runId?: string): AgentAuthorizationIdentity
+  listAgentRegistrations(runId: string): AgentRegistration[]
+  rebindSlotToStandby(input: {
+    failoverId: string
+    runId: string
+    slotId: string
+    expectedAgentSessionId: string
+    replacementAgentSessionId: string
+    reason: string
+    detectedAt: number
+    bindingKey: string
+    checkpointId?: string
+  }): TeamFailoverRebindResult
+  rebindSlotFromMember(input: {
+    failoverId: string
+    runId: string
+    slotId: string
+    donorSlotId: string
+    expectedAgentSessionId: string
+    replacementAgentSessionId: string
+    reason: string
+    detectedAt: number
+    bindingKey: string
+    checkpointId?: string
+  }): TeamFailoverRebindResult
+  attachFailoverContext(input: {
+    failoverId: string
+    checkpointId?: string
+    messageId: string
+    taskIds: string[]
+    at: number
+  }): void
+  updateFailoverStatus(input: {
+    failoverId: string
+    status: Extract<TeamFailoverStatus, 'completed' | 'failed'>
+    reason?: string
+    at: number
+  }): void
+  listFailovers(runId: string): TeamFailoverRecord[]
+  completeRun(runId: string, at: number): boolean
+  recordAgentCheckIn(
+    identity: Parameters<AgentPresenceStore['recordAgentCheckIn']>[0],
+    note: string
+  ): AgentCheckInReceipt
+  /** 设置或清除临时主控：主控离线时指定新的 acting lead。 */
+  setActingLead(input: { runId: string; slotId: string | null; at: number }): boolean
+  close(): void
+}

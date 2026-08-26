@@ -1,0 +1,48 @@
+node_modules/
+out/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+*.local
+*.tsbuildinfo
+
+# Electron / Vite / packaged artifacts
+release/
+release-*/
+*.dmg
+*.zip
+*.AppImage
+*.exe
+*.blockmap
+
+# Local runtime state
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
+*-shm
+*-wal
+
+# Local automation/debug output
+.playwright-cli/
+preview-screenshots/
+.cursor/
+scripts/manual-account-automation-run.ts
+scripts/safe-storage-probe.mjs
+
+# Generated extension/package bundles
+build/*.vsix
+build/*.iconset/
+
+# 误置根目录的构建产物（正确产物在 out/ 与 release*/）
+/index-*.js
+/index.js
