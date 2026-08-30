@@ -110,7 +110,7 @@ async function safely(
 export function buildUnifiedServerInstructions(): string {
   return [
     `这是拾光（SG Team）统一 MCP 服务器「${SG_TEAM_MCP_SERVER_ID}」：团队工具与通信保活同服，每次工具调用必须传 channel_id（当前 Agent 的拾光通道号，启动指令中声明）。`,
-    '收到启动指令后先调用 team_check_in 领取角色简报；简报是角色职责与团队目标的唯一依据，不要在会话里复述它。',
+    '团队席收到团队启动指令后先调用 team_check_in 领取角色简报；独立席按“独立模式”启动指令只使用 check_messages / record_reply，不调用 team_*。简报是团队席职责与目标的唯一依据，不要在会话里复述它。',
     '思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件，不要额外复述或上报过程；record_reply 只同步完整可见回复正文。',
     '每次真实用户可见回复后必须 record_reply 同步，再 check_messages 长轮询待命；团队内部通知只用 team_* 回执处理，不要写用户可见回复。',
     'check_messages 返回 keepalive、无未读或已读重复时必须静默续等：不要输出“继续等待/已读过/继续轮询”等可见回复，也不要 record_reply。',

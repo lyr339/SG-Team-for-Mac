@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  createConfiguredTeamBundle,
   createDefaultTeamBundle,
   type RuntimeBinding,
   type TeamControlSnapshot
@@ -16,7 +17,7 @@ function snapshotWith(binding?: RuntimeBinding): TeamControlSnapshot {
   })
   bundle.run.goal = '完成真实 lead/builder/reviewer 协作闭环'
   return {
-    schemaVersion: 5,
+    schemaVersion: 7,
     revision: 1,
     activeWorkspaceId: bundle.workspace.id,
     workspaces: [bundle.workspace],
@@ -124,5 +125,39 @@ describe('team agent launch prompts', () => {
 
     expect(ensured).toBe(1)
     expect(prompt).toContain('team_check_in')
+  })
+
+  it('gives a solo channel its independent loop without goal or run-state transition', async () => {
+    const bundle = createConfiguredTeamBundle({
+      workspaceId: 'solo-workspace', workspaceName: 'solo', workspacePath: '/workspace/solo', now: 100,
+      members: [
+        { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+        { channelId: '2', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }
+      ]
+    })
+    bundle.run.goal = ''
+    const slot = bundle.slots.find((candidate) => candidate.solo)!
+    const binding: RuntimeBinding = {
+      id: 'binding-solo', workspaceId: bundle.workspace.id, runId: bundle.run.id,
+      slotId: slot.id, channelId: '2', agentSessionId: 'solo:ch-2:g1', generation: 'g1',
+      installedAt: 100, launchStatus: 'not_started', launchDetail: '', lastCheckInNote: '', composerBindingKey: 'g1'
+    }
+    let ensured = 0
+    const snapshot: TeamControlSnapshot = {
+      schemaVersion: 7, revision: 1, activeWorkspaceId: bundle.workspace.id,
+      workspaces: [bundle.workspace], runs: [bundle.run], roles: bundle.roles, slots: bundle.slots,
+      bindings: [binding], updatedAt: 100, activeRun: bundle.run, members: [], runtimeChannels: [],
+      standbyChannels: [], failovers: [],
+      preflight: { bridgeConnected: true, workspaceBound: true, goalDefined: false, mcpInstalled: true, agentsWaiting: false, canLaunch: false, blockers: [] }
+    }
+    const prompts = createTeamAgentLaunchPromptPort({
+      getSnapshot: () => snapshot,
+      ensureRunLaunched: () => { ensured += 1 }
+    })
+    const prompt = await prompts.fetchStartPrompt('2')
+    expect(prompt).toContain('独立模式')
+    expect(prompt).toContain('record_reply')
+    expect(prompt).not.toContain('team_check_in')
+    expect(ensured).toBe(0)
   })
 })

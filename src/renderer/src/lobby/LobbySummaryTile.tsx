@@ -28,6 +28,8 @@ export function LobbySummaryTile({ team, collaboration, gates }: LobbySummaryTil
   const queuedMessages = team.members.reduce((total, member) => total + (member.runtime?.queueDepth ?? 0), 0)
   const collaborationSummary = summarizeTeamCollaborationForRun(collaboration, activeRun)
   const memberCount = team.members.length
+  const soloCount = team.members.filter((member) => member.slot.solo === true).length
+  const teamCount = memberCount - soloCount
   const metrics = [
     { label: '在线', value: `${onlineMembers}/${memberCount}` },
     { label: '待命', value: `${waitingMembers}/${memberCount}` },
@@ -47,7 +49,7 @@ export function LobbySummaryTile({ team, collaboration, gates }: LobbySummaryTil
         </span>
       </header>
       <div className="lobby-summary__pulse">
-        <span><b>{waitingMembers}/{memberCount}</b><small>待命席位</small></span>
+        <span><b>{waitingMembers}/{memberCount}</b><small>待命席位 · 团队 {teamCount} · 独立 {soloCount}</small></span>
         <div
           className="lobby-summary__slots"
           style={{ gridTemplateColumns: `repeat(${Math.max(1, memberCount)}, minmax(0, 1fr))` }}
@@ -60,9 +62,9 @@ export function LobbySummaryTile({ team, collaboration, gates }: LobbySummaryTil
               : 'offline'
             return (
               <i
-                className={`lobby-summary__slot is-${state}`}
+                className={`lobby-summary__slot is-${state}${member.slot.solo ? ' is-solo' : ''}`}
                 key={member.slot.id}
-                title={`${member.role.name} · ${state === 'waiting' ? '待命' : state === 'online' ? '执行中' : '离线'}`}
+                title={`${member.role.name}${member.slot.solo ? ' · 独立席' : ''} · ${state === 'waiting' ? '待命' : state === 'online' ? '执行中' : '离线'}`}
               />
             )
           }) : <i className="lobby-summary__slot is-empty" title="暂无团队席位" />}

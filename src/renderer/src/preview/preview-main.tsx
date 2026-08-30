@@ -6,7 +6,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AccountAutomationRun } from '../../../domain/account-automation'
 import type { ConversationEntry } from '../../../domain/conversation-entry'
-import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES, emptyTeamControlSnapshot } from '../../../domain/team-control'
+import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES, createConfiguredTeamBundle, emptyTeamControlSnapshot } from '../../../domain/team-control'
 import type { TeamRunStatus } from '../../../domain/team-control'
 import type { QingtianDesktopApi, TeamSetupDraft } from '../../../shared/desktop-api'
 import { App } from '../App'
@@ -318,6 +318,14 @@ const api: QingtianDesktopApi = {
   }),
   verifyCursorRuntimeAccount: async () => ({ status: 'matched' as const, cursorLabel: 'preview@cursor.com', activeLabel: 'preview@cursor.com' }),
   refreshCursorMembership: async () => ({ state: 'ok' as const, profile: { tier: 'pro' as const, raw: 'pro', trialEligible: false, isTeamMember: false, lastPaymentFailed: false, fetchedAt: Date.now() } }),
+  refreshCursorAccountMemberships: async (accountIds) => Object.fromEntries(
+    previewCursorAccounts
+      .filter((account) => !accountIds || accountIds.includes(account.id))
+      .map((account, index) => [account.id, {
+        state: 'ok' as const,
+        profile: { tier: index === 0 ? 'free' as const : 'pro' as const, raw: index === 0 ? 'free' : 'pro', fetchedAt: Date.now() }
+      }])
+  ),
   getAozaiCardStatus: async () => automationSceneRun
     ? { saved: true, maskedCode: '••••6l8Q', type: '50次卡', remaining: 46 }
     : { saved: false },
@@ -379,6 +387,12 @@ const api: QingtianDesktopApi = {
     })
   },
   openFingerprintLoginPage: async () => {},
+  acknowledgeCursorModelDataPolicies: async () => ({
+    changed: false,
+    tokenUpdated: false,
+    modelIds: ['claude-fable-5'],
+    message: 'claude-fable-5 的数据政策已确认，无需重复提交'
+  }),
   onAccountAutomationProgress: () => () => {},
   getSnapshot: async () => structuredClone(state.desktop),
   sendMessage: async ({ channelId, text }) => {
@@ -429,23 +443,79 @@ const api: QingtianDesktopApi = {
     ? ({ kind: 'setup', draft: structuredClone(detectedSetupDraft) })
     : ({ kind: 'existing', snapshot: structuredClone(state.team) }),
   chooseTeamWorkspace: async () => setupMode ? ({ kind: 'setup', draft: structuredClone(setupDraft) }) : ({ cancelled: true }),
-  createTeam: async () => {
-    state.team = setupMode
-      ? {
-          ...structuredClone(teamControlSnapshot),
-          runs: teamControlSnapshot.runs.map((run) => ({ ...run, status: 'ready' as const })),
-          activeRun: teamControlSnapshot.activeRun
-            ? { ...teamControlSnapshot.activeRun, status: 'ready' as const }
-            : undefined,
-          preflight: {
-            ...teamControlSnapshot.preflight,
-            mcpInstalled: false,
-            agentsWaiting: false,
-            canLaunch: false,
-            blockers: ['Agent MCP 尚未接入全部本轮通道', '并非所有 Agent 通道都已在线待命']
-          }
+  createTeam: async (input) => {
+    if (setupMode) {
+      const skillById = new Map(setupDraft.skills.map((skill) => [skill.id, skill]))
+      const configured = createConfiguredTeamBundle({
+        workspaceId: setupDraft.workspaceId,
+        workspaceName: setupDraft.workspaceName,
+        workspacePath: setupDraft.workspacePath,
+        now: Date.now(),
+        members: input.members.map((member) => ({
+          channelId: member.channelId,
+          roleTemplateKey: member.roleTemplateKey,
+          avatarId: member.avatarId,
+          solo: member.solo,
+          modelSelection: member.modelSelection,
+          skills: member.skillIds.flatMap((id) => {
+            const skill = skillById.get(id)
+            return skill ? [{ id: skill.id, name: skill.name, description: skill.description, scope: skill.scope }] : []
+          })
+        }))
+      })
+      const run = { ...configured.run, goal: '预览团队目标', status: 'ready' as const }
+      const members = configured.slots.map((slot, index) => {
+        const role = configured.roles.find((candidate) => candidate.id === slot.roleId)!
+        const runtime = desktopSnapshot.sessions.find((session) => session.channelId === slot.channelId)
+        const binding = {
+          id: `preview-binding-${slot.channelId}`, workspaceId: configured.workspace.id, runId: run.id,
+          slotId: slot.id, channelId: slot.channelId!, agentSessionId: `preview:ch-${slot.channelId}:g1`,
+          generation: 'g1', installedAt: Date.now(), launchStatus: 'not_started' as const,
+          launchDetail: '', lastCheckInNote: '', composerBindingKey: `preview-${slot.channelId}`
         }
-      : structuredClone(teamControlSnapshot)
+        return {
+          slot, role, binding,
+          runtime: runtime ? {
+            channelId: runtime.channelId, status: runtime.status, online: runtime.online,
+            waiting: runtime.waiting, queueDepth: runtime.queueDepth, lastSeenAt: runtime.lastSeenAt,
+            healthEvidence: runtime.healthEvidence, workingFiles: runtime.workingFiles
+          } : undefined,
+          readiness: runtime?.online ? runtime.waiting ? 'ready' as const : 'active' as const : 'offline' as const
+        }
+      })
+      state.team = {
+        ...emptyTeamControlSnapshot(),
+        revision: 1,
+        activeWorkspaceId: configured.workspace.id,
+        workspaces: [configured.workspace],
+        runs: [run],
+        roles: configured.roles,
+        slots: configured.slots,
+        bindings: members.map((member) => member.binding),
+        updatedAt: Date.now(),
+        activeRun: run,
+        members,
+        runtimeChannels: members.map((member) => ({
+          channelId: member.binding.channelId,
+          displayName: `SG Team CH-${member.binding.channelId}`,
+          status: member.runtime?.status ?? 'offline',
+          online: member.runtime?.online ?? false,
+          waiting: member.runtime?.waiting ?? false,
+          queueDepth: member.runtime?.queueDepth ?? 0,
+          registered: true,
+          assignedSlotId: member.slot.id,
+          agentSessionId: member.binding.agentSessionId,
+          generation: member.binding.generation
+        })),
+        preflight: {
+          bridgeConnected: true, workspaceBound: true, goalDefined: true,
+          mcpInstalled: false, agentsWaiting: false, canLaunch: false,
+          blockers: ['Agent MCP 尚未接入全部本轮通道', '并非所有团队通道都已在线待命']
+        }
+      }
+    } else {
+      state.team = structuredClone(teamControlSnapshot)
+    }
     pushTeam()
     return structuredClone(state.team)
   },
@@ -471,10 +541,22 @@ const api: QingtianDesktopApi = {
       roleTemplateKey: member.role.templateKey,
       avatarId: member.slot.avatarId,
       skillIds: member.role.skills.map((skill) => skill.id),
+      solo: member.slot.solo === true,
       modelSelection: member.slot.modelSelection
     }))
   }),
-  updateTeamGoal: async () => structuredClone(state.team),
+  updateTeamGoal: async (goal) => {
+    state.team = {
+      ...state.team,
+      revision: state.team.revision + 1,
+      activeRun: state.team.activeRun ? { ...state.team.activeRun, goal, updatedAt: Date.now() } : undefined,
+      runs: state.team.runs.map((run) => run.id === state.team.activeRun?.id
+        ? { ...run, goal, updatedAt: Date.now() }
+        : run)
+    }
+    pushTeam()
+    return structuredClone(state.team)
+  },
   launchTeam: async () => structuredClone(state.team),
   setSlotModelSelection: async () => structuredClone(state.team),
   getTeamCollaborationSnapshot: async () => structuredClone(collaborationSnapshot),
@@ -497,7 +579,7 @@ const api: QingtianDesktopApi = {
           blocker: !channel.online ? '备用 Agent 已离线' : !channel.waiting ? '备用 Agent 尚未待命' : channel.queueDepth ? `队列中还有 ${channel.queueDepth} 条消息` : undefined,
           impact: '备用 Agent 将直接接管，不会产生新的职责空缺'
         })),
-        ...state.team.members.filter((member) => member.slot.id !== source.slot.id && member.binding && member.runtime?.online).map((member) => ({
+        ...state.team.members.filter((member) => member.slot.solo !== true && member.slot.id !== source.slot.id && member.binding && member.runtime?.online).map((member) => ({
         agentSessionId: member.binding!.agentSessionId,
         kind: 'member' as const,
         mode: source.role.templateKey === 'lead' ? 'lead_authority' as const : 'role_rebind' as const,

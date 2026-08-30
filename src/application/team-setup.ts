@@ -90,10 +90,14 @@ export function resolveTeamSetupMembers(
       throw new Error(`通道不可用或重复：CH-${channelId}`)
     }
     selectedChannels.add(channelId)
+    const solo = raw.solo === true
+    const roleTemplateKey = requiredText(raw.roleTemplateKey, 'roleTemplateKey', 100)
+    if (solo && roleTemplateKey !== 'solo') throw new Error('独立席位必须使用独立执行角色')
+    if (!solo && roleTemplateKey === 'solo') throw new Error('团队席位不能使用独立执行角色')
     if (!Array.isArray(raw.skillIds) || raw.skillIds.some((id) => typeof id !== 'string')) {
       throw new Error(`CH-${channelId} 技能配置无效`)
     }
-    const skills = [...new Set(raw.skillIds)].map((id) => {
+    const skills = (solo ? [] : [...new Set(raw.skillIds)]).map((id) => {
       const skill = installedSkills.get(id)
       if (!skill) throw new Error(`技能未安装或已失效：${id}`)
       return {
@@ -105,10 +109,11 @@ export function resolveTeamSetupMembers(
     })
     return {
       channelId,
-      roleTemplateKey: requiredText(raw.roleTemplateKey, 'roleTemplateKey', 100),
+      roleTemplateKey,
       avatarId: requiredText(raw.avatarId, 'avatarId', 100),
       skills,
-      modelSelection: resolveModelSelection(cursorModels, raw.modelSelection)
+      modelSelection: resolveModelSelection(cursorModels, raw.modelSelection),
+      solo
     }
   })
 }

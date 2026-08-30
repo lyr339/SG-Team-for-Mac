@@ -23,8 +23,9 @@ export function teamDashboardPhase(status: TeamRunStatus): TeamDashboardPhase {
  * 不能直接 complete run，但大厅也不能在 0 在线时继续显示“协作执行中”。
  */
 export function teamRuntimePresence(team: TeamControlSnapshot): TeamRuntimePresence {
-  if (team.members.some((member) => member.runtime?.online)) return 'online'
-  if (team.members.some((member) => hasInFlightExecution(member.runtime))) return 'in_flight_unverified'
+  const teamMembers = team.members.filter((member) => member.slot.solo !== true)
+  if (teamMembers.some((member) => member.runtime?.online)) return 'online'
+  if (teamMembers.some((member) => hasInFlightExecution(member.runtime))) return 'in_flight_unverified'
   return 'offline'
 }
 
@@ -32,8 +33,9 @@ export function unresolvedDashboardGates(team: TeamControlSnapshot): TeamDashboa
   const status = team.activeRun?.status
   if (!status) return []
   const phase = teamDashboardPhase(status)
-  const waitingAgents = team.members.filter((member) => member.runtime?.online && member.runtime.waiting).length
-  const offlineAgents = team.members.filter((member) => !member.runtime?.online).length
+  const teamMembers = team.members.filter((member) => member.slot.solo !== true)
+  const waitingAgents = teamMembers.filter((member) => member.runtime?.online && member.runtime.waiting).length
+  const offlineAgents = teamMembers.filter((member) => !member.runtime?.online).length
 
   const candidates: TeamDashboardGate[] = phase === 'prelaunch' ? [
     { label: '通道未连接', detail: '点击右上角连接状态处理', passed: team.preflight.bridgeConnected },
@@ -41,15 +43,15 @@ export function unresolvedDashboardGates(team: TeamControlSnapshot): TeamDashboa
     { label: '目标未保存', detail: '补充团队目标后才能启动', passed: team.preflight.goalDefined },
     { label: 'Agent MCP 待安装', detail: '为当前工程写入团队工具', passed: team.preflight.mcpInstalled },
     {
-      label: `${Math.max(0, team.members.length - waitingAgents)} 个在岗 Agent 尚未进入消息监听`,
-      detail: `${waitingAgents}/${team.members.length} 已就绪`,
+      label: `${Math.max(0, teamMembers.length - waitingAgents)} 个在岗 Agent 尚未进入消息监听`,
+      detail: `${waitingAgents}/${teamMembers.length} 已就绪`,
       passed: team.preflight.agentsWaiting
     }
   ] : phase === 'active' ? [
     { label: '通道未连接', detail: '点击右上角连接状态处理', passed: team.preflight.bridgeConnected },
     {
       label: `${offlineAgents} 个在岗 Agent 离线`,
-      detail: `${team.members.length - offlineAgents}/${team.members.length} 在线`,
+      detail: `${teamMembers.length - offlineAgents}/${teamMembers.length} 在线`,
       passed: offlineAgents === 0
     }
   ] : []

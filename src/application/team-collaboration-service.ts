@@ -60,7 +60,7 @@ export class TeamCollaborationService {
     if (!runId) throw new Error('当前没有活动 TeamRun')
     assertCollaborationWritable(activeRun.status)
     const recipientSlotId = input.recipientSlotId.trim()
-    if (!team.members.some((member) => member.slot.id === recipientSlotId)) {
+    if (!team.members.some((member) => member.slot.id === recipientSlotId && member.slot.solo !== true)) {
       throw new Error('目标 AgentSlot 不属于当前 TeamRun')
     }
     const message = this.repository.createMessage({

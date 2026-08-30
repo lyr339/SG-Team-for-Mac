@@ -8,16 +8,17 @@ export interface ToggleSwitchProps {
   children?: React.ReactNode
   /** 无可见文本时的屏幕阅读器语义标签。 */
   label?: string
+  title?: string
 }
 
 /**
  * 账号管线的开关控件：原生 checkbox 视觉隐藏 + 自绘轨道/滑块
  * （保留原生 input 的键盘可达性与测试可断言性，不引外部组件库）。
  */
-export function ToggleSwitch({ checked, disabled, onChange, children, label }: ToggleSwitchProps): React.JSX.Element {
+export function ToggleSwitch({ checked, disabled, onChange, children, label, title }: ToggleSwitchProps): React.JSX.Element {
   const id = useId()
   return (
-    <label className={`toggle-switch${disabled ? ' is-disabled' : ''}`} htmlFor={id}>
+    <label className={`toggle-switch${disabled ? ' is-disabled' : ''}`} htmlFor={id} title={title}>
       <input
         id={id}
         type="checkbox"

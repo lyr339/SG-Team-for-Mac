@@ -67,7 +67,7 @@ export class CursorMembershipFetcher {
     }
 
     if (response.status === 401) {
-      return { state: 'auth_expired', detail: '登录已过期（服务端 401）' }
+      return { state: 'auth_expired', detail: '服务端已撤销当前会话（HTTP 401）' }
     }
     if (!response.ok) {
       return { state: 'error', detail: `服务端响应 HTTP ${response.status}` }

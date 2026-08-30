@@ -567,7 +567,12 @@ describe('AccountAutomationService', () => {
     cleanup = harness.cleanup
     const saved = harness.store.save({ enabled: true, delaySec: 99999 })
     expect(saved.delaySec).toBe(60)
-    expect(harness.store.load()).toEqual({ enabled: true, delaySec: 60, browserHost: 'fingerprint' })
+    expect(harness.store.load()).toEqual({
+      enabled: true,
+      delaySec: 60,
+      browserHost: 'fingerprint',
+      autoAcknowledgeModelDataPolicies: true
+    })
     const low = harness.store.save({ enabled: true, delaySec: 0 })
     expect(low.delaySec).toBe(0.5)
     // 半秒步进：保留 0.5 精度，非 0.5 倍数对齐到最近半秒
@@ -585,6 +590,14 @@ describe('AccountAutomationService', () => {
     expect(harness.store.save({ enabled: true, delaySec: 5, bitProfileId: 123 }).bitProfileId).toBeUndefined()
     // 切换窗口：覆盖旧值（用户按当次网络换「代理/直连」窗口）
     expect(harness.store.save({ enabled: true, delaySec: 5, bitProfileId: 'win-2' }).bitProfileId).toBe('win-2')
+  })
+
+  it('设置持久化：模型政策自动确认默认开启，可明确关闭并回读', () => {
+    const harness = createHarness()
+    cleanup = harness.cleanup
+    expect(harness.store.save({ enabled: false, delaySec: 5 }).autoAcknowledgeModelDataPolicies).toBe(true)
+    harness.store.save({ enabled: false, delaySec: 5, autoAcknowledgeModelDataPolicies: false })
+    expect(harness.store.load().autoAcknowledgeModelDataPolicies).toBe(false)
   })
 
   it('设置持久化：指纹浏览器提供方字段已废弃（统一 Roxy，读取即丢弃）', () => {

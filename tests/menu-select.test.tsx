@@ -38,11 +38,11 @@ describe('MenuSelect（账号管线自绘下拉）', () => {
       onChange: () => {}
     })
     expect(buttonOf().textContent).toContain('选项 A')
-    expect(container!.querySelector('.menu-select__menu')).toBeNull()
+    expect(document.body.querySelector('.menu-select__menu')).toBeNull()
     expect(buttonOf().getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('点击展开选项列表，选中项带 is-selected 与 ✓；点击选项回调并关闭', async () => {
+  it('点击展开选项列表，选中项带 is-selected 与矢量勾选；点击选项回调并关闭', async () => {
     const onChange = vi.fn()
     await renderSelect({
       value: 'a',
@@ -51,14 +51,17 @@ describe('MenuSelect（账号管线自绘下拉）', () => {
     })
     await act(async () => { buttonOf().click() })
     expect(buttonOf().getAttribute('aria-expanded')).toBe('true')
-    const options = [...container!.querySelectorAll<HTMLButtonElement>('.menu-select__menu button')]
+    const menu = document.body.querySelector<HTMLElement>('.menu-select__menu')!
+    expect(menu.parentElement).toBe(document.body)
+    expect(menu.style.position).toBe('fixed')
+    const options = [...document.body.querySelectorAll<HTMLButtonElement>('.menu-select__menu button')]
     expect(options.map((option) => option.querySelector('span')?.textContent)).toEqual(['选项 A', '选项 B'])
     expect(options[0]!.className).toContain('is-selected')
-    expect(options[0]!.textContent).toContain('✓')
+    expect(options[0]!.querySelector('.menu-select__check svg')).not.toBeNull()
 
     await act(async () => { options[1]!.click() })
     expect(onChange).toHaveBeenCalledWith('b')
-    expect(container!.querySelector('.menu-select__menu')).toBeNull()
+    expect(document.body.querySelector('.menu-select__menu')).toBeNull()
   })
 
   it('点击组件外部关闭列表；Escape 同样关闭', async () => {
@@ -68,17 +71,17 @@ describe('MenuSelect（账号管线自绘下拉）', () => {
       onChange: () => {}
     })
     await act(async () => { buttonOf().click() })
-    expect(container!.querySelector('.menu-select__menu')).not.toBeNull()
+    expect(document.body.querySelector('.menu-select__menu')).not.toBeNull()
 
     const outside = document.createElement('button')
     document.body.appendChild(outside)
     await act(async () => { outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })) })
-    expect(container!.querySelector('.menu-select__menu')).toBeNull()
+    expect(document.body.querySelector('.menu-select__menu')).toBeNull()
     outside.remove()
 
     await act(async () => { buttonOf().click() })
     await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
-    expect(container!.querySelector('.menu-select__menu')).toBeNull()
+    expect(document.body.querySelector('.menu-select__menu')).toBeNull()
   })
 
   it('无值时显示占位符；disabled 时按钮禁用且不可展开', async () => {
@@ -98,7 +101,7 @@ describe('MenuSelect（账号管线自绘下拉）', () => {
     })
     expect((buttonOf() as HTMLButtonElement).disabled).toBe(true)
     await act(async () => { buttonOf().click() })
-    expect(container!.querySelector('.menu-select__menu')).toBeNull()
+    expect(document.body.querySelector('.menu-select__menu')).toBeNull()
   })
 
   it('模型选项携带厂商色调与识别色块', async () => {
@@ -113,6 +116,6 @@ describe('MenuSelect（账号管线自绘下拉）', () => {
     expect(container!.querySelector('.menu-select.provider-openai')).not.toBeNull()
     expect(container!.querySelector('.menu-select__value .menu-select__swatch')).not.toBeNull()
     await act(async () => { buttonOf().click() })
-    expect(container!.querySelector('.menu-select__menu .provider-anthropic .menu-select__swatch')).not.toBeNull()
+    expect(document.body.querySelector('.menu-select__menu .provider-anthropic .menu-select__swatch')).not.toBeNull()
   })
 })

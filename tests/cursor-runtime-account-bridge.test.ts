@@ -83,4 +83,34 @@ describe('CursorRuntimeAccountBridge', () => {
     await expect(bridge.applyAfterLaunch(payload, async () => 'plain' as const))
       .rejects.toThrowError(/没有确认运行时登录态/)
   })
+
+  it('skips an occupied legacy port, prepares the companion for the selected port and completes', async () => {
+    const occupiedPort = await freePort()
+    const blocker = createServer()
+    await new Promise<void>((resolve) => blocker.listen(occupiedPort, '127.0.0.1', resolve))
+    const prepared: Array<{ port: number; key: string }> = []
+    const key = 'range-key'
+    const bridge = new CursorRuntimeAccountBridge({
+      port: occupiedPort,
+      portMax: occupiedPort + 1,
+      prepareCompanion: (port, selectedKey) => { prepared.push({ port, key: selectedKey }) },
+      key,
+      timeoutMs: 2_000
+    })
+    const result = await bridge.applyAfterLaunch(payload, async () => {
+      const selectedPort = occupiedPort + 1
+      const received = await fetch(`http://127.0.0.1:${selectedPort}/v1/switch`, {
+        headers: { 'X-Zhimo-Switch-Key': key }
+      }).then((response) => response.json()) as { nonce: string }
+      await fetch(`http://127.0.0.1:${selectedPort}/v1/switch-done`, {
+        method: 'POST',
+        headers: { 'X-Zhimo-Switch-Key': key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nonce: received.nonce, success: true, reason: '' })
+      })
+      return 'cdp' as const
+    })
+    expect(result.ack.success).toBe(true)
+    expect(prepared).toEqual([{ port: occupiedPort + 1, key }])
+    await new Promise<void>((resolve) => blocker.close(() => resolve()))
+  })
 })

@@ -15,6 +15,7 @@ export function selectTaskReviewMember(
 ): TeamMemberView | undefined {
   const implementation = pool.attempts[review.attemptId]
   return team.members
+    .filter((member) => member.slot.solo !== true)
     .filter((member) => Boolean(member.binding))
     .filter((member) => member.role.capabilities.includes('qa'))
     .filter((member) => member.binding?.agentSessionId !== implementation?.agentSessionId)
@@ -26,6 +27,8 @@ export function selectMemoryReviewMember(
   team: TeamControlSnapshot
 ): TeamMemberView | undefined {
   return team.members
+    // solo 模板能力为空且不是 lead/reviewer，本过滤属显式防御，防未来模板扩展误纳入。
+    .filter((member) => member.slot.solo !== true)
     .filter((member) => Boolean(member.binding))
     .filter((member) => item.scope === 'project'
       ? member.role.templateKey === 'reviewer' || member.role.capabilities.includes('qa')

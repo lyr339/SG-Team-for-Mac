@@ -125,21 +125,29 @@ function desktopSnapshot(channelIds: string[]): DesktopSnapshot {
   }
 }
 
-function fixture(withStandby: boolean) {
+function fixture(withStandby: boolean, withSolo = false) {
   const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-failover-')), 'team.sqlite3')
   const controlRepository = new SqliteTeamControlRepository(path)
   const taskRepository = new SqliteTaskPoolRepository(path)
   const collaborationRepository = new SqliteTeamCollaborationRepository(path)
   const continuityRepository = new SqliteTeamContinuityRepository(path)
   const memoryRepository = new SqliteTeamMemoryRepository(path)
-  const bridge = new MutableBridge(desktopSnapshot(withStandby ? ['1', '2', '3'] : ['1', '2']))
+  const standbyChannelId = withSolo ? '4' : '3'
+  const memberChannelIds = withSolo ? ['1', '2', '3'] : ['1', '2']
+  const bridge = new MutableBridge(desktopSnapshot(withStandby ? [...memberChannelIds, standbyChannelId] : memberChannelIds))
   const control = new TeamControlService(controlRepository, bridge)
-  const selected = control.ensureWorkspace({
-    workspaceId: 'alpha',
-    workspaceName: 'alpha',
-    workspacePath: '/workspace/alpha',
-    channelIds: ['1', '2']
-  })
+  const selected = withSolo
+    ? control.configureWorkspace({
+        workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
+        members: [
+          { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+          { channelId: '2', roleTemplateKey: 'builder', avatarId: 'architect', skills: [] },
+          { channelId: '3', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }
+        ]
+      })
+    : control.ensureWorkspace({
+        workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha', channelIds: ['1', '2']
+      })
   const runId = selected.activeRun!.id
   control.updateGoal('完成本轮接口重构')
   const memberByChannel = new Map(selected.members.map((member) => [member.slot.channelId!, member]))
@@ -147,7 +155,7 @@ function fixture(withStandby: boolean) {
     workspaceId: 'alpha',
     runId,
     generation: 'generation123',
-    agents: (withStandby ? ['1', '2', '3'] : ['1', '2']).map((channelId) => {
+    agents: (withStandby ? [...memberChannelIds, standbyChannelId] : memberChannelIds).map((channelId) => {
       const member = memberByChannel.get(channelId)
       return {
         agentSessionId: `alpha:ch-${channelId}:generation123`,
@@ -160,7 +168,7 @@ function fixture(withStandby: boolean) {
     })
   })
   controlRepository.beginLaunch(runId, 100, 'binding-key-123')
-  for (const member of control.getSnapshot().members) {
+  for (const member of control.getSnapshot().members.filter((candidate) => candidate.slot.solo !== true)) {
     controlRepository.recordAgentCheckIn({
       agentSessionId: member.binding!.agentSessionId,
       runId,
@@ -240,6 +248,59 @@ function fixture(withStandby: boolean) {
 }
 
 describe('TeamFailoverService', () => {
+  it('does not create failover records when a solo seat goes offline', () => {
+    const data = fixture(false, true)
+    try {
+      data.bridge.setChannelOnline('3', false)
+      data.failover.reconcile()
+      data.advance(60 * 60_000)
+      data.failover.reconcile()
+      expect(data.controlRepository.listFailovers(data.runId)).toEqual([])
+      expect(data.control.getSnapshot().activeRun?.status).toBe('running')
+    } finally {
+      data.close()
+    }
+  })
+
+  it('does not let an online solo seat keep a fully offline team run alive', () => {
+    const data = fixture(false, true)
+    try {
+      data.bridge.setChannelOnline('1', false)
+      data.bridge.setChannelOnline('2', false)
+      // CH-3 solo remains online; team lifecycle must still complete.
+      data.failover.reconcile()
+      expect(data.control.getSnapshot().activeRun?.status).toBe('completed')
+    } finally {
+      data.close()
+    }
+  })
+
+  it('never promotes an online solo seat when the lead fails', () => {
+    const data = fixture(false, true)
+    try {
+      data.bridge.setChannelOnline('1', false)
+      data.failover.reconcile()
+      expect(data.control.getSnapshot().activeRun?.actingLeadSlotId).toBe(data.builder.slot.id)
+      expect(data.control.getSnapshot().members.find((member) => member.slot.solo)?.slot.id)
+        .not.toBe(data.control.getSnapshot().activeRun?.actingLeadSlotId)
+    } finally {
+      data.close()
+    }
+  })
+
+  it('does not offer solo seats as manual handoff candidates', () => {
+    const data = fixture(false, true)
+    try {
+      data.bridge.setChannelOnline('2', false)
+      const options = data.failover.manualHandoffOptions(data.builder.slot.id)
+      const solo = data.control.getSnapshot().members.find((member) => member.slot.solo)!
+      expect(options.candidates.some((candidate) => candidate.slotId === solo.slot.id)).toBe(false)
+      expect(() => data.failover.manualHandoffOptions(solo.slot.id)).toThrowError(/独立席位不参与团队交接/)
+    } finally {
+      data.close()
+    }
+  })
+
   it('moves one stable role, its active lease and takeover capsule to an idle standby agent', () => {
     const data = fixture(true)
     try {

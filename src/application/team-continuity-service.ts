@@ -90,7 +90,7 @@ function acceptedMemoryViews(snapshot: TeamMemorySnapshot): TeamCheckpointCapsul
 }
 
 function memberViews(team: TeamControlSnapshot): TeamCheckpointCapsule['members'] {
-  return team.members.map((member) => ({
+  return team.members.filter((member) => member.slot.solo !== true).map((member) => ({
     slotId: member.slot.id,
     roleKey: member.role.key,
     roleName: member.role.name,
@@ -295,6 +295,7 @@ export class TeamContinuityService {
     if (!team.preflight.mcpInstalled || team.members.some((member) => !member.binding)) {
       throw new Error('请先为所有 AgentSlot 安装当前 MCP generation')
     }
+    const teamMembers = team.members.filter((member) => member.slot.solo !== true)
     this.capture('before_restore')
     const checkpoint = checkpointId
       ? this.repository.getCheckpoint(checkpointId)
@@ -308,12 +309,12 @@ export class TeamContinuityService {
       workspaceId,
       runId: run.id,
       checkpointId: checkpoint.id,
-      members: team.members.map((member) => ({
+      members: teamMembers.map((member) => ({
         slotId: member.slot.id,
         roleName: member.role.name
       }))
     })
-    for (const member of team.members) {
+    for (const member of teamMembers) {
       const message = this.collaborationRepository.createMessage({
         runId: run.id,
         sender: { type: 'operator' },

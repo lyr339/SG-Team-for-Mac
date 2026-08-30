@@ -24,6 +24,8 @@ class FakeCdpSocket {
   fireResult = 'armed'
   /** POLL_RESULT_JS 逐次返回；空时用最后一项。 */
   pollResultQueue: string[] = []
+  /** 模型政策脚本结果；缺省表示官网已确认。 */
+  policyResultQueue: unknown[] = []
 
   onMessage(handler: (data: string) => void): void {
     this.messageHandler = handler
@@ -82,7 +84,18 @@ class FakeCdpSocket {
       case 'Runtime.evaluate': {
         const expression = String(message.params.expression ?? '')
         if (expression.includes('location.hostname')) {
-          const value = this.readinessQueue.length > 1 ? this.readinessQueue.shift() : this.readinessQueue[0] ?? '{}'
+          const value = this.readinessQueue.length > 1 ? this.readinessQueue.shift() : this.readinessQueue[0] ?? READY
+          respond({ result: { value } })
+          return
+        }
+        if (expression.includes('__qtModelDataPolicy')) {
+          const value = this.policyResultQueue.length > 1
+            ? this.policyResultQueue.shift()
+            : this.policyResultQueue[0] ?? {
+              kind: 'already_acknowledged',
+              modelId: 'claude-fable-5',
+              consentVersion: 'fable-data-retention-v1'
+            }
           respond({ result: { value } })
           return
         }
@@ -117,6 +130,7 @@ class FakeCdpSocket {
 interface HarnessOptions {
   profileId?: string
   now?: () => number
+  autoPolicy?: boolean
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -139,6 +153,7 @@ function createHarness(options: HarnessOptions = {}) {
     resolveProfileId: () => currentProfileId,
     connectSocket: () => socket,
     now: options.now ?? (() => clock),
+    shouldAcknowledgeModelDataPolicies: () => options.autoPolicy !== false,
     sleep: async (ms) => {
       clock += ms
     }
@@ -169,7 +184,7 @@ describe('FingerprintAccountChannel', () => {
     harness.socket.tokenQueue = [OLD_TOKEN]
     await expect(harness.channel.readToken()).resolves.toBe('user_abc::old-jwt')
     expect(harness.openCalls).toEqual(['win-1'])
-    expect(harness.socket.methodCount('Network.getCookies')).toBe(1)
+    expect(harness.socket.methodCount('Network.getCookies')).toBe(2)
     // 会话建立链完整：建 target → attach → 启用 Page/Network
     expect(harness.socket.methodCount('Target.createTarget')).toBe(1)
     expect(harness.socket.methodCount('Target.attachToTarget')).toBe(1)
@@ -181,6 +196,45 @@ describe('FingerprintAccountChannel', () => {
     const harness = createHarness()
     harness.socket.tokenQueue = [undefined]
     await expect(harness.channel.readToken()).rejects.toThrow(/未登录 cursor\.com/)
+  })
+
+  it('模型政策：缺失时提交并复核，返回 changed=true；同账号再次调用走成功缓存', async () => {
+    const harness = createHarness()
+    harness.socket.tokenQueue = [OLD_TOKEN]
+    harness.socket.policyResultQueue = [{
+      kind: 'acknowledged',
+      modelId: 'claude-fable-5',
+      consentVersion: 'fable-data-retention-v1'
+    }]
+    const first = await harness.channel.acknowledgeRequiredModelDataPolicies()
+    const second = await harness.channel.acknowledgeRequiredModelDataPolicies()
+    expect(first.changed).toBe(true)
+    expect(second.changed).toBe(false)
+    expect(harness.socket.sent.filter((entry) => (
+      entry.method === 'Runtime.evaluate'
+      && String(entry.params.expression ?? '').includes('__qtModelDataPolicy')
+    ))).toHaveLength(1)
+  })
+
+  it('模型政策：官网提交失败时保留明确阶段与 HTTP 状态，不写成功缓存', async () => {
+    const harness = createHarness()
+    harness.socket.tokenQueue = [OLD_TOKEN]
+    harness.socket.policyResultQueue = [{
+      kind: 'failed', modelId: 'claude-fable-5', stage: 'write', status: 403, detail: 'blocked'
+    }]
+    await expect(harness.channel.acknowledgeRequiredModelDataPolicies()).rejects.toThrow(/提交失败.*HTTP 403/)
+  })
+
+  it('模型政策自动确认关闭时，readToken 只读 cookie，不导航也不调用政策接口', async () => {
+    const harness = createHarness({ autoPolicy: false })
+    harness.socket.tokenQueue = [OLD_TOKEN]
+    await expect(harness.channel.readToken()).resolves.toBe('user_abc::old-jwt')
+    expect(harness.socket.methodCount('Network.getCookies')).toBe(1)
+    expect(harness.socket.methodCount('Page.navigate')).toBe(0)
+    expect(harness.socket.sent.some((entry) => (
+      entry.method === 'Runtime.evaluate'
+      && String(entry.params.expression ?? '').includes('__qtModelDataPolicy')
+    ))).toBe(false)
   })
 
   it('未选择窗口 → 抛错引导选择', async () => {
@@ -457,7 +511,7 @@ describe('FingerprintAccountChannel', () => {
     await harness.channel.readToken()
     harness.socket.tokenQueue = [OLD_TOKEN, NEW_TOKEN]
     await expect(harness.channel.refresh('user_abc::old-jwt')).resolves.toBe('user_abc::new-jwt')
-    expect(harness.socket.methodCount('Page.navigate')).toBe(1)
+    expect(harness.socket.methodCount('Page.navigate')).toBe(2)
   })
 
   it('refresh：token 永不变化 → 超时抛错', async () => {
@@ -545,7 +599,9 @@ describe('FingerprintAccountChannel', () => {
     harness.socket.tokenQueue = [OLD_TOKEN]
     await harness.channel.readToken()
     await harness.channel.prepareRefresh()
-    const navigate = harness.socket.sent.find((entry) => entry.method === 'Page.navigate')
+    const navigate = harness.socket.sent.find((entry) => (
+      entry.method === 'Page.navigate' && String(entry.params.url ?? '').includes('?qtdash=')
+    ))
     expect(navigate?.params.url).toMatch(/^https:\/\/cursor\.com\/dashboard\?qtdash=\d+$/)
   })
 })

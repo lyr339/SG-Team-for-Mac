@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES } from '../src/domain/team-control'
 import { TeamSetupPage } from '../src/renderer/src/team/TeamSetupPage'
@@ -40,7 +41,8 @@ describe('TeamSetupPage · channel count and model controls', () => {
       <TeamSetupPage draft={draft} onCreate={async () => {}} onCancel={() => {}} />
     )
     expect(html).toContain('团队通道')
-    expect(html.match(/type="checkbox"/g)).toHaveLength(4)
+    // 1 个通道选择 + 3 个席位独立开关
+    expect(html.match(/type="checkbox"/g)).toHaveLength(7)
     expect(html).not.toContain('CH-4')
     expect(html).not.toContain('CH-5')
     expect(html).not.toContain('team-setup-seat__model')
@@ -50,5 +52,15 @@ describe('TeamSetupPage · channel count and model controls', () => {
     expect(html).toContain('200K · Standard')
     expect(html).toContain('Kimi K3 · Cursor 当前')
     expect(html).toContain('不改变 Cursor 全局模型')
+  })
+
+  it('reuses the shared ToggleSwitch geometry instead of redefining a local track or thumb', () => {
+    const css = readFileSync('src/renderer/src/team-setup.css', 'utf8')
+    expect(css).not.toContain('.team-setup-seat__identity .toggle-switch__track')
+    expect(css).not.toContain('.team-setup-seat__identity .toggle-switch__thumb')
+    expect(css).not.toContain('.team-setup-seat__identity .toggle-switch input:checked')
+    expect(css).toContain('font-size: 8px')
+    expect(css).toContain('line-height: 1')
+    expect(css).not.toMatch(/\.team-solo-badge[^}]*font:/)
   })
 })

@@ -349,7 +349,10 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     // 提供方恒 Roxy，窗口 id 按设置实时解析——
     // 通道内部按「client 实例 + profileId」缓存会话，两者任一变化都会重开
     resolveClient: resolveFingerprintClient,
-    resolveProfileId: () => accountAutomationSettingsStore.load().bitProfileId
+    resolveProfileId: () => accountAutomationSettingsStore.load().bitProfileId,
+    shouldAcknowledgeModelDataPolicies: () => (
+      accountAutomationSettingsStore.load().autoAcknowledgeModelDataPolicies !== false
+    )
   })
   const externalBrowserHost = new ExternalBrowserAccountHost()
   // 每次操作实时解析当前宿主（用户可在设置里切「系统浏览器/指纹浏览器」）。
@@ -525,7 +528,8 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
       },
       // 用户提前登录入口：打开选定窗口并导航 cursor.com，不关窗、会话留缓存
       //（登录后点导入直接热连接读 cookie；用户手动关窗由断链感知自动失效缓存）。
-      openFingerprintLogin: () => fingerprintAccountChannel.openLoginPage()
+      openFingerprintLogin: () => fingerprintAccountChannel.openLoginPage(),
+      acknowledgeModelDataPolicies: () => fingerprintAccountChannel.acknowledgeRequiredModelDataPolicies()
     }
   )
   disposeAozaiIpc = registerAozaiIpc(aozaiCardVault, aozaiService, cursorAccountVault, () => mainWindow)

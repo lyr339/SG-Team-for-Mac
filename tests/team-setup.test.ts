@@ -166,4 +166,23 @@ describe('resolveTeamSetupMembers', () => {
       }))
     })).toThrowError(/不能超过 16/)
   })
+
+  it('passes solo through, forces empty skills, and rejects role/solo mismatches', () => {
+    const resolved = resolveTeamSetupMembers(draft, {
+      draftId: draft.draftId,
+      members: [
+        { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [] },
+        { channelId: '2', roleTemplateKey: 'solo', avatarId: 'researcher', skillIds: ['project:tdd'], solo: true }
+      ]
+    })
+    expect(resolved[1]).toMatchObject({ channelId: '2', roleTemplateKey: 'solo', solo: true, skills: [] })
+    expect(() => resolveTeamSetupMembers(draft, {
+      draftId: draft.draftId,
+      members: [{ channelId: '1', roleTemplateKey: 'builder', avatarId: 'architect', skillIds: [], solo: true }]
+    })).toThrowError(/独立席位必须使用独立执行角色/)
+    expect(() => resolveTeamSetupMembers(draft, {
+      draftId: draft.draftId,
+      members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skillIds: [], solo: false }]
+    })).toThrowError(/团队席位不能使用独立执行角色/)
+  })
 })

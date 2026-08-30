@@ -89,8 +89,8 @@ describe('SessionWorkspace', () => {
       entries: []
     })
     expect(html).toContain('本轮尚无消息')
-    expect(html).not.toContain('正在处理')
     expect(html).not.toContain('live-process-idle')
+    expect(html).not.toContain('running-placeholder')
   })
 
   it('有 live 过程块时渲染实时过程气泡而非占位', () => {

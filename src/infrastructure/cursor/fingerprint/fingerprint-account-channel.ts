@@ -2,6 +2,13 @@ import WebSocket from 'ws'
 import type { FingerprintBrowser } from './fingerprint-browser'
 import type { AccountAutomationBrowserHost } from '../account-automation-browser-host'
 import { FIRE_DELETE_JS, type InBrowserDeleteResult } from '../cursor-in-browser-account-deleter'
+import {
+  REQUIRED_CURSOR_MODEL_DATA_POLICIES,
+  buildEnsureCursorModelDataPolicyScript,
+  cursorModelDataPolicyFailureMessage,
+  parseCursorModelDataPolicyConsentResult,
+  type CursorModelDataPolicyConsentSuccess
+} from '../cursor-model-data-policy-consent'
 
 /**
  * 指纹浏览器账号自动化通道：用「指纹浏览器 profile + CDP」替代外部浏览器（Edge/Chrome）三件套
@@ -49,6 +56,8 @@ export interface FingerprintAccountChannelOptions {
   /** 页面持续停留在认证/登录页超过该时长 → 判定未登录。 */
   authChainGraceMs?: number
   pollIntervalMs?: number
+  /** 自动导入/预检是否执行政策确认；手动确认入口不受此开关限制。 */
+  shouldAcknowledgeModelDataPolicies?: () => boolean
 }
 
 interface CdpMessage {
@@ -131,6 +140,8 @@ interface ChannelSession {
   cdp: CdpConnection
   targetId: string
   sessionId: string
+  /** 新建 target 初始为 about:blank；导航到官网后才允许执行同源政策接口。 */
+  cursorPageOpened: boolean
 }
 
 /**
@@ -176,9 +187,12 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
   private readonly resultTimeoutMs: number
   private readonly authChainGraceMs: number
   private readonly pollIntervalMs: number
+  private readonly shouldAcknowledgeModelDataPolicies: () => boolean
   private session: ChannelSession | undefined
   /** 轮换基准：readToken 时缓存的旧 token；deleteWhenReady 等它变化后才发起删除。 */
   private lastKnownToken: string | undefined
+  /** 成功确认缓存按账号+模型+版本隔离；dispose 清空，绝不跨 profile 生命周期继承。 */
+  private readonly acknowledgedPolicyKeys = new Set<string>()
   /** 开窗进行中（含身份）：复用仅限同 client + 同 profileId——否则并发切窗会拿到错误会话。 */
   private opening: { client: FingerprintBrowser; profileId: string; promise: Promise<ChannelSession> } | undefined
 
@@ -193,6 +207,7 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
     this.resultTimeoutMs = options.resultTimeoutMs ?? 10_000
     this.authChainGraceMs = options.authChainGraceMs ?? 6_000
     this.pollIntervalMs = options.pollIntervalMs ?? 300
+    this.shouldAcknowledgeModelDataPolicies = options.shouldAcknowledgeModelDataPolicies ?? (() => true)
   }
 
   private requireProfileId(): string {
@@ -228,7 +243,7 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
         if (!targetId || !sessionId) throw new Error('CDP 会话建立失败：未返回 targetId/sessionId')
         await cdp.send('Page.enable', {}, sessionId)
         await cdp.send('Network.enable', {}, sessionId)
-        const next: ChannelSession = { client, profileId, cdp, targetId, sessionId }
+        const next: ChannelSession = { client, profileId, cdp, targetId, sessionId, cursorPageOpened: false }
         // 断链感知：用户关窗/指纹浏览器退出时失效缓存，下次操作自动重开
         //（否则死会话被永久缓存，每次调用都挂到 CDP 超时且重试必败）。
         socket.onClose(() => {
@@ -250,8 +265,7 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
     }
   }
 
-  private async readTokenFromCdp(): Promise<string | undefined> {
-    const session = await this.ensureSession()
+  private async readTokenFromSession(session: ChannelSession): Promise<string | undefined> {
     const result = await session.cdp.send('Network.getCookies', { urls: [CURSOR_ORIGIN] }, session.sessionId)
     const cookies = (result.cookies as Array<{ name?: string; value?: string }>) ?? []
     const found = cookies.find((cookie) => cookie.name === TOKEN_COOKIE_NAME)
@@ -259,15 +273,28 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
     return found?.value ? decodeURIComponent(found.value) : undefined
   }
 
+  private async readTokenFromCdp(): Promise<string | undefined> {
+    return this.readTokenFromSession(await this.ensureSession())
+  }
+
   private async navigate(bustPrefix: string): Promise<void> {
     const session = await this.ensureSession()
+    await this.navigateSession(session, bustPrefix)
+  }
+
+  private async navigateSession(session: ChannelSession, bustPrefix: string): Promise<void> {
     // cache-bust：同 URL 的 Page.navigate 可能被 Chromium 去重为 no-op，认证链不会重放
     const url = `${REFRESH_URL}?${bustPrefix}=${this.now()}`
     await session.cdp.send('Page.navigate', { url }, session.sessionId)
+    session.cursorPageOpened = true
   }
 
   private async evalInPage(expression: string, awaitPromise = false): Promise<unknown> {
     const session = await this.ensureSession()
+    return this.evalInSession(session, expression, awaitPromise)
+  }
+
+  private async evalInSession(session: ChannelSession, expression: string, awaitPromise = false): Promise<unknown> {
     const result = await session.cdp.send(
       'Runtime.evaluate',
       { expression, awaitPromise, returnByValue: true },
@@ -287,6 +314,88 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
   async openLoginPage(): Promise<void> {
     const session = await this.ensureSession()
     await session.cdp.send('Page.navigate', { url: CURSOR_ORIGIN }, session.sessionId)
+    session.cursorPageOpened = true
+  }
+
+  /** 等待新 target 真正进入 cursor.com；仅检查同源与加载状态，不依赖 React 页面结构。 */
+  private async ensureCursorPageReady(session: ChannelSession): Promise<void> {
+    if (!session.cursorPageOpened) await this.navigateSession(session, 'qtpolicy')
+    const deadline = this.now() + this.pageReadyTimeoutMs
+    let authChainSince: number | undefined
+    while (this.now() < deadline) {
+      let state: { h?: string; p?: string; s?: string } | undefined
+      try {
+        const raw = await this.evalInSession(session, READINESS_JS)
+        state = typeof raw === 'string' ? JSON.parse(raw) as typeof state : undefined
+      } catch {
+        state = undefined
+      }
+      if (state) {
+        const host = state.h ?? ''
+        const path = state.p ?? ''
+        const onCursor = host === 'cursor.com' || host.endsWith('.cursor.com')
+        const onAuthChain = host.includes('authenticator.') || path.startsWith('/login')
+        if (onCursor && !onAuthChain && state.s !== 'loading') return
+        if (onAuthChain) {
+          authChainSince = authChainSince ?? this.now()
+          if (this.now() - authChainSince > this.authChainGraceMs) {
+            throw new Error('指纹浏览器窗口会话已退出登录（政策确认停留在认证/登录页）')
+          }
+        } else {
+          authChainSince = undefined
+        }
+      }
+      await this.sleep(this.pollIntervalMs)
+    }
+    throw new Error('模型数据政策确认超时（cursor.com 页面未就绪）')
+  }
+
+  /**
+   * 幂等确认官网要求的数据留存政策。按「账号 id + 政策版本」缓存成功状态；
+   * 同一账号的 token 换发不会重复提交，profile 内切换账号则重新查询。
+   */
+  private async ensureRequiredModelDataPolicies(
+    session: ChannelSession,
+    token: string
+  ): Promise<CursorModelDataPolicyConsentSuccess[]> {
+    const accountId = token.split('::', 1)[0]?.trim() || 'unknown'
+    await this.ensureCursorPageReady(session)
+    const results: CursorModelDataPolicyConsentSuccess[] = []
+    for (const policy of REQUIRED_CURSOR_MODEL_DATA_POLICIES) {
+      const cacheKey = `${accountId}:${policy.modelId}:${policy.consentVersion}`
+      if (this.acknowledgedPolicyKeys.has(cacheKey)) {
+        results.push({ kind: 'already_acknowledged', modelId: policy.modelId, consentVersion: policy.consentVersion })
+        continue
+      }
+      const raw = await this.evalInSession(session, buildEnsureCursorModelDataPolicyScript(policy), true)
+      const result = parseCursorModelDataPolicyConsentResult(raw, policy)
+      if (result.kind === 'failed') throw new Error(cursorModelDataPolicyFailureMessage(result))
+      this.acknowledgedPolicyKeys.add(cacheKey)
+      results.push(result)
+    }
+    return results
+  }
+
+  /** 手动配置入口与自动导入共用的单一业务出口。 */
+  async acknowledgeRequiredModelDataPolicies(): Promise<{
+    token: string
+    changed: boolean
+    policies: CursorModelDataPolicyConsentSuccess[]
+  }> {
+    // 一次操作固定锚定起始 session；并发切 profile 时，后续导航/查询/复读都不会串到另一窗口。
+    const session = await this.ensureSession()
+    const token = await this.readTokenFromSession(session)
+    if (!token) throw new Error('指纹浏览器窗口内未登录 cursor.com（请先在该窗口手动登录一次）')
+    const policies = await this.ensureRequiredModelDataPolicies(session, token)
+    // about:blank → dashboard 的导航可能换发 token；向上层只交付导航后的当前值。
+    const current = await this.readTokenFromSession(session)
+    if (!current) throw new Error('模型数据政策确认后登录态丢失（请重新登录 cursor.com）')
+    this.lastKnownToken = current
+    return {
+      token: current,
+      changed: policies.some((policy) => policy.kind === 'acknowledged'),
+      policies
+    }
   }
 
   /**
@@ -294,12 +403,13 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
    * 未登录/指纹浏览器不可达/未选窗口时抛错，由调用方在消耗卡密前中止。
    */
   async readToken(): Promise<string> {
-    const token = await this.readTokenFromCdp()
-    if (!token) {
-      throw new Error('指纹浏览器窗口内未登录 cursor.com（请先在该窗口手动登录一次）')
+    if (!this.shouldAcknowledgeModelDataPolicies()) {
+      const token = await this.readTokenFromCdp()
+      if (!token) throw new Error('指纹浏览器窗口内未登录 cursor.com（请先在该窗口手动登录一次）')
+      this.lastKnownToken = token
+      return token
     }
-    this.lastKnownToken = token
-    return token
+    return (await this.acknowledgeRequiredModelDataPolicies()).token
   }
 
   /**
@@ -436,6 +546,7 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
     const session = this.session
     this.session = undefined
     this.lastKnownToken = undefined
+    this.acknowledgedPolicyKeys.clear()
     if (!session) return
     try {
       await session.cdp.send('Target.closeTarget', { targetId: session.targetId })

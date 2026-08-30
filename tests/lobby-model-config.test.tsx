@@ -156,6 +156,29 @@ describe('lobby per-session model config', () => {
     expect(effortOf(launched.mock.calls[0]?.[0])).toBe('high')
   })
 
+  it('highlights and focuses the one-click action when goal guidance is active', async () => {
+    await act(async () => root.render(
+      <LobbySessionLaunchTile
+        pendingChannels={['1', '2']}
+        cursorModels={[opus]}
+        selections={{ '1': structuredClone(opus), '2': structuredClone(opus) }}
+        isPrelaunch
+        busy={false}
+        guided
+        cdpAutoHealEnabled={false}
+        onLaunch={() => {}}
+        onModelSave={() => {}}
+      />
+    ))
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)) })
+    expect(container.querySelector('.lobby-launch.is-guided')).not.toBeNull()
+    expect(container.textContent).toContain('下一步')
+    expect(container.textContent).toContain('确认模型后创建 2 个 Cursor 会话')
+    const launch = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('一键创建会话'))!
+    expect(document.activeElement).toBe(launch)
+  })
+
   it('keeps the editor open when persistence fails', async () => {
     await act(async () => root.render(
       <LobbySessionLaunchTile

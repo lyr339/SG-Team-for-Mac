@@ -70,7 +70,7 @@ describe('SqliteTeamControlRepository', () => {
       })
       repository.upsertWorkspaceTeam(team)
       const state = repository.loadTeamControl()
-      expect(state.schemaVersion).toBe(6)
+      expect(state.schemaVersion).toBe(7)
       expect(state.roles.find((role) => role.templateKey === 'frontend')).toMatchObject({
         skills: [{ id: 'project:frontend-design', name: 'frontend-design' }]
       })
@@ -81,6 +81,43 @@ describe('SqliteTeamControlRepository', () => {
         modelId: 'gpt-5.3-codex', displayName: 'Codex 5.3', maxMode: false,
         parameters: [{ id: 'reasoning', value: 'high' }]
       })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('persists solo slots and rejects both identity resolution entry points with solo_channel', () => {
+    const repository = repositoryFixture()
+    try {
+      const team = createConfiguredTeamBundle({
+        workspaceId: 'solo-persist', workspaceName: 'solo-persist', workspacePath: '/workspace/solo-persist', now: 100,
+        members: [
+          { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+          { channelId: '2', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }
+        ]
+      })
+      repository.upsertWorkspaceTeam(team)
+      repository.recordInstallation({
+        workspaceId: team.workspace.id, runId: team.run.id, generation: 'generation123',
+        agents: team.slots.map((slot) => ({
+          agentSessionId: `solo-persist:ch-${slot.channelId}:generation123`, workspaceId: team.workspace.id,
+          channelId: slot.channelId!, generation: 'generation123', runId: team.run.id,
+          capabilities: team.roles.find((role) => role.id === slot.roleId)!.capabilities
+        }))
+      })
+      expect(repository.loadTeamControl().slots.find((slot) => slot.channelId === '2')?.solo).toBe(true)
+      for (const resolve of [
+        () => repository.resolveChannelAgentIdentity('2'),
+        () => repository.resolveAgentRuntimeIdentity('solo-persist:ch-2:generation123', team.run.id)
+      ]) {
+        try {
+          resolve()
+          throw new Error('expected solo_channel')
+        } catch (error) {
+          expect(error).toMatchObject({ code: 'solo_channel' })
+          expect((error as Error).message).toContain('check_messages / record_reply')
+        }
+      }
     } finally {
       repository.close()
     }
@@ -600,7 +637,7 @@ describe('SqliteTeamControlRepository', () => {
       })).toBe(false)
 
       expect(repository.loadTeamControl()).toMatchObject({
-        schemaVersion: 6,
+        schemaVersion: 7,
         bindings: expect.arrayContaining([expect.objectContaining({
           slotId: first!.slotId,
           composerId: 'composer-alpha-123',
@@ -663,7 +700,7 @@ describe('SqliteTeamControlRepository', () => {
 
     const repository = new SqliteTeamControlRepository(path)
     try {
-      expect(repository.loadTeamControl().schemaVersion).toBe(6)
+      expect(repository.loadTeamControl().schemaVersion).toBe(7)
       const database = new DatabaseSync(path, { readOnly: true })
       try {
         const columns = database.prepare('PRAGMA table_info(runtime_bindings)').all() as { name: string }[]
@@ -676,7 +713,7 @@ describe('SqliteTeamControlRepository', () => {
         const roleColumns = database.prepare('PRAGMA table_info(team_roles)').all() as { name: string }[]
         const slotColumns = database.prepare('PRAGMA table_info(agent_slots)').all() as { name: string }[]
         expect(roleColumns.map((column) => column.name)).toEqual(expect.arrayContaining(['template_key', 'skills_json']))
-        expect(slotColumns.map((column) => column.name)).toContain('avatar_id')
+        expect(slotColumns.map((column) => column.name)).toEqual(expect.arrayContaining(['avatar_id', 'is_solo']))
       } finally {
         database.close()
       }
@@ -693,6 +730,8 @@ describe('SqliteTeamControlRepository', () => {
     const old = new DatabaseSync(path)
     old.exec('ALTER TABLE team_roles DROP COLUMN skills_json')
     old.exec('ALTER TABLE team_roles DROP COLUMN template_key')
+    old.exec('ALTER TABLE team_runs DROP COLUMN acting_lead_slot_id')
+    old.exec('ALTER TABLE agent_slots DROP COLUMN is_solo')
     old.exec('ALTER TABLE agent_slots DROP COLUMN avatar_id')
     old.exec('UPDATE team_control_meta SET schema_version = 3 WHERE id = 1')
     old.close()
@@ -700,13 +739,49 @@ describe('SqliteTeamControlRepository', () => {
     const migrated = new SqliteTeamControlRepository(path)
     try {
       const state = migrated.loadTeamControl()
-      expect(state.schemaVersion).toBe(6)
+      expect(state.schemaVersion).toBe(7)
       expect(state.roles.map((role) => [role.key, role.templateKey, role.skills])).toEqual([
         ['lead', 'lead', []],
         ['builder', 'builder', []],
         ['reviewer', 'reviewer', []]
       ])
       expect(state.slots.map((slot) => slot.avatarId)).toEqual(['lead', 'architect', 'reviewer'])
+      const database = new DatabaseSync(path, { readOnly: true })
+      try {
+        const runColumns = database.prepare('PRAGMA table_info(team_runs)').all() as { name: string }[]
+        const slotColumns = database.prepare('PRAGMA table_info(agent_slots)').all() as { name: string }[]
+        expect(runColumns.map((column) => column.name)).toContain('acting_lead_slot_id')
+        expect(slotColumns.map((column) => column.name)).toContain('is_solo')
+      } finally {
+        database.close()
+      }
+    } finally {
+      migrated.close()
+    }
+  })
+
+  it('migrates schema v6 by adding is_solo with a default of zero', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-control-v6-')), 'control.sqlite3')
+    const current = new SqliteTeamControlRepository(path)
+    current.upsertWorkspaceTeam(bundle('legacy-v6', ['1', '2']))
+    current.close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE agent_slots DROP COLUMN is_solo')
+    old.exec('UPDATE team_control_meta SET schema_version = 6 WHERE id = 1')
+    old.close()
+
+    const migrated = new SqliteTeamControlRepository(path)
+    try {
+      const state = migrated.loadTeamControl()
+      expect(state.schemaVersion).toBe(7)
+      expect(state.slots.every((slot) => slot.solo === false)).toBe(true)
+      const database = new DatabaseSync(path, { readOnly: true })
+      try {
+        const columns = database.prepare('PRAGMA table_info(agent_slots)').all() as { name: string }[]
+        expect(columns.map((column) => column.name)).toContain('is_solo')
+      } finally {
+        database.close()
+      }
     } finally {
       migrated.close()
     }
@@ -727,7 +802,7 @@ describe('SqliteTeamControlRepository', () => {
     const migrated = new SqliteTeamControlRepository(path)
     try {
       expect(migrated.loadTeamControl()).toMatchObject({
-        schemaVersion: 6,
+        schemaVersion: 7,
         activeWorkspaceId: team.workspace.id
       })
       const database = new DatabaseSync(path, { readOnly: true })

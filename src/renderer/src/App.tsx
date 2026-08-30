@@ -247,6 +247,7 @@ export function App(): React.JSX.Element {
 
   // ── Cursor 会员档位（在线权威源；发起闸门 + 手动刷新 + 账号/奥仔变更后重查） ──
   const [membershipStatus, setMembershipStatus] = useState<CursorMembershipStatus | undefined>()
+  const [accountMemberships, setAccountMemberships] = useState<Record<string, CursorMembershipStatus>>({})
   const refreshMembership = useCallback(async (): Promise<CursorMembershipStatus> => {
     // IPC 按契约不 throw（错误以 error 状态返回）；catch 为纵深防御。
     const status = await window.qingtianDesktop.refreshCursorMembership().catch((reason: unknown): CursorMembershipStatus => ({
@@ -257,9 +258,18 @@ export function App(): React.JSX.Element {
     return status
   }, [])
 
+  const refreshAccountMemberships = useCallback(async (accountIds?: string[]): Promise<Record<string, CursorMembershipStatus>> => {
+    const statuses = await window.qingtianDesktop.refreshCursorAccountMemberships(accountIds).catch(() => ({}))
+    setAccountMemberships((current) => accountIds ? { ...current, ...statuses } : statuses)
+    return statuses
+  }, [])
+
   useEffect(() => {
     void window.qingtianDesktop.listCursorAccounts()
-      .then(setCursorAccounts)
+      .then((accounts) => {
+        setCursorAccounts(accounts)
+        void refreshAccountMemberships()
+      })
       .catch((reason: unknown) => setCursorAccountError(reason instanceof Error ? reason.message : String(reason)))
     void window.qingtianDesktop.getAozaiCardStatus()
       .then(setAozaiStatus)
@@ -318,6 +328,7 @@ export function App(): React.JSX.Element {
         void refreshRuntimeMatch()
         // 奥仔处理会改变账号档位，档位行同样立即重查
         void refreshMembership()
+        void refreshAccountMemberships()
       }
     })
     return () => {
@@ -326,7 +337,7 @@ export function App(): React.JSX.Element {
       unsubscribeCdpAutoHeal()
       unsubscribeAccountAutomation()
     }
-  }, [refreshRuntimeMatch, refreshMembership])
+  }, [refreshRuntimeMatch, refreshMembership, refreshAccountMemberships])
 
   const selectSession = useCallback((channelId: string) => {
     setActiveModule('sessions')
@@ -923,6 +934,7 @@ export function App(): React.JSX.Element {
                 void refreshRuntimeMatch()
                 // 新活跃账号档位未知，档位行同步重查
                 void refreshMembership()
+                void refreshAccountMemberships()
               }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)); throw reason }
               finally { setCursorAccountBusy(false) }
@@ -945,6 +957,7 @@ export function App(): React.JSX.Element {
                 void refreshRuntimeMatch()
                 // 活跃位顺延后档位未知，同步重查
                 void refreshMembership()
+                void refreshAccountMemberships()
               }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
@@ -955,6 +968,7 @@ export function App(): React.JSX.Element {
                 setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromLocalCursor())
                 void refreshRuntimeMatch()
                 void refreshMembership()
+                void refreshAccountMemberships()
               }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
@@ -965,6 +979,7 @@ export function App(): React.JSX.Element {
                 setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromBrowser())
                 void refreshRuntimeMatch()
                 void refreshMembership()
+                void refreshAccountMemberships()
               }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
@@ -975,6 +990,7 @@ export function App(): React.JSX.Element {
                 setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromFingerprint())
                 void refreshRuntimeMatch()
                 void refreshMembership()
+                void refreshAccountMemberships()
               }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
@@ -1013,12 +1029,17 @@ export function App(): React.JSX.Element {
                 void refreshRuntimeMatch()
                 // 切换后运行账号变了，档位行同步重查
                 void refreshMembership()
+                void refreshAccountMemberships([accountId])
               } catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
             },
             runtimeMatch,
             membership: membershipStatus,
-            onRefreshMembership: () => { void refreshMembership() },
+            accountMemberships,
+            onRefreshMembership: async (accountId) => {
+              if (accountId) await refreshAccountMemberships([accountId])
+              else await refreshMembership()
+            },
             aozaiStatus,
             aozaiBusy,
             aozaiError,
@@ -1071,6 +1092,21 @@ export function App(): React.JSX.Element {
               } finally {
                 setCursorUpdateBusy(false)
               }
+            },
+            onSetModelDataPolicyAutoAcknowledge: async (enabled) => {
+              let message = '已关闭自动确认；官网已有确认保持不变'
+              if (enabled) {
+                const result = await window.qingtianDesktop.acknowledgeCursorModelDataPolicies()
+                // 政策导航若换发了 token，主进程已对同一活跃账号原地入库。
+                if (result.tokenUpdated) setCursorAccounts(await window.qingtianDesktop.listCursorAccounts())
+                message = `${result.message}；后续新账号将自动检查`
+              }
+              const saved = await window.qingtianDesktop.saveAccountAutomationSettings({
+                ...accountAutomationSettings,
+                autoAcknowledgeModelDataPolicies: enabled
+              })
+              setAccountAutomationSettings(saved)
+              return { message }
             },
             onSaveAutomationSettings: (settings) => {
               void window.qingtianDesktop.saveAccountAutomationSettings(settings)

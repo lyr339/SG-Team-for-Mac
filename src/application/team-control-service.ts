@@ -289,9 +289,10 @@ export class TeamControlService {
     if (!previousRun || !workspace) throw new Error('当前没有可续建的团队工作区')
     if (previousRun.status !== 'completed') {
       const snapshot = this.getSnapshot()
+      const teamMembers = snapshot.members.filter((member) => member.slot.solo !== true)
       const canExplicitlyEnd = ['launching', 'running', 'attention', 'paused'].includes(previousRun.status)
-        && snapshot.members.length > 0
-        && snapshot.members.every((member) => (
+        && teamMembers.length > 0
+        && teamMembers.every((member) => (
           !member.runtime?.online && !hasInFlightExecution(member.runtime)
         ))
       if (!canExplicitlyEnd) {
@@ -342,7 +343,8 @@ export class TeamControlService {
           roleTemplateKey: role.templateKey,
           avatarId: slot.avatarId,
           skills: structuredClone(role.skills),
-          modelSelection: slot.modelSelection ? structuredClone(slot.modelSelection) : undefined
+          modelSelection: slot.modelSelection ? structuredClone(slot.modelSelection) : undefined,
+          solo: slot.solo === true
         }
       })
     const bundle = createConfiguredTeamBundle({
@@ -393,6 +395,7 @@ export class TeamControlService {
     if (!effectiveLead?.binding) throw new Error('当前没有有效的主控绑定')
     const target = snapshot.members.find((member) => member.slot.id === input.targetSlotId.trim())
     if (!target) throw new Error('目标 AgentSlot 不属于当前 TeamRun')
+    if (target.slot.solo === true) throw new Error('独立席位不能成为团队主控')
     if (!target.binding) throw new Error('目标 Agent 尚未完成 MCP 绑定')
     if (!target.runtime?.online) throw new Error('目标 Agent 当前不在线')
     if (target.slot.id === effectiveLead.slot.id) throw new Error('目标已是当前主控')
@@ -510,7 +513,8 @@ export class TeamControlService {
     this.repository.beginLaunch(runId, at, bindingKey)
     this.emit()
     const launchSnapshot = this.getSnapshot()
-    this.activeLaunch = Promise.all(launchSnapshot.members.map(async (member) => {
+    const teamMembers = launchSnapshot.members.filter((member) => member.slot.solo !== true)
+    this.activeLaunch = Promise.all(teamMembers.map(async (member) => {
       if (!member.binding) throw new Error(`${member.slot.name} 尚未安装 MCP`)
       this.repository.recordLaunchDelivery({
         runId,
@@ -647,7 +651,8 @@ export class TeamControlService {
       Boolean(member.slot.channelId && registrationByChannel.has(member.slot.channelId))
     )
     const mcpInstalled = activeMembersInstalled && activeMemberChannelsRegistered
-    const agentsWaiting = members.length > 0 && members.every((member) =>
+    const teamMembers = members.filter((member) => member.slot.solo !== true)
+    const agentsWaiting = teamMembers.length > 0 && teamMembers.every((member) =>
       member.runtime?.online && member.runtime.waiting
     )
     const blockers: string[] = []
@@ -708,7 +713,9 @@ export class TeamControlService {
     if (!run || run.status !== 'launching' || !run.launchedAt) return state
     if (Date.now() - run.launchedAt < STALE_LAUNCH_TIMEOUT_MS) return state
     const pending = state.bindings.filter((binding) => (
-      binding.runId === run.id && binding.launchStatus !== 'acknowledged'
+      binding.runId === run.id
+      && binding.launchStatus !== 'acknowledged'
+      && state.slots.find((slot) => slot.id === binding.slotId)?.solo !== true
     ))
     for (const binding of pending) {
       this.repository.recordLaunchDelivery({
@@ -746,7 +753,9 @@ export class TeamControlService {
         channelId: slot.channelId,
         roleTemplateKey: role.templateKey,
         avatarId: slot.avatarId,
-        skills: structuredClone(role.skills)
+        skills: structuredClone(role.skills),
+        modelSelection: slot.modelSelection ? structuredClone(slot.modelSelection) : undefined,
+        solo: slot.solo === true
       } satisfies TeamMemberConfiguration]
     })
     if (members.length !== slots.length) return state

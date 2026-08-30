@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildSoloLaunchHint,
   buildTeamRoleBriefing,
   createConfiguredTeamBundle,
   createDefaultTeamBundle,
@@ -168,5 +169,40 @@ describe('team control domain', () => {
         { channelId: '2', roleTemplateKey: 'lead', avatarId: 'architect', skills: [] }
       ]
     })).toThrowError(/只能有 1 名主控/)
+  })
+
+  it('builds one TeamRun with team members plus numbered solo seats without counting solo as lead', () => {
+    const bundle = createConfiguredTeamBundle({
+      workspaceId: 'mixed', workspaceName: 'mixed', workspacePath: '/workspace/mixed', now: 100,
+      members: [
+        { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+        { channelId: '2', roleTemplateKey: 'builder', avatarId: 'architect', skills: [] },
+        { channelId: '3', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true },
+        // 防御：solo=true 时即使上游传入 lead/skills，也强制落为 solo 空能力模板。
+        { channelId: '4', roleTemplateKey: 'lead', avatarId: 'devops', skills: [{ id: 'x', name: 'x', description: 'x', scope: 'project' }], solo: true }
+      ]
+    })
+    expect(bundle.roles.map((role) => [role.templateKey, role.name, role.capabilities, role.skills])).toEqual([
+      ['lead', '主控协调', ['coordination', 'planning'], []],
+      ['builder', '架构实现', ['code', 'architecture'], []],
+      ['solo', '独立执行 1', [], []],
+      ['solo', '独立执行 2', [], []]
+    ])
+    expect(bundle.slots.map((slot) => [slot.name, slot.solo])).toEqual([
+      ['主控席', false], ['实现席', false], ['独立席 1', true], ['独立席 2', true]
+    ])
+  })
+
+  it('rejects an all-solo bundle and builds a solo launch loop without team_check_in', () => {
+    expect(() => createConfiguredTeamBundle({
+      workspaceId: 'solo-only', workspaceName: 'solo-only', workspacePath: '/workspace/solo-only',
+      members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }]
+    })).toThrowError(/至少需要 1 个非独立席位/)
+
+    const prompt = buildSoloLaunchHint({ channelId: '8' })
+    expect(prompt).toContain('独立模式')
+    expect(prompt).toContain("record_reply({channel_id:'8'")
+    expect(prompt).toContain("check_messages({channel_id:'8'})")
+    expect(prompt).not.toContain('team_check_in')
   })
 })

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { TaskAgentService } from '../src/application/task-agent-service'
 import { TeamCollaborationAgentService } from '../src/application/team-collaboration-agent-service'
-import { createDefaultTeamBundle } from '../src/domain/team-control'
+import { createConfiguredTeamBundle, createDefaultTeamBundle } from '../src/domain/team-control'
 import { SqliteTaskPoolRepository } from '../src/infrastructure/task-pool/sqlite-task-pool-repository'
 import { SqliteTeamCollaborationRepository } from '../src/infrastructure/team-collaboration/sqlite-team-collaboration-repository'
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
@@ -53,6 +53,52 @@ function fixture() {
 }
 
 describe('TeamCollaborationAgentService', () => {
+  it('hides solo seats from lead context and rejects plans targeting them', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-agent-solo-')), 'team.sqlite3')
+    const team = new SqliteTeamControlRepository(path)
+    const bundle = createConfiguredTeamBundle({
+      workspaceId: 'solo-plan', workspaceName: 'solo-plan', workspacePath: '/workspace/solo-plan', now: 100,
+      members: [
+        { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+        { channelId: '2', roleTemplateKey: 'builder', avatarId: 'architect', skills: [] },
+        { channelId: '3', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }
+      ]
+    })
+    team.upsertWorkspaceTeam(bundle)
+    team.recordInstallation({
+      workspaceId: bundle.workspace.id, runId: bundle.run.id, generation: 'generation123',
+      agents: bundle.slots.map((slot) => ({
+        agentSessionId: `solo-plan:ch-${slot.channelId}:generation123`, workspaceId: bundle.workspace.id,
+        channelId: slot.channelId!, generation: 'generation123', runId: bundle.run.id,
+        capabilities: bundle.roles.find((role) => role.id === slot.roleId)!.capabilities
+      }))
+    })
+    const tasks = new SqliteTaskPoolRepository(path)
+    const collaboration = new SqliteTeamCollaborationRepository(path)
+    try {
+      const leadSlot = bundle.slots[0]!
+      const identity = {
+        agentSessionId: 'solo-plan:ch-1:generation123', runId: bundle.run.id,
+        slotId: leadSlot.id, capabilities: ['coordination', 'planning']
+      }
+      const lead = new TeamCollaborationAgentService(
+        collaboration,
+        identity,
+        new TaskAgentService(tasks, identity, tasks, team)
+      )
+      const soloSlot = bundle.slots.find((slot) => slot.solo)!
+      const context = lead.getContext() as { members: Array<{ slotId: string }> }
+      expect(context.members.map((member) => member.slotId)).not.toContain(soloSlot.id)
+      expect(() => lead.planTasks([{
+        key: 'forbidden-solo-target', title: '错误派给独立席', targetSlotId: soloSlot.id
+      }])).toThrowError(/指定 AgentSlot 不属于当前 TeamRun/)
+    } finally {
+      collaboration.close()
+      tasks.close()
+      team.close()
+    }
+  })
+
   it('lets the lead direct a stable slot and requires an explicit correlated response', () => {
     const data = fixture()
     try {

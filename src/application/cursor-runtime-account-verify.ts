@@ -18,8 +18,12 @@ function emailFromLabel(label: string | undefined): string | undefined {
  * 复合形态（user_xxx::jwt，浏览器/网页导入链路保存的格式）。
  * 格式非法返回 undefined（调用方按「无有效身份」分支处理）。
  */
-function jwtSubjectOf(token: string): string | undefined {
-  const bare = token.trim().replace(/^user_[A-Za-z0-9]+::/, '')
+export function cursorBareJwt(token: string): string {
+  return token.trim().replace(/^user_[A-Za-z0-9]+::/, '')
+}
+
+export function cursorJwtSubject(token: string): string | undefined {
+  const bare = cursorBareJwt(token)
   const payload = bare.split('.')[1]
   if (!payload) return undefined
   try {
@@ -50,7 +54,7 @@ export function verifyCursorRuntimeAccountMatch(deps: CursorRuntimeAccountVerify
   } catch (reason) {
     return { status: 'cursor_unavailable', detail: boundedDetail(reason) }
   }
-  const runtimeSub = runtime.sub?.trim() || jwtSubjectOf(runtime.token)
+  const runtimeSub = runtime.sub?.trim() || cursorJwtSubject(runtime.token)
   if (!runtimeSub) {
     return { status: 'cursor_unavailable', detail: '运行时 access token 无法解析出账号标识' }
   }
@@ -58,7 +62,7 @@ export function verifyCursorRuntimeAccountMatch(deps: CursorRuntimeAccountVerify
 
   const active = deps.readActiveAccount()
   if (!active) return { status: 'vault_empty' }
-  const activeSub = jwtSubjectOf(active.token)
+  const activeSub = cursorJwtSubject(active.token)
   if (!activeSub) {
     // 活跃 token 非 JWT（导入脏数据）：保守判不一致并提示重新导入，不给假绿灯。
     return { status: 'mismatch', cursorLabel, activeLabel: active.label?.trim() || '未知' }

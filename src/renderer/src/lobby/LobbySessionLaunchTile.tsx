@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentLaunchPlan } from '../../../domain/agent-launch'
 import type { CdpAutoHealEvent } from '../../../domain/cursor-cdp'
 import type { CursorModelOption, CursorModelSelection } from '../../../domain/cursor-model'
@@ -16,6 +16,7 @@ interface LobbySessionLaunchTileProps {
   isPrelaunch: boolean
   plan?: AgentLaunchPlan
   busy: boolean
+  guided?: boolean
   cdpAutoHealEnabled: boolean
   cdpAutoHealEvent?: CdpAutoHealEvent
   onLaunch: () => void
@@ -32,6 +33,7 @@ export function LobbySessionLaunchTile({
   isPrelaunch,
   plan,
   busy,
+  guided = false,
   cdpAutoHealEnabled,
   cdpAutoHealEvent,
   onLaunch,
@@ -45,6 +47,8 @@ export function LobbySessionLaunchTile({
 
   const [countdownLeft, setCountdownLeft] = useState(0)
   const [editingChannel, setEditingChannel] = useState<string>()
+  const sectionRef = useRef<HTMLElement>(null)
+  const launchButtonRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (cdpAutoHealEvent?.phase !== 'countdown') {
       setCountdownLeft(0)
@@ -56,8 +60,23 @@ export function LobbySessionLaunchTile({
     return () => clearInterval(timer)
   }, [cdpAutoHealEvent])
 
+  useEffect(() => {
+    if (!guided) return
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+      launchButtonRef.current?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [guided])
+
   return (
-    <section className="lobby-tile lobby-launch">
+    <section className={`lobby-tile lobby-launch${guided ? ' is-guided' : ''}`} ref={sectionRef} aria-label="Agent 会话创建">
+      {guided ? (
+        <div className="lobby-launch__guide" role="status" aria-live="polite">
+          <span><b>下一步</b><strong>确认模型后创建 {pendingChannels.length} 个 Cursor 会话</strong></span>
+          <i aria-hidden="true">↓</i>
+        </div>
+      ) : null}
       <header className="lobby-tile__head">
         <strong>Agent 会话</strong>
         <span>{pendingChannels.length ? `${pendingChannels.length} 个通道未待命` : '全部待命'}</span>
@@ -132,6 +151,7 @@ export function LobbySessionLaunchTile({
       </div>
       <div className="lobby-launch__footer">
         <button
+          ref={launchButtonRef}
           className="lobby-launch__button"
           disabled={busy || launching || pendingChannels.length === 0}
           onClick={onLaunch}

@@ -79,7 +79,7 @@ export class TeamOrchestrator {
         if (age < STALE_TASK_REMINDER_MS) continue
         const windowIndex = Math.floor(age / STALE_TASK_REMINDER_MS)
         const assignee = team.members.find((member) => (
-          member.binding?.agentSessionId === task.assigneeSessionId
+          member.slot.solo !== true && member.binding?.agentSessionId === task.assigneeSessionId
         ))
         if (assignee?.binding) {
           this.collaboration.createMessage({

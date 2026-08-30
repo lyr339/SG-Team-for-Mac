@@ -26,8 +26,14 @@ export function WorkspaceIcon(props: IconProps): React.JSX.Element {
   return <Icon {...props}><path d="M3.5 6.5h6l2 2H20.5v9.8a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7V6.5Z" {...stroke} /><path d="M3.5 9h17" {...stroke} /></Icon>
 }
 
-export function LinkIcon(props: IconProps): React.JSX.Element {
-  return <Icon {...props}><path d="m9.5 14.5 5-5M7.4 16.6l-1.2 1.2a3.5 3.5 0 0 1-5-5l3.2-3.2a3.5 3.5 0 0 1 5 0M16.6 7.4l1.2-1.2a3.5 3.5 0 0 1 5 5l-3.2 3.2a3.5 3.5 0 0 1-5 0" {...stroke} /></Icon>
+export function SessionBindingIcon({ bound, ...props }: IconProps & { bound: boolean }): React.JSX.Element {
+  return <Icon {...props}>
+    <rect x="3.5" y="7.5" width="5" height="9" rx="2" {...stroke} />
+    <rect x="15.5" y="7.5" width="5" height="9" rx="2" {...stroke} />
+    {bound
+      ? <><path d="M8.5 12h7" {...stroke} /><path d="m10.2 12 1.3 1.3 2.4-2.7" {...stroke} /></>
+      : <><path d="M8.5 12h2M13.5 12h2" {...stroke} /><path d="m11.2 10.3 1.6 3.4" {...stroke} /></>}
+  </Icon>
 }
 
 export function PlayIcon(props: IconProps): React.JSX.Element {
@@ -48,6 +54,15 @@ export function SunIcon(props: IconProps): React.JSX.Element {
 
 export function ExportIcon(props: IconProps): React.JSX.Element {
   return <Icon {...props}><path d="M12 4v10.5M7.5 10 12 14.5 16.5 10M5 18.5h14" {...stroke} /></Icon>
+}
+
+export function RefreshIcon(props: IconProps): React.JSX.Element {
+  return <Icon {...props}>
+    <path d="M18.2 8.2A7 7 0 0 0 6.4 6.7L4.5 8.6" {...stroke} />
+    <path d="M4.5 5.1v3.5H8" {...stroke} />
+    <path d="M5.8 15.8a7 7 0 0 0 11.8 1.5l1.9-1.9" {...stroke} />
+    <path d="M19.5 18.9v-3.5H16" {...stroke} />
+  </Icon>
 }
 
 export function EraseIcon(props: IconProps): React.JSX.Element {

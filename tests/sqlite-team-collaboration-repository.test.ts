@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createDefaultTeamBundle } from '../src/domain/team-control'
+import { createConfiguredTeamBundle, createDefaultTeamBundle } from '../src/domain/team-control'
 import { teamMessageReceiptStage } from '../src/domain/team-collaboration'
 import { SqliteTeamCollaborationRepository } from '../src/infrastructure/team-collaboration/sqlite-team-collaboration-repository'
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
@@ -50,6 +50,30 @@ function fixture(workspaceId = 'alpha') {
 }
 
 describe('SqliteTeamCollaborationRepository', () => {
+  it('excludes solo seats from the collaboration member directory at the SQL boundary', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-collaboration-solo-')), 'team.sqlite3')
+    const team = new SqliteTeamControlRepository(path)
+    const bundle = createConfiguredTeamBundle({
+      workspaceId: 'solo-directory', workspaceName: 'solo-directory', workspacePath: '/workspace/solo-directory', now: 100,
+      members: [
+        { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+        { channelId: '2', roleTemplateKey: 'builder', avatarId: 'architect', skills: [] },
+        { channelId: '3', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }
+      ]
+    })
+    team.upsertWorkspaceTeam(bundle)
+    const repository = new SqliteTeamCollaborationRepository(path)
+    try {
+      expect(repository.listRunMembers(bundle.run.id).map((member) => member.slotId)).toEqual([
+        bundle.slots[0]!.id,
+        bundle.slots[1]!.id
+      ])
+    } finally {
+      repository.close()
+      team.close()
+    }
+  })
+
   it('persists one idempotent directive and advances explicit receipts monotonically', () => {
     const data = fixture()
     try {

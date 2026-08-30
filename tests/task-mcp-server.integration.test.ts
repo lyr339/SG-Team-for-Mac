@@ -8,6 +8,7 @@ import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-me
 import { createUnifiedChannelServer } from '../src/mcp/unified-channel-server'
 import type { TeamCollaborationAgentService } from '../src/application/team-collaboration-agent-service'
 import type { TeamMemoryAgentService } from '../src/application/team-memory-agent-service'
+import { TaskPoolError } from '../src/domain/task-pool'
 
 // S4 单服务器适配：固定运行时 + channel_id 由调用注入。
 function createTaskMcpServer(
@@ -27,6 +28,44 @@ function createTaskMcpServer(
 const allowAllAgents = { assertAgentAuthorized: () => undefined }
 
 describe('SG Team task MCP', () => {
+
+  it('returns solo_channel for every team tool while communication tools remain usable', async () => {
+    const repository = new InMemoryTaskPoolRepository()
+    const service = new TaskAgentService(repository, {
+      agentSessionId: 'solo:ch-8', runId: 'run-1', capabilities: []
+    }, allowAllAgents)
+    const channelRepository = new SqliteChannelMessageRepository(':memory:')
+    const channelService = new ChannelMessageService(channelRepository)
+    const server = createUnifiedChannelServer({
+      runtimeFor: () => ({ service }),
+      channelServiceFor: () => channelService,
+      refreshIdentity: () => { throw new TaskPoolError('solo_channel', '独立席位不参与团队协作') },
+      keepaliveTimeoutMs: 10
+    })
+    const client = new Client({ name: 'solo-boundary-test', version: '1.0.0' })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    await client.connect(clientTransport)
+    try {
+      const denied = await client.callTool({ name: 'team_check_in', arguments: { channel_id: '8' } })
+      expect(denied.isError).toBe(true)
+      expect(denied.structuredContent).toMatchObject({ ok: false, code: 'solo_channel' })
+
+      channelRepository.enqueueOutbound('8', '独立任务：审查这个模块', 1)
+      const message = await client.callTool({ name: 'check_messages', arguments: { channel_id: '8' } })
+      expect(message.isError).not.toBe(true)
+      expect(JSON.stringify(message.content)).toContain('独立任务：审查这个模块')
+      const reply = await client.callTool({
+        name: 'record_reply', arguments: { channel_id: '8', content: '独立审查已完成' }
+      })
+      expect(reply.isError).not.toBe(true)
+      expect(channelRepository.listUnconsumedReplies().map((item) => item.content)).toEqual(['独立审查已完成'])
+    } finally {
+      await client.close()
+      await server.close()
+      channelRepository.close()
+    }
+  })
 
   it('uses an explicit check-in receipt as the only agent launch acknowledgement', async () => {
     const repository = new InMemoryTaskPoolRepository()

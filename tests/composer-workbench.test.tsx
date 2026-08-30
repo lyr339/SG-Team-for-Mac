@@ -50,6 +50,29 @@ describe('ComposerWorkbench', () => {
     expect(html).toContain('report.md')
     expect(html).toContain('2.0 KB')
     expect(html).toContain('Token 待读取')
+    expect(html).toContain('composer-binding-status is-bound')
+    expect(html).toContain('Cursor 已绑定')
+    expect(html).toContain('composer-queue-popover')
+    expect(html).toContain('当前没有等待处理的消息')
+    expect(html).toContain('Agent 正在监听，新消息会立即投递')
+  })
+
+  it('renders an unbound session as a red semantic state with a broken-link glyph', () => {
+    const html = renderToStaticMarkup(
+      <ComposerWorkbench
+        session={{ ...session, telemetry: { state: 'unbound', detail: '等待绑定' } }}
+        draft=""
+        canSend={false}
+        notWaiting={false}
+        submitting={false}
+        sendError=""
+        onDraftChange={() => {}}
+        onSubmit={() => {}}
+      />
+    )
+    expect(html).toContain('composer-binding-status is-unbound')
+    expect(html).toContain('会话待绑定')
+    expect(html).toContain('M8.5 12h2M13.5 12h2')
   })
 
   it('renders send errors as alerts without hiding the draft', () => {

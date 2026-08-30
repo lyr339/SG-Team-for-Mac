@@ -111,17 +111,24 @@ export class TeamFailoverService {
       this.reconcileLeadFailover(snapshot)
       if (!snapshot.preflight.bridgeConnected) return
 
-      const inFlightChannels = new Set(snapshot.members.flatMap((member) => {
+      const teamMembers = snapshot.members.filter((member) => member.slot.solo !== true)
+      const teamChannelIds = new Set(teamMembers.flatMap((member) => {
+        const channelId = member.binding?.channelId ?? member.slot.channelId
+        return channelId ? [channelId] : []
+      }))
+      const inFlightChannels = new Set(teamMembers.flatMap((member) => {
         const channelId = member.binding?.channelId ?? member.slot.channelId
         return channelId && hasInFlightExecution(member.runtime) ? [channelId] : []
       }))
       // processing/need_reply_sync 是已取走消息后的执行租约。长任务期间 MCP
       // 心跳陈旧属正常，不能因此把整轮判成“全部离线”并结束。
       const liveRegisteredChannels = snapshot.runtimeChannels.filter((channel) => (
-        channel.registered && (channel.online || inFlightChannels.has(channel.channelId))
+        teamChannelIds.has(channel.channelId)
+        && channel.registered
+        && (channel.online || inFlightChannels.has(channel.channelId))
       ))
       if (liveRegisteredChannels.length === 0) {
-        const hadActivatedSession = snapshot.members.some((member) => (
+        const hadActivatedSession = teamMembers.some((member) => (
           member.binding?.acknowledgedAt !== undefined || member.binding?.lastCheckInAt !== undefined
         ))
         // 尚未有任何 Agent 签到时属于首次启动/创建失败，不是“一次性会话已用完”。
@@ -146,6 +153,7 @@ export class TeamFailoverService {
       if (run.status === 'launching') return
       if (this.selectStandby(snapshot.standbyChannels)) {
         for (const member of snapshot.members) {
+          if (member.slot.solo === true) continue
           if (!member.runtime?.online && member.binding) {
             this.unrecoverableBindings.delete(member.binding.agentSessionId)
           }
@@ -157,6 +165,7 @@ export class TeamFailoverService {
         .filter((record) => record.status === 'waiting_for_agent')
         .map((record) => record.slotId))
       for (const member of snapshot.members) {
+        if (member.slot.solo === true) continue
         if (!member.binding) continue
         // runtime 缺失只是“尚无证据”；执行相位则是明确的在途工作。两者都不能
         // 进入自动接替计时，避免应用启动抖动或长任务触发错误换席。
@@ -229,6 +238,7 @@ export class TeamFailoverService {
       return
     }
     const onlineMembers = snapshot.members
+      .filter((member) => member.slot.solo !== true)
       .filter((member) => member.slot.id !== effectiveLead.slot.id && member.binding && member.runtime?.online)
       .sort((left, right) => Number(left.binding!.channelId) - Number(right.binding!.channelId))
     const successor = onlineMembers[0]

@@ -35,7 +35,7 @@ import {
   revokeWorkspaceAgentRegistrations
 } from '../sqlite/agent-registrations'
 
-const TEAM_SCHEMA_VERSION = 6
+const TEAM_SCHEMA_VERSION = 7
 const COMPOSER_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/
 const COMPOSER_BINDING_KEY_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
 const COMPOSER_BINDING_METHODS = new Set<ComposerBindingMethod>(['launch_marker', 'channel_marker'])
@@ -231,6 +231,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       name: String(row.name),
       avatarId: String(row.avatar_id),
       modelSelection: modelSelectionBySlot.get(String(row.id)),
+      solo: numberOf(row.is_solo) === 1,
       channelId: optionalString(row.channel_id),
       order: numberOf(row.slot_order),
       createdAt: numberOf(row.created_at),
@@ -261,7 +262,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     }))
 
     return {
-      schemaVersion: numberOf(meta.schema_version) as 5,
+      schemaVersion: numberOf(meta.schema_version) as 7,
       revision: numberOf(meta.revision),
       activeWorkspaceId: optionalString(meta.active_workspace_id),
       workspaces,
@@ -290,7 +291,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     try {
       const { workspace, run } = bundle
       const existingSlots = this.database.prepare(`
-        SELECT s.id, s.channel_id, s.avatar_id, r.template_key, r.capabilities_json, r.skills_json,
+        SELECT s.id, s.channel_id, s.avatar_id, s.is_solo, r.template_key, r.capabilities_json, r.skills_json,
           ms.selection_json AS model_selection_json
         FROM agent_slots s
         JOIN team_roles r ON r.id = s.role_id
@@ -305,7 +306,8 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
           templateKey: role.templateKey,
           capabilities: JSON.stringify(role.capabilities),
           skills: JSON.stringify(role.skills),
-          modelSelection: slot.modelSelection ? JSON.stringify(slot.modelSelection) : null
+          modelSelection: slot.modelSelection ? JSON.stringify(slot.modelSelection) : null,
+          solo: slot.solo === true ? 1 : 0
         }] as const
       }))
       const topologyChanged = existingSlots.length > 0 && (
@@ -319,6 +321,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
             || desired.capabilities !== String(slot.capabilities_json)
             || desired.skills !== String(slot.skills_json)
             || desired.modelSelection !== slot.model_selection_json
+            || desired.solo !== numberOf(slot.is_solo)
         })
       )
       this.database.prepare(`
@@ -393,13 +396,14 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
 
       const insertSlot = this.database.prepare(`
         INSERT INTO agent_slots (
-          id, run_id, role_id, name, avatar_id, channel_id, slot_order, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, run_id, role_id, name, avatar_id, channel_id, is_solo, slot_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           role_id = excluded.role_id,
           name = excluded.name,
           avatar_id = excluded.avatar_id,
           channel_id = excluded.channel_id,
+          is_solo = excluded.is_solo,
           slot_order = excluded.slot_order,
           updated_at = excluded.updated_at
       `)
@@ -411,6 +415,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
           slot.name,
           slot.avatarId,
           slot.channelId ?? null,
+          slot.solo === true ? 1 : 0,
           slot.order,
           slot.createdAt,
           slot.updatedAt
@@ -690,7 +695,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     const normalizedIdentityKey = identityKey.trim()
     const normalizedRunId = runId.trim()
     const row = this.database.prepare(`
-      SELECT ar.agent_session_id, ar.run_id, b.slot_id, r.template_key, r.capabilities_json,
+      SELECT ar.agent_session_id, ar.run_id, b.slot_id, s.is_solo, r.template_key, r.capabilities_json,
         tr.acting_lead_slot_id, lead.capabilities_json AS lead_capabilities_json
       FROM agent_registrations ar
       JOIN runtime_bindings b
@@ -714,6 +719,12 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         registered
           ? '当前通道处于备用状态，尚未接替任何 AgentSlot'
           : '当前 Agent generation 未注册或已被撤销'
+      )
+    }
+    if (numberOf(row.is_solo) === 1) {
+      throw new TaskPoolError(
+        'solo_channel',
+        '当前通道是独立席位，不参与团队协作；请直接通过 check_messages / record_reply 与用户沟通'
       )
     }
     return {
@@ -742,7 +753,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       throw new TaskPoolError('agent_not_authorized', '当前没有活动 TeamRun，通道身份无法解析')
     }
     const row = this.database.prepare(`
-      SELECT ar.agent_session_id, ar.run_id, b.slot_id, r.template_key, r.capabilities_json,
+      SELECT ar.agent_session_id, ar.run_id, b.slot_id, s.is_solo, r.template_key, r.capabilities_json,
         tr.acting_lead_slot_id, lead.capabilities_json AS lead_capabilities_json
       FROM agent_registrations ar
       JOIN runtime_bindings b
@@ -764,6 +775,12 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         registered
           ? '当前通道处于备用状态，尚未接替任何 AgentSlot'
           : `CH-${normalizedChannelId} 未注册到当前 TeamRun`
+      )
+    }
+    if (numberOf(row.is_solo) === 1) {
+      throw new TaskPoolError(
+        'solo_channel',
+        `CH-${normalizedChannelId} 是独立席位，不参与团队协作；请直接通过 check_messages / record_reply 与用户沟通`
       )
     }
     return {
@@ -1164,7 +1181,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         const slot = this.database.prepare(`
           SELECT s.id FROM agent_slots s
           JOIN team_roles r ON r.id = s.role_id
-          WHERE s.id = ? AND s.run_id = ?
+          WHERE s.id = ? AND s.run_id = ? AND COALESCE(s.is_solo, 0) = 0
         `).get(normalizedSlotId, normalizedRunId) as SqliteRow | undefined
         if (!slot) throw new TaskPoolError('acting_lead_slot_not_found', '目标 AgentSlot 不属于当前 TeamRun')
       }
@@ -1328,7 +1345,9 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         SELECT
           COUNT(*) AS total,
           SUM(CASE WHEN launch_status = 'acknowledged' THEN 1 ELSE 0 END) AS acknowledged
-        FROM runtime_bindings WHERE run_id = ?
+        FROM runtime_bindings b
+        JOIN agent_slots s ON s.id = b.slot_id AND s.run_id = b.run_id
+        WHERE b.run_id = ? AND COALESCE(s.is_solo, 0) = 0
       `).get(identity.runId) as SqliteRow
       if (numberOf(totals.total) > 0 && numberOf(totals.total) === numberOf(totals.acknowledged)) {
         this.database.prepare(`
@@ -1424,6 +1443,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         name TEXT NOT NULL,
         avatar_id TEXT NOT NULL,
         channel_id TEXT,
+        is_solo INTEGER NOT NULL DEFAULT 0,
         slot_order INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -1561,9 +1581,9 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         `)
         this.database.prepare(
           'UPDATE team_control_meta SET schema_version = ?, revision = revision + 1, updated_at = ? WHERE id = 1'
-        ).run(TEAM_SCHEMA_VERSION, Date.now())
+        ).run(4, Date.now())
         this.database.exec('COMMIT')
-        databaseVersion = TEAM_SCHEMA_VERSION
+        databaseVersion = 4
       } catch (error) {
         if (this.database.isTransaction) this.database.exec('ROLLBACK')
         throw error
@@ -1590,9 +1610,25 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         }
         this.database.prepare(
           'UPDATE team_control_meta SET schema_version = ?, revision = revision + 1, updated_at = ? WHERE id = 1'
-        ).run(TEAM_SCHEMA_VERSION, Date.now())
+        ).run(6, Date.now())
         this.database.exec('COMMIT')
-        databaseVersion = TEAM_SCHEMA_VERSION
+        databaseVersion = 6
+      } catch (error) {
+        if (this.database.isTransaction) this.database.exec('ROLLBACK')
+        throw error
+      }
+    }
+    if (databaseVersion === 6) {
+      this.database.exec('BEGIN IMMEDIATE')
+      try {
+        if (!tableHasColumn(this.database, 'agent_slots', 'is_solo')) {
+          this.database.exec('ALTER TABLE agent_slots ADD COLUMN is_solo INTEGER NOT NULL DEFAULT 0')
+        }
+        this.database.prepare(
+          'UPDATE team_control_meta SET schema_version = ?, revision = revision + 1, updated_at = ? WHERE id = 1'
+        ).run(7, Date.now())
+        this.database.exec('COMMIT')
+        databaseVersion = 7
       } catch (error) {
         if (this.database.isTransaction) this.database.exec('ROLLBACK')
         throw error

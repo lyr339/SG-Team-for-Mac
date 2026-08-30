@@ -14,8 +14,10 @@ import {
   ACCOUNT_AUTOMATION_DELAY_MIN_SEC
 } from '../../../domain/account-automation'
 import { ToggleSwitch } from './ToggleSwitch'
-import { MenuSelect } from './MenuSelect'
 import { RangeField } from './RangeField'
+import { FlowStatusIcon } from './FlowStatusIcon'
+import { AccountBrowserPanel } from './AccountBrowserPanel'
+import { RefreshIcon } from '../UiIcons'
 
 /** 档位段视觉模型：标签 + 按档位着色的类名。 */
 export interface AccountStatusTierView {
@@ -23,19 +25,15 @@ export interface AccountStatusTierView {
   className: string
 }
 
-/** 合并状态行的视觉模型：单点色取最严重信号，档位段按档位着色。 */
+/** 顶部登录状态模型；会员等级在当前账号卡片中独立呈现。 */
 export interface AccountStatusLineView {
   tone: '' | 'is-warn' | 'is-off'
-  /** 前缀文案（如 "a@x.com · 一致"）；仅档位有信号时为空。 */
   text: string
-  /** 档位段（拼在前缀之后，Free/Pro/Pro+/Ultra/… 各自着色）。 */
-  tier?: AccountStatusTierView
   /** 鼠标悬停的完整说明（劈叉时含双账号明细）。 */
   detail?: string
-  free: boolean
 }
 
-/** 档位着色：Free 红（阻断）/ 试用琥珀 / Pro 绿 / Pro+ 蓝 / Ultra 紫 / Enterprise 品牌橙。 */
+/** 档位着色类：卡片内采用 Free 绿、Trial 琥珀、Pro 蓝、Pro+ 靛、Ultra 紫、Enterprise 橙。 */
 function tierClassNameFor(tier: CursorMembershipTier | 'unknown'): string {
   switch (tier) {
     case 'free': return 'is-tier-free'
@@ -48,12 +46,22 @@ function tierClassNameFor(tier: CursorMembershipTier | 'unknown'): string {
   }
 }
 
+export function accountMembershipPlanFor(membership: CursorMembershipStatus | undefined): AccountStatusTierView | undefined {
+  if (membership?.state !== 'ok' || !membership.profile) return undefined
+  const { tier, raw } = membership.profile
+  const label = tier === 'free_trial'
+    ? 'Free Trial'
+    : tier === 'unknown'
+      ? cursorMembershipTierLabel(tier, raw)
+      : `${cursorMembershipTierLabel(tier, raw)} Plan`
+  return { label, className: tierClassNameFor(tier) }
+}
+
 /**
- * 登录态一致性 + 会员档位合并为一行状态条（替代原两行）：
- * - matched + ok  → "email · 一致 · Pro"（绿点；档位段按档位着色）
+ * 顶部仅呈现登录一致性和异常：
+ * - matched       → "email · 一致"
  * - mismatch      → "登录账号不一致"（红点，悬停见双账号）
- * - 未登录        → 不渲染（与无账号/未拉取同语义，避免空行）
- * 严重度：不一致 > 未登录/获取失败 > 正常；Free 档位整体点色转红。
+ * - 会员正常等级移入当前账号卡片；401/抓取失败仍在顶部告警。
  */
 export function accountStatusLineFor(
   runtimeMatch: CursorRuntimeAccountMatch | undefined,
@@ -75,17 +83,11 @@ export function accountStatusLineFor(
     detail = `Cursor 当前登录 ${runtimeMatch.cursorLabel ?? '未知'}，活跃账号 ${runtimeMatch.activeLabel ?? '未知'}`
   }
 
-  let tier: AccountStatusTierView | undefined
-  if (membership?.state === 'ok' && membership.profile) {
+  if (membership?.state === 'auth_expired') {
     hasSignal = true
-    tier = {
-      label: cursorMembershipTierLabel(membership.profile.tier, membership.profile.raw),
-      className: tierClassNameFor(membership.profile.tier)
-    }
-  } else if (membership?.state === 'auth_expired') {
-    hasSignal = true
-    if (tone !== 'is-off') tone = 'is-warn'
-    parts.push('档位获取失败（登录过期）')
+    tone = 'is-off'
+    parts.push('服务端会话已失效')
+    detail = `${membership.detail ?? '服务端拒绝当前登录会话'}；“一致”只表示本地 JWT 账号标识相同`
   } else if (membership?.state === 'error') {
     hasSignal = true
     if (tone !== 'is-off') tone = 'is-warn'
@@ -93,13 +95,10 @@ export function accountStatusLineFor(
   }
 
   if (!hasSignal) return undefined
-  const free = membership?.state === 'ok' && membership.profile?.tier === 'free'
   return {
-    tone: free ? 'is-off' : tone,
+    tone,
     text: parts.join(' · '),
-    tier,
-    detail: detail ?? 'Cursor 运行登录态与活跃账号的比对 + 在线会员档位（发起批量会话前会再校验）',
-    free
+    detail: detail ?? 'Cursor 运行登录态与活跃账号的比对（发起批量会话前会再校验）'
   }
 }
 
@@ -151,12 +150,15 @@ export interface LobbyAccountTileProps {
   runtimeMatch?: CursorRuntimeAccountMatch
   /** 在线会员档位（被动状态行；未拉取/未登录时不渲染）。 */
   membership?: CursorMembershipStatus
-  /** 手动刷新档位（状态行小按钮）。 */
-  onRefreshMembership?: () => void
+  /** 每个已保存账号各自的在线会员档位，不依赖是否选为当前账号。 */
+  accountMemberships?: Record<string, CursorMembershipStatus>
+  /** 手动刷新指定账号档位。 */
+  onRefreshMembership?: (accountId?: string) => void | Promise<void>
   cursorUpdatePreferences?: CursorUpdatePreferences
   cursorUpdateBusy?: boolean
   cursorUpdateError?: string
   onSetCursorAutoUpdateDisabled?: (disabled: boolean) => Promise<void>
+  onSetModelDataPolicyAutoAcknowledge?: (enabled: boolean) => Promise<{ message: string }>
   onSaveAutomationSettings?: (settings: AccountAutomationSettings) => void
   onCancelAutomation?: () => void
 }
@@ -283,11 +285,13 @@ export function LobbyAccountTile({
   platform,
   runtimeMatch,
   membership,
+  accountMemberships,
   onRefreshMembership,
   cursorUpdatePreferences,
   cursorUpdateBusy = false,
   cursorUpdateError,
   onSetCursorAutoUpdateDisabled,
+  onSetModelDataPolicyAutoAcknowledge,
   onSaveAutomationSettings,
   onCancelAutomation
 }: LobbyAccountTileProps): React.JSX.Element {
@@ -297,8 +301,9 @@ export function LobbyAccountTile({
   const [confirmRemove, setConfirmRemove] = useState('')
   const [confirmRestart, setConfirmRestart] = useState('')
   const [adding, setAdding] = useState(false)
-  const [roxyKeyInput, setRoxyKeyInput] = useState('')
-  const [roxyKeySaving, setRoxyKeySaving] = useState(false)
+  const [policyBusy, setPolicyBusy] = useState(false)
+  const [policyFeedback, setPolicyFeedback] = useState<{ ok: boolean; message: string }>()
+  const [refreshingMembershipAccountId, setRefreshingMembershipAccountId] = useState('')
   const activeAccount = accounts.find((account) => account.active)
   // 平台仅决定「系统浏览器」宿主是否展示（Keychain/Apple Events 是 macOS 专属）；
   // 指纹浏览器提供方与平台无关，恒 Roxy（比特已全面退役）。
@@ -359,12 +364,14 @@ export function LobbyAccountTile({
     const state = states[key]
     return (
       <li className={`flow-step is-${state}`} aria-label={`步骤 ${index + 1}：${title}，${FLOW_STATE_LABEL[state]}`}>
-        <div className="flow-step__rail" aria-hidden="true"><i>{state === 'done' ? '✓' : `0${index + 1}`}</i></div>
+        <div className="flow-step__rail"><FlowStatusIcon state={state} index={index + 1} /></div>
         <div className="flow-step__body">
           <header className="flow-step__head">
             <strong>{title}</strong>
             {meta ? <span className="flow-step__meta">{meta}</span> : null}
-            <em className={`flow-step__state is-${state}`}>{FLOW_STATE_LABEL[state]}</em>
+            <em className={`flow-step__state is-${state}`}>
+              <span>{FLOW_STATE_LABEL[state]}</span>
+            </em>
           </header>
           {children}
         </div>
@@ -386,18 +393,7 @@ export function LobbyAccountTile({
               title={statusLine.detail}
             >
               <i aria-hidden="true" />
-              <span className="account-status-line__text">
-                {statusLine.text}
-                {statusLine.tier ? (
-                  <>
-                    {statusLine.text ? ' · ' : null}
-                    <span className={statusLine.tier.className}>{statusLine.tier.label}</span>
-                  </>
-                ) : null}
-              </span>
-              {onRefreshMembership ? (
-                <button type="button" onClick={onRefreshMembership}>刷新</button>
-              ) : null}
+              <span className="account-status-line__text">{statusLine.text}</span>
             </span>
           ) : activeAccount ? <>当前 <b>{activeAccount.label}</b></> : '未选择账号'}
           {accounts.length ? <i>{accounts.length}</i> : null}
@@ -416,6 +412,35 @@ export function LobbyAccountTile({
                     <em>{account.active ? '当前' : '选择'}</em>
                   </button>
                   <div className="lobby-account__row-actions">
+                    {(() => {
+                      const accountMembership = accountMemberships?.[account.id]
+                        ?? (account.active ? membership : undefined)
+                      const membershipPlan = accountMembershipPlanFor(accountMembership)
+                      return membershipPlan ? (
+                      <span className="account-membership-inline">
+                        <span className={`account-membership-plan ${membershipPlan.className}`}>
+                          账号类型：<b>{membershipPlan.label}</b>
+                        </span>
+                        {onRefreshMembership ? (
+                          <button
+                            className={`account-membership-refresh ${membershipPlan.className}${refreshingMembershipAccountId === account.id ? ' is-refreshing' : ''}`}
+                            type="button"
+                            disabled={refreshingMembershipAccountId === account.id}
+                            title="刷新此账号会员等级"
+                            aria-label={`刷新 ${account.label} 的会员等级`}
+                            onClick={() => {
+                              if (refreshingMembershipAccountId) return
+                              setRefreshingMembershipAccountId(account.id)
+                              void Promise.resolve()
+                                .then(() => onRefreshMembership(account.id))
+                                .catch(() => undefined)
+                                .finally(() => setRefreshingMembershipAccountId(''))
+                            }}
+                          ><RefreshIcon /></button>
+                        ) : null}
+                      </span>
+                      ) : null
+                    })()}
                     {aozaiEnabled && aozaiStatus?.saved && onProcessAozaiAccount ? (
                       <button
                         className="account-process"
@@ -454,94 +479,18 @@ export function LobbyAccountTile({
             </div>
             {/* 导入来源：选定后贯穿整条管线（获取 Token → 奥仔后换发 → 删除官网账号同一宿主） */}
             {automationSettings && onSaveAutomationSettings ? (
-              <div className="account-source lobby-account__source" aria-label="浏览器导入来源">
-                <div className="account-source__seg" role="tablist" aria-label="浏览器来源切换">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={(automationSettings.browserHost ?? 'fingerprint') === 'fingerprint'}
-                    className={(automationSettings.browserHost ?? 'fingerprint') === 'fingerprint' ? 'is-active' : ''}
-                    disabled={busy || aozaiBusy || isActiveAutomationPhase(phase)}
-                    title={`从指纹浏览器（${fingerprintProviderLabel}）的指定窗口导入 Token；后续自动化链也在同一窗口执行`}
-                    onClick={() => onSaveAutomationSettings({ ...automationSettings, browserHost: 'fingerprint' })}
-                  >指纹浏览器</button>
-                  {/* 系统浏览器宿主（Keychain + Apple Events）是 macOS 专属机制，Windows 版不提供 */}
-                  {!isWindows ? (
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={automationSettings.browserHost === 'external'}
-                      className={automationSettings.browserHost === 'external' ? 'is-active' : ''}
-                      disabled={busy || aozaiBusy || isActiveAutomationPhase(phase)}
-                      title="从本机 Edge/Chrome 已登录会话导入 Token；后续自动化链走系统浏览器（较慢，需 Apple Events 权限）"
-                      onClick={() => onSaveAutomationSettings({ ...automationSettings, browserHost: 'external' })}
-                    >系统浏览器</button>
-                  ) : null}
-                </div>
-                {(automationSettings.browserHost ?? 'fingerprint') === 'fingerprint' ? (
-                  <div className="account-source__config">
-                    {/* 指纹浏览器统一 Roxy（比特已退役，与平台无关）：已存 Key 显示掩码，未存显示输入框 */}
-                    {roxyApiKeyStatus?.saved && roxyApiKeyStatus.maskedKey ? (
-                      <span className="account-source__key" title="Roxy API Key 已保存在本机（可在下方重新粘贴覆盖）">
-                        {roxyApiKeyStatus.maskedKey}
-                      </span>
-                    ) : (
-                      <span className="account-source__key is-missing" title="Roxy 客户端「API → API 配置」复制 Key 粘贴到此处">
-                        <input
-                          type="password"
-                          value={roxyKeyInput}
-                          maxLength={128}
-                          autoComplete="off"
-                          spellCheck={false}
-                          placeholder="Roxy API Key"
-                          disabled={roxyKeySaving || busy || aozaiBusy || isActiveAutomationPhase(phase)}
-                          onChange={(event) => setRoxyKeyInput(event.target.value)}
-                        />
-                        {onSaveRoxyApiKey ? (
-                          <button
-                            type="button"
-                            disabled={roxyKeySaving || busy || aozaiBusy || isActiveAutomationPhase(phase) || roxyKeyInput.trim().length < 8}
-                            onClick={() => {
-                              setRoxyKeySaving(true)
-                              void onSaveRoxyApiKey(roxyKeyInput.trim())
-                                .then(() => setRoxyKeyInput(''))
-                                .finally(() => setRoxyKeySaving(false))
-                            }}
-                          >{roxyKeySaving ? '保存中…' : '保存'}</button>
-                        ) : null}
-                      </span>
-                    )}
-                    <label className="account-source__field account-source__field--grow" title="Token 导入与自动化执行的窗口——按当前网络（Clash 开/关）选择挂代理或直连，两个窗口都需预先登录 cursor.com">
-                      <MenuSelect
-                        value={automationSettings.bitProfileId ?? ''}
-                        placeholder="选择窗口…"
-                        disabled={busy || aozaiBusy || isActiveAutomationPhase(phase)}
-                        options={(bitProfiles ?? []).map((profile) => ({
-                          value: profile.id,
-                          label: `${profile.seq !== undefined ? `#${profile.seq} ` : ''}${profile.name}`
-                        }))}
-                        onChange={(value) => onSaveAutomationSettings({ ...automationSettings, bitProfileId: value || undefined })}
-                      />
-                    </label>
-                    {onRefreshBitProfiles ? (
-                      <button
-                        type="button"
-                        className="account-source__refresh"
-                        disabled={busy || aozaiBusy || isActiveAutomationPhase(phase)}
-                        title="重新获取窗口列表"
-                        onClick={onRefreshBitProfiles}
-                      >⟳</button>
-                    ) : null}
-                  </div>
-                ) : (
-                  <p className="account-source__hint">
-                    需在 Edge / Chrome 登录 cursor.com；秒级删除还需在 Edge 勾选「视图 → Developer → Allow JavaScript from Apple Events」。
-                  </p>
-                )}
-                {bitProfilesMessage && (automationSettings.browserHost ?? 'fingerprint') === 'fingerprint' ? (
-                  <p className="account-source__error" role="alert">{bitProfilesMessage}</p>
-                ) : null}
-              </div>
+              <AccountBrowserPanel
+                settings={automationSettings}
+                disabled={busy || aozaiBusy || isActiveAutomationPhase(phase)}
+                isWindows={isWindows}
+                providerLabel={fingerprintProviderLabel}
+                profiles={bitProfiles}
+                profilesMessage={bitProfilesMessage}
+                apiKeyStatus={roxyApiKeyStatus}
+                onSettingsChange={onSaveAutomationSettings}
+                onRefreshProfiles={onRefreshBitProfiles}
+                onSaveApiKey={onSaveRoxyApiKey}
+              />
             ) : null}
             <div className="lobby-account__quick" aria-label="获取账号来源">
               {onImportFromFingerprint && (automationSettings?.browserHost ?? 'fingerprint') === 'fingerprint' ? (
@@ -744,22 +693,52 @@ export function LobbyAccountTile({
         ))}
       </ol>
 
-      {onSetCursorAutoUpdateDisabled && cursorUpdatePreferences ? (
+      {(onSetCursorAutoUpdateDisabled && cursorUpdatePreferences) || onSetModelDataPolicyAutoAcknowledge ? (
         <div className="cursor-maintenance lobby-account__maintenance">
           <div className="cursor-maintenance__head">
             <strong>Cursor 本机维护</strong>
-            <span title={cursorUpdatePreferences.settingsPath}>settings.json</span>
+            <span title={cursorUpdatePreferences?.settingsPath}>{cursorUpdatePreferences ? 'settings.json' : 'Roxy profile'}</span>
           </div>
-          <div className="cursor-maintenance__toggle">
-            <ToggleSwitch
-              checked={cursorUpdatePreferences.autoUpdateDisabled}
-              disabled={cursorUpdateBusy}
-              onChange={(checked) => void onSetCursorAutoUpdateDisabled(checked)}
-            >
-              关闭 Cursor 自动更新
-            </ToggleSwitch>
-            <em>{cursorUpdatePreferences.updateMode ?? '默认'}</em>
-          </div>
+          {onSetCursorAutoUpdateDisabled && cursorUpdatePreferences ? (
+            <div className="cursor-maintenance__action">
+              <ToggleSwitch
+                checked={cursorUpdatePreferences.autoUpdateDisabled}
+                disabled={cursorUpdateBusy}
+                onChange={(checked) => void onSetCursorAutoUpdateDisabled(checked)}
+              >
+                关闭 Cursor 自动更新
+              </ToggleSwitch>
+              <em>{cursorUpdatePreferences.updateMode ?? '默认'}</em>
+            </div>
+          ) : null}
+          {onSetModelDataPolicyAutoAcknowledge && automationSettings ? (
+            <div className="cursor-maintenance__action cursor-maintenance__policy">
+              <ToggleSwitch
+                checked={automationSettings.autoAcknowledgeModelDataPolicies !== false}
+                disabled={policyBusy || isActiveAutomationPhase(phase)}
+                title={!automationSettings.bitProfileId ? '关闭可直接生效；重新开启前请先选择 Roxy 窗口' : '新账号导入与自动化预检时查询官网状态，缺失才确认'}
+                onChange={(enabled) => {
+                  setPolicyBusy(true)
+                  setPolicyFeedback(undefined)
+                  void onSetModelDataPolicyAutoAcknowledge(enabled)
+                    .then((result) => setPolicyFeedback({ ok: true, message: result.message }))
+                    .catch((reason: unknown) => setPolicyFeedback({
+                      ok: false,
+                      message: reason instanceof Error ? reason.message : String(reason)
+                    }))
+                    .finally(() => setPolicyBusy(false))
+                }}
+              >
+                {policyBusy ? '正在更新受限模型政策' : '自动确认受限模型数据政策'}
+              </ToggleSwitch>
+              <em>{automationSettings.autoAcknowledgeModelDataPolicies !== false ? '自动' : '关闭'}</em>
+            </div>
+          ) : null}
+          {policyFeedback ? (
+            <p className={policyFeedback.ok ? 'cursor-maintenance__ok' : 'cursor-maintenance__error'} role={policyFeedback.ok ? 'status' : 'alert'}>
+              {policyFeedback.message}
+            </p>
+          ) : null}
           {cursorUpdateError ? <p className="cursor-maintenance__error">{cursorUpdateError}</p> : null}
         </div>
       ) : null}

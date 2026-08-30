@@ -1,6 +1,7 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useState } from 'react'
 import type { TeamRunStatus } from '../../../domain/team-control'
 import { PlayIcon } from '../UiIcons'
+import { FlowStatusIcon } from './FlowStatusIcon'
 
 export interface LobbyHeroStep {
   label: string
@@ -28,15 +29,6 @@ interface LobbyHeroProps {
   onReconfigure: () => void
   onPrimary: () => void
   onCreateNextRun: () => void
-}
-
-function flowProgressRatioOf(steps: readonly LobbyHeroStep[]): number {
-  if (steps.length <= 1) return 0
-  const currentIndex = steps.findIndex((step) => step.state === 'current')
-  const lastReachedIndex = currentIndex >= 0
-    ? currentIndex
-    : Math.max(0, steps.filter((step) => step.state === 'done').length - 1)
-  return Math.max(0, Math.min(1, lastReachedIndex / (steps.length - 1)))
 }
 
 function compactRunLabel(runName: string, workspaceName: string): string {
@@ -127,7 +119,6 @@ export function LobbyHero({
       : goalMissing
         ? '一句话说清要做什么，团队才能开跑'
         : primaryHint
-  const flowStyle = { '--flow-progress-ratio': flowProgressRatioOf(steps) } as CSSProperties
   const runLabel = compactRunLabel(runName, workspaceName)
 
   return (
@@ -155,7 +146,7 @@ export function LobbyHero({
               <button
                 disabled={busy || saving || !draft.trim() || draft.trim() === goal}
                 onClick={() => void save()}
-              >{saving ? '保存中…' : autoStartOnGoalSave ? '保存并启动' : '保存目标'}</button>
+              >{saving ? '保存中…' : autoStartOnGoalSave ? '保存并启动' : '保存并继续'}</button>
             </footer>
           </div>
         ) : (
@@ -163,14 +154,14 @@ export function LobbyHero({
         )}
       </div>
 
-      <ol className="lobby-command__steps" aria-label="团队流程进度" style={flowStyle}>
+      <ol className="lobby-command__steps" aria-label="团队流程进度">
         {steps.map((step, index) => (
           <li
             key={step.label}
             className={`is-${step.state}`}
             aria-current={step.state === 'current' ? 'step' : undefined}
           >
-            <span><i>{step.state === 'done' ? '✓' : index + 1}</i></span>
+            <span><FlowStatusIcon state={step.state} index={index + 1} /></span>
             <b>{step.label}</b>
           </li>
         ))}

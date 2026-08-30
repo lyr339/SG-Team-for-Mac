@@ -240,7 +240,7 @@ export class SqliteTeamCollaborationRepository implements TeamCollaborationRepos
       JOIN team_roles r ON r.id = s.role_id
       JOIN team_runs tr ON tr.id = s.run_id
       LEFT JOIN runtime_bindings b ON b.slot_id = s.id AND b.run_id = s.run_id
-      WHERE s.run_id = ?
+      WHERE s.run_id = ? AND COALESCE(s.is_solo, 0) = 0
       ORDER BY s.slot_order ASC, s.id ASC
     `).all(runId.trim()) as SqliteRow[]).map((row) => {
       const slotId = String(row.slot_id)

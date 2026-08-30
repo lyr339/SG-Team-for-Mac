@@ -6,7 +6,7 @@ import type { AgentSession, ContextUsage } from '../../../domain/agent-session'
 import type { ConversationEntry } from '../../../domain/conversation-entry'
 import type { TaskPoolSnapshot } from '../../../domain/task-pool'
 import type { TeamControlSnapshot, TeamMemberView } from '../../../domain/team-control'
-import { createDefaultTeamBundle } from '../../../domain/team-control'
+import { createConfiguredTeamBundle } from '../../../domain/team-control'
 import type { TeamCollaborationSnapshot, TeamMessage } from '../../../domain/team-collaboration'
 import type { TeamContinuitySnapshot } from '../../../domain/team-continuity'
 import type { TeamMemorySnapshot } from '../../../domain/team-memory'
@@ -15,11 +15,15 @@ import type { DesktopSnapshot } from '../../../shared/desktop-api'
 const NOW = Date.now()
 const MIN = 60_000
 
-const bundle = createDefaultTeamBundle({
+const bundle = createConfiguredTeamBundle({
   workspaceId: 'wedge-demo',
   workspaceName: 'wedge-demo',
   workspacePath: '/Users/demo/projects/wedge-demo',
-  channelIds: ['1', '2', '3'],
+  members: [
+    { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+    { channelId: '2', roleTemplateKey: 'builder', avatarId: 'architect', skills: [] },
+    { channelId: '3', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }
+  ],
   now: NOW - 26 * 60 * MIN
 })
 
@@ -467,7 +471,7 @@ const previewStandbyChannels = [
 ]
 
 export const teamControlSnapshot: TeamControlSnapshot = {
-  schemaVersion: 5,
+  schemaVersion: 7,
   revision: 42,
   activeWorkspaceId: bundle.workspace.id,
   workspaces: [bundle.workspace],

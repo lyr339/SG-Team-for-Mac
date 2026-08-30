@@ -6,7 +6,7 @@ import { TeamControlService, type TeamControlBridge } from '../src/application/t
 import type { DesktopSnapshot, SendMessageInput } from '../src/shared/desktop-api'
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 import type { CursorComposerTelemetrySource } from '../src/infrastructure/cursor/cursor-composer-telemetry'
-import { createDefaultTeamBundle } from '../src/domain/team-control'
+import { createConfiguredTeamBundle, createDefaultTeamBundle } from '../src/domain/team-control'
 
 class FakeBridge implements TeamControlBridge {
   readonly sent: SendMessageInput[] = []
@@ -143,7 +143,90 @@ function fixture(waiting = true) {
   return { repository, bridge, service }
 }
 
+function soloFixture() {
+  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-service-solo-')), 'control.sqlite3')
+  const repository = new SqliteTeamControlRepository(path)
+  const bundle = createConfiguredTeamBundle({
+    workspaceId: 'mixed', workspaceName: 'mixed', workspacePath: '/workspace/mixed', now: 1_000,
+    members: [
+      { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+      { channelId: '2', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }
+    ]
+  })
+  repository.upsertWorkspaceTeam(bundle)
+  repository.updateRunGoal(bundle.run.id, '只启动团队成员，独立席由用户单聊')
+  repository.recordInstallation({
+    workspaceId: bundle.workspace.id, runId: bundle.run.id, generation: 'generation123',
+    agents: bundle.slots.map((slot) => ({
+      agentSessionId: `mixed:ch-${slot.channelId}:generation123`, workspaceId: bundle.workspace.id,
+      channelId: slot.channelId!, generation: 'generation123', runId: bundle.run.id,
+      capabilities: bundle.roles.find((role) => role.id === slot.roleId)!.capabilities
+    }))
+  })
+  const desktop = desktopSnapshot(true)
+  desktop.sessions = desktop.sessions.map((session) => session.channelId === '2'
+    ? { ...session, online: false, connected: false, waiting: false, status: 'offline' as const, connectionPhase: 'offline' }
+    : session)
+  const bridge = new FakeBridge(desktop)
+  const service = new TeamControlService(repository, bridge, 100)
+  return { repository, bridge, service, bundle }
+}
+
 describe('TeamControlService', () => {
+  it('requires only team members to wait and sends launch instructions only to them', async () => {
+    const data = soloFixture()
+    try {
+      expect(data.service.getSnapshot().preflight).toMatchObject({
+        mcpInstalled: true,
+        agentsWaiting: true,
+        canLaunch: true
+      })
+      await data.service.launch()
+      expect(data.bridge.sent.map((message) => message.channelId)).toEqual(['1'])
+      const leadBinding = data.service.getSnapshot().bindings.find((binding) => binding.channelId === '1')!
+      data.repository.recordAgentCheckIn({
+        agentSessionId: leadBinding.agentSessionId,
+        runId: leadBinding.runId,
+        slotId: leadBinding.slotId,
+        capabilities: ['coordination', 'planning']
+      }, 'ready')
+      expect(data.service.getSnapshot().activeRun?.status).toBe('running')
+    } finally {
+      data.service.dispose()
+      data.repository.close()
+    }
+  })
+
+  it('preserves solo topology when creating the next run', () => {
+    const data = soloFixture()
+    try {
+      data.repository.beginLaunch(data.bundle.run.id, 1_500, 'next-run-binding-key')
+      expect(data.repository.completeRun(data.bundle.run.id, 2_000)).toBe(true)
+      const next = data.service.createNextRun()
+      expect(next.members.map((member) => [member.role.templateKey, member.slot.solo])).toEqual([
+        ['lead', false],
+        ['solo', true]
+      ])
+    } finally {
+      data.service.dispose()
+      data.repository.close()
+    }
+  })
+
+  it('stale launch recovery marks only team bindings uncertain and leaves solo untouched', () => {
+    const data = soloFixture()
+    data.service.dispose()
+    data.repository.beginLaunch(data.bundle.run.id, 1, 'stale-launch-binding-key')
+    const recovered = new TeamControlService(data.repository, data.bridge, 100)
+    try {
+      const byChannel = new Map(recovered.getSnapshot().bindings.map((binding) => [binding.channelId, binding]))
+      expect(byChannel.get('1')?.launchStatus).toBe('uncertain')
+      expect(byChannel.get('2')?.launchStatus).toBe('not_started')
+    } finally {
+      recovered.dispose()
+      data.repository.close()
+    }
+  })
   it('reuses assembled team state until the repository revision changes', () => {
     const { repository, service } = fixture()
     const load = vi.spyOn(repository, 'loadTeamControl')

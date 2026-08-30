@@ -20,6 +20,7 @@ import {
   withCursorModelParameter
 } from '../cursor-model-selection'
 import { defaultSkillIdsForRole } from './team-skill-defaults'
+import { ToggleSwitch } from '../lobby/ToggleSwitch'
 
 interface TeamSetupPageProps {
   draft: TeamSetupDraft
@@ -125,14 +126,17 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
   const selectedModel = selected?.modelSelection
     ? (draft.cursorModels ?? []).find((model) => model.modelId === selected.modelSelection?.modelId)
     : undefined
-  const leadCount = members.filter((member) => member.roleTemplateKey === 'lead').length
-  const reviewerCount = members.filter((member) => member.roleTemplateKey === 'reviewer').length
+  const teamMembers = members.filter((member) => member.solo !== true)
+  const leadCount = teamMembers.filter((member) => member.roleTemplateKey === 'lead').length
+  const reviewerCount = teamMembers.filter((member) => member.roleTemplateKey === 'reviewer').length
   const memberValidation = members.length === 0
     ? '请至少选择一个通道'
     : members.length > MAX_TEAM_MEMBERS
       ? `团队人数不能超过 ${MAX_TEAM_MEMBERS}`
-      : leadCount !== 1
-        ? '必须且只能有 1 名主控'
+      : teamMembers.length === 0
+        ? '至少保留 1 个团队席位（含 1 名主控）'
+        : leadCount !== 1
+          ? '团队席位必须且只能有 1 名主控'
         : ''
   const channelById = useMemo(
     () => new Map(allChannels.map((channel) => [channel.channelId, channel])),
@@ -232,6 +236,30 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
     }))
   }
 
+  const changeSolo = (channelId: string, solo: boolean): void => {
+    if (solo) {
+      updateMember(channelId, (member) => ({
+        ...member,
+        solo: true,
+        roleTemplateKey: 'solo',
+        skillIds: []
+      }))
+      return
+    }
+    const others = members.filter((member) => member.channelId !== channelId && member.solo !== true)
+    const roleTemplateKey = nextRoleKey(others)
+    const template = templateOf(draft, roleTemplateKey)
+    updateMember(channelId, (member) => {
+      const { solo: _solo, ...rest } = member
+      return {
+        ...rest,
+        roleTemplateKey,
+        avatarId: template.avatarId,
+        skillIds: defaultSkillIdsForRole(draft.skills, template)
+      }
+    })
+  }
+
   const changeModel = (channelId: string, modelId: string): void => {
     const option = (draft.cursorModels ?? []).find((model) => model.modelId === modelId)
     updateMember(channelId, (member) => ({
@@ -299,7 +327,13 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
             return (
               <label className={member ? 'is-selected' : ''} key={channel.channelId}>
                 <input type="checkbox" checked={Boolean(member)} onChange={() => toggleChannel(channel)} />
-                <span><strong>CH-{channel.channelId}{template ? ` · ${template.name}` : ''}</strong><small><i className={channel.online ? 'is-online' : ''} />{channelStatus(channel)} · 队列 {channel.queueDepth}</small></span>
+                <span>
+                  <strong className="team-setup-channel__title">
+                    <span>CH-{channel.channelId}{template ? ` · ${template.name}` : ''}</span>
+                    {member?.solo ? <em className="team-solo-badge">独立</em> : null}
+                  </strong>
+                  <small><i className={channel.online ? 'is-online' : ''} />{channelStatus(channel)} · 队列 {channel.queueDepth}</small>
+                </span>
                 {member
                   ? <AgentAvatar avatarId={member.avatarId} name={template?.name ?? channel.displayName} crowned={member.roleTemplateKey === 'lead'} online={channel.online} size="sm" />
                   : <em className="team-setup-channel__idle">未选择</em>}
@@ -338,14 +372,23 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
             const channel = channelById.get(member.channelId)!
             const template = templateOf(draft, member.roleTemplateKey)
             return (
-              <article className={member.channelId === selected?.channelId ? 'is-active' : ''} key={member.channelId} onClick={() => setSelectedChannelId(member.channelId)}>
+              <article className={`${member.channelId === selected?.channelId ? 'is-active' : ''}${member.solo ? ' is-solo' : ''}`} key={member.channelId} onClick={() => setSelectedChannelId(member.channelId)}>
                 <b>{index + 1}</b>
                 <AgentAvatar avatarId={member.avatarId} name={template.name} crowned={template.key === 'lead'} online={channel.online} size="lg" />
-                <div className="team-setup-seat__identity"><strong>CH-{member.channelId}</strong><span>{template.slotName}</span></div>
+                <div className="team-setup-seat__identity">
+                  <strong className="team-setup-seat__channel">
+                    <span>CH-{member.channelId}</span>
+                    {member.solo ? <em className="team-solo-badge">独立</em> : null}
+                  </strong>
+                  <span>{template.slotName}</span>
+                  <ToggleSwitch checked={member.solo === true} onChange={(enabled) => changeSolo(member.channelId, enabled)}>独立</ToggleSwitch>
+                </div>
                 <label onClick={(event) => event.stopPropagation()}>
                   <span>角色</span>
-                  <select value={member.roleTemplateKey} onChange={(event) => changeRole(member.channelId, event.target.value)}>
-                    {draft.roleTemplates.map((option) => <option key={option.key} value={option.key}>{option.name}</option>)}
+                  <select disabled={member.solo === true} value={member.roleTemplateKey} onChange={(event) => changeRole(member.channelId, event.target.value)}>
+                    {draft.roleTemplates
+                      .filter((option) => option.key !== 'solo' || member.solo === true)
+                      .map((option) => <option key={option.key} value={option.key}>{option.name}</option>)}
                   </select>
                 </label>
               </article>
@@ -436,7 +479,7 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
                 ))}</div>
               </section>
 
-              <section className="team-skill-picker">
+              {selected.solo !== true ? <section className="team-skill-picker">
                 <header>
                   <strong>已安装技能</strong>
                   <span>{selected.skillIds.length}/{visibleInstalledSkills.length}</span>
@@ -472,9 +515,9 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
                     <em>{skillScope(skill)}</em>
                   </label>
                 ))}{!visibleInstalledSkills.length ? <p>没有匹配的已安装技能</p> : null}</div>
-              </section>
+              </section> : null}
 
-              {recommendedSkills.length ? (
+              {selected.solo !== true && recommendedSkills.length ? (
                 <section className="team-skill-recommendations">
                   <header><strong>推荐技能</strong><span>仅收录，安装后才能分配</span></header>
                   <div>{recommendedSkills.map((skill) => <span key={skill.id} title={skill.repository}>{skill.name}<em>{skillScope(skill)}</em></span>)}</div>

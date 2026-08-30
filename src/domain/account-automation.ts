@@ -20,6 +20,8 @@ export interface AccountAutomationSettings {
    * 「挂代理」或「直连」窗口；两个窗口都需在指纹浏览器里预先登录 cursor.com。
    */
   bitProfileId?: string
+  /** 指纹浏览器账号导入/预检时，自动查询并确认受限模型的数据政策。默认开启。 */
+  autoAcknowledgeModelDataPolicies?: boolean
 }
 
 export const ACCOUNT_AUTOMATION_DELAY_MIN_SEC = 0.5
@@ -27,7 +29,8 @@ export const ACCOUNT_AUTOMATION_DELAY_MAX_SEC = 60
 
 export const DEFAULT_ACCOUNT_AUTOMATION_SETTINGS: AccountAutomationSettings = {
   enabled: false,
-  delaySec: 10
+  delaySec: 10,
+  autoAcknowledgeModelDataPolicies: true
 }
 
 export function normalizeAccountAutomationSettings(value: unknown): AccountAutomationSettings {
@@ -43,7 +46,8 @@ export function normalizeAccountAutomationSettings(value: unknown): AccountAutom
     enabled: raw.enabled === true,
     delaySec: Math.min(ACCOUNT_AUTOMATION_DELAY_MAX_SEC, Math.max(ACCOUNT_AUTOMATION_DELAY_MIN_SEC, delay)),
     browserHost,
-    bitProfileId
+    bitProfileId,
+    autoAcknowledgeModelDataPolicies: raw.autoAcknowledgeModelDataPolicies !== false
   }
 }
 

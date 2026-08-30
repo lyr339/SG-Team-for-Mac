@@ -57,6 +57,11 @@ describe('team dashboard lifecycle view', () => {
     }))
     expect(teamRuntimePresence(team)).toBe('offline')
 
+    const solo = team.members.find((member) => member.slot.solo)!
+    solo.runtime!.online = true
+    expect(teamRuntimePresence(team)).toBe('offline')
+    solo.runtime!.online = false
+
     team.members[0]!.runtime!.connectionPhase = 'processing'
     expect(teamRuntimePresence(team)).toBe('in_flight_unverified')
 

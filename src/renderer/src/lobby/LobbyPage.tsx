@@ -86,6 +86,7 @@ export function LobbyPage({
   const [busy, setBusy] = useState('')
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [guideSessionLaunch, setGuideSessionLaunch] = useState(false)
   const [launchModels, setLaunchModels] = useState<{ runId?: string; byChannel: Record<string, CursorModelSelection> }>({
     byChannel: {}
   })
@@ -134,6 +135,12 @@ export function LobbyPage({
     if (!activeRun?.id || launchModels.runId === activeRun.id) return
     setLaunchModels({ runId: activeRun.id, byChannel: {} })
   }, [activeRun?.id, launchModels.runId])
+
+  useEffect(() => {
+    if (!pendingSessionChannels.length || activeRun?.status === 'completed' || activeRun?.status === 'paused') {
+      setGuideSessionLaunch(false)
+    }
+  }, [activeRun?.status, pendingSessionChannels.length])
 
   const run = async <Result,>(name: string, action: () => Promise<Result>): Promise<Result | undefined> => {
     setBusy(name)
@@ -248,9 +255,16 @@ export function LobbyPage({
       : '当前没有在线 Agent；可在下方重新创建会话，恢复后自动接管'
     : undefined
 
-  const allMembersWaiting = team.members.length > 0 && team.members.every((member) => (
+  const teamMembers = team.members.filter((member) => member.slot.solo !== true)
+  const allMembersWaiting = teamMembers.length > 0 && teamMembers.every((member) => (
     isAgentOnDuty(member.runtime)
   ))
+  const goalSaveWillAutoStart = autoStartOnGoalSave
+    && !mcpReloadRequired
+    && team.preflight.bridgeConnected
+    && team.preflight.workspaceBound
+    && team.preflight.mcpInstalled
+    && team.preflight.agentsWaiting
   const flowSteps = lobbyFlowStepsFor({ goal: activeRun.goal, status: activeRun.status, allMembersWaiting })
 
   const showSessionLaunch = pendingSessionChannels.length > 0
@@ -269,7 +283,7 @@ export function LobbyPage({
           steps={flowSteps}
           goalLocked={goalLocked}
           busy={Boolean(busy)}
-          autoStartOnGoalSave={autoStartOnGoalSave}
+          autoStartOnGoalSave={goalSaveWillAutoStart}
           primaryLabel={primaryLabel}
           primaryTitle={mcpReloadRequired ? '请先重载 Cursor，完成后点击继续检测并启动' : team.preflight.blockers.join('；')}
           primaryHint={primaryHint}
@@ -285,7 +299,12 @@ export function LobbyPage({
                 setNotice('目标已保存，团队启动指令已自动投递；正在自动创建 Agent 会话。')
                 void autoCreateSessions()
               } else {
-                setNotice('团队目标已保存。')
+                if (pendingSessionChannels.length > 0) {
+                  setGuideSessionLaunch(true)
+                  setNotice(`团队目标已保存。下一步：确认模型配置，然后点击「一键创建会话（${pendingSessionChannels.length}）」。`)
+                } else {
+                  setNotice('团队目标已保存；现有 Agent 会话已全部待命。')
+                }
               }
             })
           }}
@@ -310,9 +329,11 @@ export function LobbyPage({
                 isPrelaunch={runIsPrelaunch}
                 plan={agentLaunchPlan}
                 busy={Boolean(busy)}
+                guided={guideSessionLaunch}
                 cdpAutoHealEnabled={cdpAutoHealEnabled}
                 cdpAutoHealEvent={cdpAutoHealEvent}
                 onLaunch={() => void run('agent-launch', async () => {
+                  setGuideSessionLaunch(false)
                   const plan = await onLaunchAgentSessions(launchRequests)
                   if (plan.state === 'done') {
                     setNotice('会话已全部就绪，可以启动团队。')

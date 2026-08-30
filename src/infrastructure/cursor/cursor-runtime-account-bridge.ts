@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { CursorRuntimeCompanionConfig } from './cursor-runtime-companion-config'
 
-export const CURSOR_RUNTIME_SWITCH_PORT = 51_823
+/** 51823 是旧织梦桌面的固定端口；拾光使用独立范围并同步改写 Cursor Companion。 */
+export const CURSOR_RUNTIME_SWITCH_PORT = 51_824
+export const CURSOR_RUNTIME_SWITCH_PORT_MAX = 51_839
 export const CURSOR_RUNTIME_SWITCH_KEY = '5f17ca98b1da1798b10261c4da6dd5e1642a064433a4ca90'
 
 export interface CursorRuntimeSwitchPayload {
@@ -39,15 +42,16 @@ interface PendingAck extends CursorRuntimeSwitchAck {
 export class CursorRuntimeAccountBridge implements CursorRuntimeAccountBridgePort {
   constructor(private readonly options: {
     port?: number
+    portMax?: number
     key?: string
     timeoutMs?: number
+    prepareCompanion?: (port: number, key: string) => void | Promise<void>
   } = {}) {}
 
   async applyAfterLaunch<Result>(
     payload: CursorRuntimeSwitchPayload,
     launch: () => Promise<Result>
   ): Promise<{ launchResult: Result; ack: CursorRuntimeSwitchAck }> {
-    const port = this.options.port ?? CURSOR_RUNTIME_SWITCH_PORT
     const key = this.options.key ?? CURSOR_RUNTIME_SWITCH_KEY
     const timeoutMs = this.options.timeoutMs ?? 30_000
     const nonce = randomUUID()
@@ -55,7 +59,7 @@ export class CursorRuntimeAccountBridge implements CursorRuntimeAccountBridgePor
     let resolveAck!: (ack: CursorRuntimeSwitchAck) => void
     const ackPromise = new Promise<CursorRuntimeSwitchAck>((resolve) => { resolveAck = resolve })
 
-    const server = createServer((request, response) => {
+    const handleRequest = (request: IncomingMessage, response: ServerResponse): void => {
       if (request.method === 'OPTIONS') {
         this.respond(response, 204)
         return
@@ -64,7 +68,7 @@ export class CursorRuntimeAccountBridge implements CursorRuntimeAccountBridgePor
         this.respond(response, 403)
         return
       }
-      const url = new URL(request.url ?? '/', `http://127.0.0.1:${port}`)
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       if (request.method === 'GET' && url.pathname === '/v1/switch') {
         if (completed) {
           this.respond(response, 204)
@@ -90,18 +94,17 @@ export class CursorRuntimeAccountBridge implements CursorRuntimeAccountBridgePor
         return
       }
       this.respond(response, 404)
-    })
+    }
 
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject)
-      server.listen(port, '127.0.0.1', () => {
-        server.off('error', reject)
-        resolve()
-      })
-    })
+    const { server, port } = await this.listen(handleRequest)
+    const prepareCompanion = this.options.prepareCompanion
+      ?? (this.options.port === undefined
+        ? (selectedPort: number, selectedKey: string) => new CursorRuntimeCompanionConfig().ensure({ port: selectedPort, key: selectedKey })
+        : undefined)
 
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
+      await prepareCompanion?.(port, key)
       const launchResult = await launch()
       const timeout = new Promise<CursorRuntimeSwitchAck>((_, reject) => {
         timer = setTimeout(() => reject(new Error(
@@ -114,6 +117,36 @@ export class CursorRuntimeAccountBridge implements CursorRuntimeAccountBridgePor
       if (timer) clearTimeout(timer)
       await new Promise<void>((resolve) => server.close(() => resolve()))
     }
+  }
+
+  private async listen(
+    handler: (request: IncomingMessage, response: ServerResponse) => void
+  ): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
+    const first = this.options.port ?? CURSOR_RUNTIME_SWITCH_PORT
+    const last = this.options.portMax ?? (this.options.port === undefined ? CURSOR_RUNTIME_SWITCH_PORT_MAX : first)
+    for (let port = first; port <= last; port += 1) {
+      const server = createServer(handler)
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (error: NodeJS.ErrnoException): void => reject(error)
+          server.once('error', onError)
+          server.listen(port, '127.0.0.1', () => {
+            server.off('error', onError)
+            resolve()
+          })
+        })
+        return { server, port }
+      } catch (error) {
+        try { server.close() } catch { /* 未监听时无需处理 */ }
+        if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || port === last) {
+          if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+            throw new Error(`Cursor 运行时换号端口 ${first}-${last} 全部被占用`)
+          }
+          throw error
+        }
+      }
+    }
+    throw new Error('Cursor 运行时换号桥没有可用端口')
   }
 
   private respond(response: ServerResponse, status: number, body?: unknown): void {

@@ -46,6 +46,7 @@ function propsFor(overrides: Partial<LobbyAccountTileProps> = {}): LobbyAccountT
     cursorUpdateBusy: false,
     cursorUpdateError: '',
     onSetCursorAutoUpdateDisabled: async () => {},
+    onSetModelDataPolicyAutoAcknowledge: async () => ({ message: '已确认' }),
     onSaveAutomationSettings: () => {},
     onCancelAutomation: () => {},
     ...overrides
@@ -100,6 +101,9 @@ describe('LobbyAccountTile', () => {
     const html = renderToStaticMarkup(<LobbyAccountTile {...propsFor()} />)
 
     expect(html).toContain('aria-label="账号自动化流程"')
+    expect(html).toContain('flow-status-icon is-done')
+    expect(html).toContain('m5.2 10.2 3.1 3.1 6.6-7')
+    expect(html).not.toContain('>✓<')
     for (const [index, title, state] of [
       [1, '获取 Token', '完成'],
       [2, '倒计时', '就绪'],
@@ -112,7 +116,7 @@ describe('LobbyAccountTile', () => {
     expect(html).not.toContain('lobby-account__columns')
   })
 
-  it('合并状态行：一致 + 档位一行呈现（档位段着色），带手动刷新按钮', () => {
+  it('会员等级移入当前账号卡：Free Plan 使用绿色等级类并带刷新按钮', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
         runtimeMatch: { status: 'matched', cursorLabel: 'work@example.com', activeLabel: 'work@example.com' },
@@ -120,12 +124,15 @@ describe('LobbyAccountTile', () => {
         onRefreshMembership: () => {}
       })} />
     )
-    expect(html).toContain('account-status-line is-off')
-    expect(html).toContain('work@example.com · 一致 ·')
-    expect(html).toContain('<span class="is-tier-free">Free</span>')
-    expect(html).toContain('>刷新</button>')
-    // 悬停完整说明（劈叉明细走 title）
-    expect(html).toContain('title="Cursor 运行登录态与活跃账号的比对 + 在线会员档位')
+    expect(html).toContain('account-status-line"')
+    expect(html).toContain('work@example.com · 一致')
+    expect(html).not.toContain('work@example.com · 一致 · Free')
+    expect(html).toContain('account-membership-plan is-tier-free')
+    expect(html).toContain('账号类型：<b>Free Plan</b>')
+    expect(html).toContain('class="account-membership-refresh is-tier-free"')
+    expect(html).toMatch(/account-membership-refresh[\s\S]*?<svg[^>]+viewBox="0 0 24 24"/)
+    expect(html).not.toContain('↻')
+    expect(html).toContain('title="刷新此账号会员等级"')
 
     const paid = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
@@ -134,38 +141,47 @@ describe('LobbyAccountTile', () => {
       })} />
     )
     expect(paid).toContain('account-status-line"')  // 无警示 tone
-    expect(paid).toContain('work@example.com · 一致 ·')
-    expect(paid).toContain('<span class="is-tier-pro">Pro</span>')
+    expect(paid).toContain('work@example.com · 一致')
+    expect(paid).toContain('account-membership-plan is-tier-pro')
+    expect(paid).toContain('账号类型：<b>Pro Plan</b>')
     expect(paid).not.toContain('is-tier-free')
   })
 
-  it('档位段按档位着色：free/trial/pro/pro+/ultra/enterprise 各自类名', () => {
-    for (const [tier, className] of [
-      ['free', 'is-tier-free'],
-      ['free_trial', 'is-tier-trial'],
-      ['pro', 'is-tier-pro'],
-      ['pro_plus', 'is-tier-proplus'],
-      ['ultra', 'is-tier-ultra'],
-      ['enterprise', 'is-tier-enterprise']
+  it('当前账号档位采用独立标签与色系：Free 绿、Trial 琥珀、Pro 蓝、Pro+ 靛、Ultra 紫、Enterprise 橙', () => {
+    for (const [tier, className, plan] of [
+      ['free', 'is-tier-free', 'Free Plan'],
+      ['free_trial', 'is-tier-trial', 'Free Trial'],
+      ['pro', 'is-tier-pro', 'Pro Plan'],
+      ['pro_plus', 'is-tier-proplus', 'Pro+ Plan'],
+      ['ultra', 'is-tier-ultra', 'Ultra Plan'],
+      ['enterprise', 'is-tier-enterprise', 'Enterprise Plan']
     ] as const) {
       const html = renderToStaticMarkup(
         <LobbyAccountTile {...propsFor({
           membership: { state: 'ok', profile: { tier, raw: tier, fetchedAt: 1 } }
         })} />
       )
-      expect(html).toContain(className)
+      expect(html).toContain(`account-membership-plan ${className}`)
+      expect(html).toContain(`账号类型：<b>${plan}</b>`)
     }
   })
 
-  it('状态行位于卡片头：替换「当前 xxx」；无信号时回退原展示', () => {
+  it('顶部状态行只保留登录一致性；账号类型不依赖当前选择并可在每张卡常驻', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
         runtimeMatch: { status: 'matched', cursorLabel: 'work@example.com', activeLabel: 'work@example.com' },
-        membership: { state: 'ok', profile: { tier: 'free', raw: 'free', fetchedAt: 1 } }
+        membership: { state: 'ok', profile: { tier: 'free', raw: 'free', fetchedAt: 1 } },
+        accountMemberships: {
+          'account:1': { state: 'ok', profile: { tier: 'free', raw: 'free', fetchedAt: 1 } },
+          'account:2': { state: 'ok', profile: { tier: 'pro_plus', raw: 'pro_plus', fetchedAt: 1 } }
+        }
       })} />
     )
-    expect(html).toContain('<em class="lobby-account__current"><span class="account-status-line is-off"')
+    expect(html).toContain('<em class="lobby-account__current"><span class="account-status-line"')
     expect(html).toContain('account-status-line__text')
+    expect(html).toContain('账号类型：<b>Free Plan</b>')
+    expect(html).toContain('账号类型：<b>Pro+ Plan</b>')
+    expect((html.match(/account-membership-plan/g) ?? [])).toHaveLength(2)
 
     // 无信号（未拉取/未登录）：头部回退「当前 xxx」粗体展示
     const fallback = renderToStaticMarkup(<LobbyAccountTile {...propsFor({})} />)
@@ -187,8 +203,8 @@ describe('LobbyAccountTile', () => {
       })} />
     )
     expect(html).toContain('account-status-line is-off')
-    expect(html).toContain('登录账号不一致 ·')
-    expect(html).toContain('<span class="is-tier-pro">Pro</span>')
+    expect(html).toContain('登录账号不一致')
+    expect(html).toContain('account-membership-plan is-tier-pro')
     expect(html).toContain('Cursor 当前登录 other@example.com，活跃账号 work@example.com')
   })
 
@@ -213,6 +229,18 @@ describe('LobbyAccountTile', () => {
       const html = renderToStaticMarkup(<LobbyAccountTile {...propsFor(props)} />)
       expect(html).not.toContain('account-status-line')
     }
+  })
+
+  it('本地身份一致但服务端 401 时明确区分“身份相同”与“会话有效”', () => {
+    const html = renderToStaticMarkup(
+      <LobbyAccountTile {...propsFor({
+        runtimeMatch: { status: 'matched', cursorLabel: 'a@x.com', activeLabel: 'a@x.com' },
+        membership: { state: 'auth_expired', detail: '服务端已撤销当前会话（HTTP 401）' }
+      })} />
+    )
+    expect(html).toContain('account-status-line is-off')
+    expect(html).toContain('a@x.com · 一致 · 服务端会话已失效')
+    expect(html).toContain('“一致”只表示本地 JWT 账号标识相同')
   })
 
   it('keeps every existing feature entry point', () => {
@@ -243,6 +271,8 @@ describe('LobbyAccountTile', () => {
     expect(html).toContain('range-field__value')
     // Cursor 本机维护
     expect(html).toContain('关闭 Cursor 自动更新')
+    expect(html).toContain('受限模型数据政策')
+    expect(html).toContain('自动确认受限模型数据政策')
   })
 
   it('shows the countdown scene with remaining seconds and a cancel button', () => {
@@ -358,8 +388,10 @@ describe('LobbyAccountTile', () => {
 
     // 分段控件在第一步「获取 Token」，默认选中指纹
     expect(html).toContain('aria-label="浏览器来源切换"')
-    expect(html).toMatch(/aria-selected="true"[^>]*>指纹浏览器<\/button>/)
-    expect(html).toMatch(/aria-selected="false"[^>]*>系统浏览器<\/button>/)
+    expect(html).toContain('会话浏览器')
+    expect(html).toContain('贯穿全流程')
+    expect(html).toMatch(/aria-selected="true"[^>]*>[\s\S]*?<strong>指纹浏览器<\/strong>/)
+    expect(html).toMatch(/aria-selected="false"[^>]*>[\s\S]*?<strong>系统浏览器<\/strong>/)
     // 紧凑配置行：自绘下拉关闭态只显示占位符（选项列表展开时才渲染）
     expect(html).not.toContain('<option value="roxybrowser">Roxy</option>')
     expect(html).toContain('menu-select__button')
@@ -396,7 +428,7 @@ describe('LobbyAccountTile', () => {
       })} />
     )
 
-    expect(html).toMatch(/aria-selected="true"[^>]*>系统浏览器<\/button>/)
+    expect(html).toMatch(/aria-selected="true"[^>]*>[\s\S]*?<strong>系统浏览器<\/strong>/)
     expect(html).toContain('需在 Edge / Chrome 登录 cursor.com')
     expect(html).toContain('从浏览器导入 Token')
     expect(html).not.toContain('从指纹浏览器导入（推荐）')
@@ -514,7 +546,7 @@ describe('LobbyAccountTile', () => {
     )
 
     // mac 上系统浏览器宿主（Keychain + Apple Events）仍可选；Roxy Key 掩码双平台展示
-    expect(html).toMatch(/aria-selected="false"[^>]*>系统浏览器<\/button>/)
+    expect(html).toMatch(/aria-selected="false"[^>]*>[\s\S]*?<strong>系统浏览器<\/strong>/)
     expect(html).toContain('6192****eada')
   })
 

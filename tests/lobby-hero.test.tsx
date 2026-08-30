@@ -30,9 +30,10 @@ describe('LobbyHero', () => {
     )
 
     expect(html).toContain('lobby-command__steps')
-    expect(html).toContain('--flow-progress-ratio:0.6666666666666666')
+    expect(html).not.toContain('--flow-progress-ratio')
     expect(html).toContain('aria-current="step"')
-    expect(html).toContain('<i>✓</i>')
+    expect(html).toContain('flow-status-icon is-done')
+    expect(html).toContain('m5.2 10.2 3.1 3.1 6.6-7')
     expect(html).toContain('Agent 待命')
     expect(html).toContain('<small title="qingtian · 本轮运行">本轮运行</small>')
     expect(html).not.toContain('<small title="qingtian · 本轮运行">qingtian · 本轮运行</small>')
@@ -64,7 +65,7 @@ describe('LobbyHero', () => {
     )
 
     expect(steps.map((step) => step.state)).toEqual(['done', 'done', 'done', 'done'])
-    expect(html).toContain('--flow-progress-ratio:1')
+    expect(html.match(/flow-status-icon is-done/g)).toHaveLength(4)
     expect(html).toContain('开始新一轮')
     expect(html).not.toContain('aria-current="step"')
   })

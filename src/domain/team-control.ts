@@ -86,6 +86,8 @@ export interface AgentSlot {
   avatarId: string
   /** 该席位下一次自动创建 Cursor Composer 时使用的独立模型配置。 */
   modelSelection?: CursorModelSelection
+  /** 独立席位：不入队，不参与团队调度；仅保留用户单聊与批量会话创建。 */
+  solo?: boolean
   channelId?: string
   order: number
   createdAt: number
@@ -114,7 +116,7 @@ export interface RuntimeBinding {
 }
 
 export interface TeamControlState {
-  schemaVersion: 5
+  schemaVersion: 7
   revision: number
   activeWorkspaceId?: string
   workspaces: TeamWorkspace[]
@@ -301,6 +303,17 @@ export const TEAM_ROLE_TEMPLATES: TeamRoleTemplate[] = [
     recommendedSkills: ['mcp-builder', 'webapp-testing', 'review', 'gh-fix-ci'],
     accent: 'sky',
     avatarId: 'devops'
+  },
+  {
+    key: 'solo',
+    name: '独立执行',
+    slotName: '独立席',
+    mission: '作为独立会话直接服务用户，接收并执行用户单独指派的任务，不参与团队协作与任务板。',
+    instructions: '只面向用户工作：收到用户消息后直接完成并回复；不调用任何 team_* 团队工具，不参与任务板。',
+    capabilities: [],
+    recommendedSkills: [],
+    accent: 'sky',
+    avatarId: 'researcher'
   }
 ]
 
@@ -315,6 +328,8 @@ export interface TeamMemberConfiguration {
   avatarId: string
   skills: AssignedAgentSkill[]
   modelSelection?: CursorModelSelection
+  /** 独立席位：不入队，仅保留单聊与批量会话创建。 */
+  solo?: boolean
 }
 
 function roleTemplateOf(key: string): TeamRoleTemplate {
@@ -330,7 +345,7 @@ function uniqueChannelIds(values: string[]): string[] {
 
 export function emptyTeamControlState(): TeamControlState {
   return {
-    schemaVersion: 5,
+    schemaVersion: 7,
     revision: 0,
     workspaces: [],
     runs: [],
@@ -377,8 +392,10 @@ export function createConfiguredTeamBundle(input: {
   if (!channelIds.length || channelIds.length !== input.members.length) {
     throw new Error('团队通道不能为空、重复或无效')
   }
-  const leadCount = input.members.filter((member) => member.roleTemplateKey === 'lead').length
-  if (leadCount !== 1) throw new Error('团队必须且只能有 1 名主控协调')
+  const teamMembers = input.members.filter((member) => member.solo !== true)
+  if (!teamMembers.length) throw new Error('团队至少需要 1 个非独立席位（含 1 名主控）')
+  const leadCount = teamMembers.filter((member) => member.roleTemplateKey === 'lead').length
+  if (leadCount !== 1) throw new Error('团队必须且只能有 1 名主控协调（独立席位不参与计数）')
   const now = input.now ?? Date.now()
   const runKey = input.runKey?.trim()
   if (runKey && !/^[a-zA-Z0-9_-]{8,80}$/.test(runKey)) throw new Error('TeamRun 标识无效')
@@ -386,14 +403,15 @@ export function createConfiguredTeamBundle(input: {
   const identityScope = runKey ? `${workspaceId}:${runKey}` : workspaceId
   const occurrences = new Map<string, number>()
   const configured = input.members.map((member) => {
-    const template = roleTemplateOf(member.roleTemplateKey)
+    const template = roleTemplateOf(member.solo === true ? 'solo' : member.roleTemplateKey)
     const count = (occurrences.get(template.key) ?? 0) + 1
     occurrences.set(template.key, count)
     const key = count === 1 && template.key !== 'specialist' ? template.key : `${template.key}-${count}`
     if (!AGENT_AVATAR_IDS.includes(member.avatarId as typeof AGENT_AVATAR_IDS[number])) {
       throw new Error(`未知 Agent 头像：${member.avatarId}`)
     }
-    const skills = [...new Map(member.skills.map((skill) => [skill.id.trim(), {
+    const sourceSkills = member.solo === true ? [] : member.skills
+    const skills = [...new Map(sourceSkills.map((skill) => [skill.id.trim(), {
       id: skill.id.trim(),
       name: skill.name.trim(),
       description: skill.description.trim().slice(0, 500),
@@ -407,7 +425,7 @@ export function createConfiguredTeamBundle(input: {
     key,
     templateKey: template.key,
     name: template.name
-      + (template.key === 'specialist' || occurrences.get(template.key)! > 1 ? ` ${instanceNumber}` : ''),
+      + (template.key === 'specialist' || template.key === 'solo' || occurrences.get(template.key)! > 1 ? ` ${instanceNumber}` : ''),
     mission: template.mission,
     instructions: template.instructions,
     capabilities: [...template.capabilities],
@@ -420,11 +438,12 @@ export function createConfiguredTeamBundle(input: {
     runId,
     roleId: role.id,
     name: configured[index]!.template.slotName
-      + (role.templateKey === 'specialist' || occurrences.get(role.templateKey)! > 1 ? ` ${configured[index]!.instanceNumber}` : ''),
+      + (role.templateKey === 'specialist' || role.templateKey === 'solo' || occurrences.get(role.templateKey)! > 1 ? ` ${configured[index]!.instanceNumber}` : ''),
     avatarId: configured[index]!.member.avatarId,
     modelSelection: configured[index]!.member.modelSelection
       ? structuredClone(configured[index]!.member.modelSelection)
       : undefined,
+    solo: configured[index]!.member.solo === true,
     channelId: configured[index]!.member.channelId.trim(),
     order: index,
     createdAt: now,
@@ -494,6 +513,17 @@ export function buildTeamLaunchHint(input: {
     `此后所有团队工具与通信保活均传同一 channel_id，并严格按 check_in 返回的指令工作。`,
     `本次 Cursor 会话绑定标记：${cursorComposerBindingMarker({ bindingKey: binding.composerBindingKey, channelId })}`
   ].join('')
+}
+
+/** 独立席位开场指令：只保留用户单聊循环，绑定标记由 AgentSessionLauncher 统一追加。 */
+export function buildSoloLaunchHint(input: { channelId: string }): string {
+  const { channelId } = input
+  return [
+    `拾光协作通道 CH-${channelId} 已启动（独立模式）。`,
+    '你是独立执行 Agent，不加入任何团队：不要调用任何 team_* 工具（服务端会拒绝）；直接处理用户消息。',
+    `每次完整回复用户后，先调用 record_reply({channel_id:'${channelId}', content: 完整回复正文})，再调用 check_messages({channel_id:'${channelId}'}) 长轮询等待下一条消息。`,
+    'check_messages 返回 keepalive 或无未读时静默继续调用：不要输出可见回复、不要 record_reply。'
+  ].join('\n')
 }
 
 /** 角色简报：team_check_in 完整返回，属工具输出而非会话内容。 */

@@ -132,6 +132,8 @@ export interface CreateTeamMemberInput {
   avatarId: string
   skillIds: string[]
   modelSelection?: CursorModelSelection
+  /** 独立席位：不入队，仅保留单聊与批量会话创建。 */
+  solo?: boolean
 }
 
 export interface CreateTeamInput {
@@ -169,6 +171,13 @@ export interface QingtianDesktopApi {
   importCursorAccountFromFingerprint(): Promise<CursorAccountMetadata[]>
   /** 打开选定的指纹浏览器窗口并导航到 cursor.com：用户可提前登录（cookie 落 profile，窗口不自动关）。 */
   openFingerprintLoginPage(): Promise<void>
+  /** 查询并幂等确认当前指纹浏览器账号所需的受限模型数据政策。 */
+  acknowledgeCursorModelDataPolicies(): Promise<{
+    changed: boolean
+    tokenUpdated: boolean
+    modelIds: string[]
+    message: string
+  }>
   /**
    * 一键切换账号（FlyCursor「一键换号」同款时序）：确定性终止 Cursor → 独占写入
    * 登录态（cursorAuth/* 键）→ 重置账号绑定机器码（machineid 文件 +
@@ -198,6 +207,8 @@ export interface QingtianDesktopApi {
    * 失败返回 error 状态（fail-closed：过闸必须有权威结果）。
    */
   refreshCursorMembership(): Promise<CursorMembershipStatus>
+  /** 按本地账号库存逐个读取加密凭据并在线查询档位；Token 不离开主进程。 */
+  refreshCursorAccountMemberships(accountIds?: string[]): Promise<Record<string, CursorMembershipStatus>>
   getAozaiCardStatus(): Promise<AozaiCardStatus>
   saveAozaiCard(cardCode: string): Promise<AozaiCardStatus>
   clearAozaiCard(): Promise<AozaiCardStatus>
@@ -269,9 +280,11 @@ export const IPC = {
   cursorAccountsImportFromBrowser: 'cursor-accounts:import-from-browser',
   cursorAccountsImportFromFingerprint: 'cursor-accounts:import-from-fingerprint',
   cursorAccountsOpenFingerprintLogin: 'cursor-accounts:open-fingerprint-login',
+  cursorAccountsAcknowledgeModelDataPolicies: 'cursor-accounts:acknowledge-model-data-policies',
   cursorAccountsRestartWith: 'cursor-accounts:restart-with',
   cursorAccountsVerifyRuntime: 'cursor-accounts:verify-runtime',
   cursorAccountsRefreshMembership: 'cursor-accounts:refresh-membership',
+  cursorAccountsRefreshMemberships: 'cursor-accounts:refresh-memberships',
   aozaiGetCardStatus: 'aozai:get-card-status',
   aozaiSaveCard: 'aozai:save-card',
   aozaiClearCard: 'aozai:clear-card',

@@ -77,6 +77,7 @@ describe('LobbyPage', () => {
     expect(html).toContain('aria-label="账号自动化流程"')
     expect(html).toContain('获取 Token')
     expect(html).toContain('aria-label="浏览器来源切换"')
+    expect(html).toContain('会话浏览器')
     expect(html).toContain('从指纹浏览器导入（推荐）')
     expect(html).toContain('自动获取本机 Token')
     expect(html).toContain('手动粘贴 Token')

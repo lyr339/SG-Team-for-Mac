@@ -16,7 +16,15 @@ describe('theme surface contracts', () => {
   it('uses semantic disabled colors instead of white-on-transparent submit text', () => {
     expect(styles).toMatch(/\.composer-submit button:disabled\s*\{[^}]*color:\s*var\(--color-text-disabled\)/)
     expect(styles).toMatch(/\.composer-submit button:disabled\s*\{[^}]*background:\s*var\(--color-background-secondary\)/)
+    expect(styles).toMatch(/\.composer-submit button:disabled\s*\{[^}]*border-color:\s*var\(--color-border-primary\)/)
+    expect(styles).toMatch(/\.composer-submit kbd\s*\{[^}]*border:\s*1px solid var\(--color-border-primary\)/)
     expect(styles).not.toMatch(/\.composer-submit button:disabled\s*\{[^}]*rgba\(255,\s*255,\s*255/)
+  })
+
+  it('uses semantic bound/unbound colors and an accessible queue popover', () => {
+    expect(styles).toMatch(/\.composer-binding-status\.is-bound\s*\{[^}]*var\(--color-background-success\)[^}]*var\(--color-border-success\)/)
+    expect(styles).toMatch(/\.composer-binding-status\.is-unbound\s*\{[^}]*var\(--color-background-danger\)[^}]*var\(--color-border-danger\)/)
+    expect(styles).toMatch(/\.composer-queue-popover\s*\{[^}]*z-index:\s*90/)
   })
 
   it('uses the cool Orbit palette instead of the former yellow parchment palette', () => {
@@ -51,5 +59,12 @@ describe('theme surface contracts', () => {
     expect(styles).toMatch(/\.topbar-nav\s*\{[^}]*translateX\(calc\(\(var\(--window-control-safe-right\) - var\(--window-control-safe-left\)\) \/ 2\)\)/s)
     expect(styles).not.toMatch(/\.topbar__actions\s*\{[^}]*margin-right:\s*var\(--window-control-safe-right\)/)
     expect(styles).not.toContain('margin: 0 calc(var(--window-control-safe-right) / 2)')
+  })
+
+  it('uses segmented lobby connectors and focus rings instead of decorative edge strips', () => {
+    expect(lobby).toMatch(/\.lobby-command__steps li:not\(:last-child\)::after\s*\{[^}]*left:\s*calc\(50% \+ 13px\)[^}]*right:\s*calc\(-50% - 4px \+ 13px\)/s)
+    expect(lobby).toContain('@keyframes lobby-current-pulse')
+    expect(lobby).not.toContain('box-shadow: inset 3px 0 0 var(--accent)')
+    expect(lobby).toContain('.account-browser__connection-row')
   })
 })

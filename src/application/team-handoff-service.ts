@@ -34,6 +34,7 @@ export class TeamHandoffService {
     }
     const source = team.members.find((member) => member.slot.id === sourceSlotId.trim())
     if (!source?.binding) throw new TaskPoolError('handoff_source_missing', '待交接角色没有有效运行绑定')
+    if (source.slot.solo === true) throw new TaskPoolError('handoff_source_solo', '独立席位不参与团队交接')
     if (source.runtime?.online) throw new TaskPoolError('handoff_source_online', '当前 Agent 仍在线，无需交接')
     const originalLead = team.members.find((member) => member.role.templateKey === 'lead')
     const effectiveLeadSlotId = run.actingLeadSlotId ?? originalLead?.slot.id
@@ -53,6 +54,7 @@ export class TeamHandoffService {
       .flatMap((record) => [record.fromAgentSessionId, record.toAgentSessionId].filter(Boolean) as string[]))
 
     const memberCandidates: TeamHandoffCandidate[] = team.members
+      .filter((member) => member.slot.solo !== true)
       .filter((member) => member.slot.id !== source.slot.id && member.binding && member.runtime?.online)
       .map((member) => {
         const binding = member.binding!

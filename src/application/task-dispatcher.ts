@@ -17,9 +17,10 @@ function activeAgentSessions(pool: TaskPoolSnapshot): Set<string> {
   }))
 }
 
-function executionMember(task: TeamTask, team: TeamControlSnapshot, pool: TaskPoolSnapshot): TeamMemberView | undefined {
+export function executionMember(task: TeamTask, team: TeamControlSnapshot, pool: TaskPoolSnapshot): TeamMemberView | undefined {
   const busySessions = activeAgentSessions(pool)
   const eligible = team.members
+    .filter((member) => member.slot.solo !== true)
     .filter((member) => Boolean(member.binding))
     .filter((member) => !task.targetSlotId || member.slot.id === task.targetSlotId)
     .filter((member) => task.requiredCapabilities.every((capability) => member.role.capabilities.includes(capability)))

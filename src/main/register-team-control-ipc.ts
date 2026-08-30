@@ -164,7 +164,8 @@ export function registerTeamControlIpc(
       skillIds: member.role.skills.map((skill) => skill.id),
       modelSelection: member.slot.modelSelection
         ? structuredClone(member.slot.modelSelection)
-        : undefined
+        : undefined,
+      solo: member.slot.solo === true
     }] : [])
     return prepareDraft(workspace, initialMembers)
   })

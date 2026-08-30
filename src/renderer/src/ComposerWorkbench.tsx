@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
 import type { MessageAttachment } from '../../domain/conversation-entry'
 import {
@@ -14,7 +14,7 @@ import { planAttachmentIntake } from './attachment-rules'
 import { ContextUsagePopover } from './ContextUsagePopover'
 import { SessionUsageStat } from './SessionUsageStat'
 import { modelProviderClass, modelProviderLabel } from './model-provider'
-import { EraseIcon, ExportIcon, HandoffIcon, LinkIcon } from './UiIcons'
+import { EraseIcon, ExportIcon, HandoffIcon, SessionBindingIcon } from './UiIcons'
 
 interface ComposerWorkbenchProps {
   session: AgentSession
@@ -75,6 +75,30 @@ function QueueIcon(): React.JSX.Element {
       <circle cx="3" cy="10" r="1" fill="currentColor" />
       <circle cx="3" cy="15" r="1" fill="currentColor" />
     </svg>
+  )
+}
+
+function QueueStatus({ session }: { session: AgentSession }): React.JSX.Element {
+  const tooltipId = useId()
+  const state = !session.online
+    ? 'Agent 当前离线，消息会保留在本地队列'
+    : session.waiting
+      ? 'Agent 正在监听，新消息会立即投递'
+      : 'Agent 正在处理当前任务，新消息将按顺序等待'
+  const delivery = session.deliveryMode === 'queued' ? '离线队列' : '实时通道'
+  return (
+    <span className="composer-queue-status" tabIndex={0} aria-describedby={tooltipId}>
+      <QueueIcon />
+      <span>队列 <b>{session.queueDepth}</b></span>
+      <span className="composer-queue-popover" id={tooltipId} role="tooltip">
+        <header><span><QueueIcon /></span><strong>消息队列</strong><em>{session.queueDepth}</em></header>
+        <p>{session.queueDepth > 0 ? `${session.queueDepth} 条消息等待当前 Agent 获取。` : '当前没有等待处理的消息。'}</p>
+        <dl>
+          <div><dt>通道状态</dt><dd>{state}</dd></div>
+          <div><dt>投递路径</dt><dd>{delivery}</dd></div>
+        </dl>
+      </span>
+    </span>
   )
 }
 
@@ -366,14 +390,11 @@ export function ComposerWorkbench({
         </div>
         <div className="composer-topbar__right">
           <SessionUsageStat usage={session.usage} bound={bound} />
-          <span className={bound ? 'composer-meta is-positive' : 'composer-meta'} title={session.telemetry?.detail}>
-            <LinkIcon />
+          <span className={`composer-binding-status ${bound ? 'is-bound' : 'is-unbound'}`} title={session.telemetry?.detail}>
+            <SessionBindingIcon bound={bound} />
             {bound ? 'Cursor 已绑定' : '会话待绑定'}
           </span>
-          <span className="composer-meta composer-queue-meta">
-            <QueueIcon />
-            队列 {session.queueDepth}
-          </span>
+          <QueueStatus session={session} />
           <span className="composer-duration" title={session.online ? '当前 Cursor 会话累计运行时长' : 'Cursor Agent 离线后已截止'}>
             <ClockIcon />
             {formatAgentSessionDuration(session)}

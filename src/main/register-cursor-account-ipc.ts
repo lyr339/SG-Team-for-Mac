@@ -2,6 +2,8 @@ import { ipcMain, type BrowserWindow } from 'electron'
 import type { CursorAccountVault } from '../application/cursor-account-vault'
 import { switchCursorAccountWithVault } from '../application/cursor-account-switch'
 import { verifyCursorRuntimeAccountMatch } from '../application/cursor-runtime-account-verify'
+import { resolveCursorMembership } from '../application/cursor-membership-resolver'
+import { fetchCursorAccountMemberships } from '../application/cursor-account-memberships'
 import { CursorTokenImporter } from '../infrastructure/cursor/cursor-token-importer'
 import { CursorMembershipFetcher } from '../infrastructure/cursor/cursor-membership-profile'
 import { CursorAccountSwitcher } from '../infrastructure/cursor/cursor-account-switcher'
@@ -15,6 +17,12 @@ import { assertTrustedSender } from './ipc-security'
 function accountIdOf(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 200) throw new Error('Cursor 账号 ID 无效')
   return value.trim()
+}
+
+function accountIdsOf(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 100) throw new Error('Cursor 账号 ID 列表无效')
+  return [...new Set(value.map(accountIdOf))]
 }
 
 export interface CursorAccountIpcOptions {
@@ -45,6 +53,12 @@ export interface CursorAccountIpcOptions {
    * 窗口不自动关；未选窗口/指纹浏览器不可达时抛带引导信息的错误。
    */
   openFingerprintLogin?: () => Promise<void>
+  /** 当前指纹 profile 的模型数据政策确认；返回导航后的最新 token。 */
+  acknowledgeModelDataPolicies?: () => Promise<{
+    token: string
+    changed: boolean
+    policies: Array<{ kind: 'already_acknowledged' | 'acknowledged'; modelId: string; consentVersion: string }>
+  }>
 }
 
 export function registerCursorAccountIpc(
@@ -124,6 +138,32 @@ export function registerCursorAccountIpc(
     if (!options.openFingerprintLogin) throw new Error('指纹浏览器通道未装配')
     await options.openFingerprintLogin()
   })
+  ipcMain.handle(IPC.cursorAccountsAcknowledgeModelDataPolicies, async (event) => {
+    assertTrustedSender(event, getWindow)
+    if (!options.acknowledgeModelDataPolicies) throw new Error('指纹浏览器政策确认通道未装配')
+    const result = await options.acknowledgeModelDataPolicies()
+    const tokenAccountId = result.token.split('::', 1)[0]?.trim()
+    let tokenUpdated = false
+    const active = vault.list().find((account) => account.active)
+    if (active && tokenAccountId) {
+      const previous = vault.credential(active.id)
+      const previousAccountId = previous.split('::', 1)[0]?.trim()
+      // 仅同账号原地更新：profile 选错账号时绝不覆盖拾光活跃凭据。
+      if (previousAccountId === tokenAccountId && previous !== result.token) {
+        vault.replaceToken(active.id, result.token)
+        tokenUpdated = true
+      }
+    }
+    const modelIds = result.policies.map((policy) => policy.modelId)
+    return {
+      changed: result.changed,
+      tokenUpdated,
+      modelIds,
+      message: result.changed
+        ? `已确认 ${modelIds.join('、')} 的数据政策`
+        : `${modelIds.join('、')} 的数据政策已确认，无需重复提交`
+    }
+  })
   ipcMain.handle(IPC.cursorAccountsRestartWith, async (event, accountId: unknown) => {
     assertTrustedSender(event, getWindow)
     // 一键切换：杀 Cursor → 写登录态 + 重置机器码 → 带端口拉起（FlyCursor 时序）；
@@ -158,7 +198,23 @@ export function registerCursorAccountIpc(
       const detail = reason instanceof Error ? reason.message : String(reason ?? '')
       return { state: 'not_logged_in', detail: detail.replace(/\s+/g, ' ').trim().slice(0, 120) }
     }
-    return membershipFetcher.fetch(token)
+    let activeToken: string | undefined
+    try {
+      const active = vault.list().find((account) => account.active)
+      activeToken = active ? vault.credential(active.id) : undefined
+    } catch {
+      // 活跃凭据不可读时仍以 Cursor 运行态给出权威结果。
+    }
+    return resolveCursorMembership({
+      runtimeToken: token,
+      activeToken,
+      fetch: (candidate) => membershipFetcher.fetch(candidate)
+    })
+  })
+  ipcMain.handle(IPC.cursorAccountsRefreshMemberships, async (event, rawAccountIds: unknown) => {
+    assertTrustedSender(event, getWindow)
+    const requested = accountIdsOf(rawAccountIds)
+    return fetchCursorAccountMemberships(vault, (token) => membershipFetcher.fetch(token), requested)
   })
   return () => {
     ipcMain.removeHandler(IPC.cursorAccountsList)
@@ -169,8 +225,10 @@ export function registerCursorAccountIpc(
     ipcMain.removeHandler(IPC.cursorAccountsImportFromBrowser)
     ipcMain.removeHandler(IPC.cursorAccountsImportFromFingerprint)
     ipcMain.removeHandler(IPC.cursorAccountsOpenFingerprintLogin)
+    ipcMain.removeHandler(IPC.cursorAccountsAcknowledgeModelDataPolicies)
     ipcMain.removeHandler(IPC.cursorAccountsRestartWith)
     ipcMain.removeHandler(IPC.cursorAccountsVerifyRuntime)
     ipcMain.removeHandler(IPC.cursorAccountsRefreshMembership)
+    ipcMain.removeHandler(IPC.cursorAccountsRefreshMemberships)
   }
 }
