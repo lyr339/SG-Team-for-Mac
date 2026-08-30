@@ -49,7 +49,8 @@ import { restartCursorWithCdp } from '../infrastructure/cursor/cursor-cdp-restar
 import { CursorCdpKeeper } from '../infrastructure/cursor/cursor-cdp-keeper'
 import { CursorCdpSettingsStore } from '../application/cursor-cdp-settings-store'
 import { registerCdpKeeperIpc } from './register-cdp-keeper-ipc'
-import { CursorUsageTracker } from '../application/cursor-usage-tracker'
+import { CursorUsageTracker, cursorUsageRunDecision } from '../application/cursor-usage-tracker'
+import { CursorUsageStore } from '../infrastructure/cursor/cursor-usage-store'
 import { registerCursorUsageIpc } from './register-cursor-usage-ipc'
 import { CursorUpdatePreferencesStore } from '../infrastructure/cursor/cursor-update-preferences'
 import { registerCursorUpdateIpc } from './register-cursor-update-ipc'
@@ -94,6 +95,7 @@ let teamControlRepository: SqliteTeamControlRepository | undefined
 let teamControlService: TeamControlService | undefined
 let desktopSessionService: DesktopSessionService | undefined
 let cursorStreamObserver: CursorStreamObserver | undefined
+let cursorUsageTrackerRef: CursorUsageTracker | undefined
 let teamCollaborationRepository: SqliteTeamCollaborationRepository | undefined
 let teamMessageDispatcher: TeamMessageDispatcher | undefined
 let teamMemoryRepository: SqliteTeamMemoryRepository | undefined
@@ -280,14 +282,26 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   // 轮询循环保留为流式粒度与兜底；observer 缺席时整体降级为纯轮询。
   // 用量通道：bundle 补丁在 turnEnded 推真实计费 token → 聚合器 → IPC 推送。
   const streamService = desktopSessionService
+  const cursorUsageStore = new CursorUsageStore(join(app.getPath('userData'), 'cursor-usage.json'))
+  const initialUsageTeam = teamControlService.getSnapshot()
+  let usageRunId = initialUsageTeam.activeRun?.id
+  let usageRunStatus = initialUsageTeam.activeRun?.status
+  const initialUsageDecision = cursorUsageRunDecision(
+    { runId: usageRunId, status: usageRunStatus },
+    { runId: usageRunId, status: usageRunStatus }
+  )
   const cursorUsageTracker = new CursorUsageTracker({
     // 事件不带模型：记录时向会话快照查该 composer 当前模型（查不到走默认价格档）。
     resolveModelForComposer: (composerId) => {
       const sessions = streamService.getSnapshot().sessions
       const session = sessions.find((candidate) => candidate.composerId === composerId)
       return session?.executionProfile?.modelId ?? session?.modelName
-    }
+    },
+    initialSnapshot: cursorUsageStore.load(usageRunId),
+    persistSnapshot: (snapshot) => cursorUsageStore.save(usageRunId, snapshot),
+    collecting: initialUsageDecision.collecting
   })
+  cursorUsageTrackerRef = cursorUsageTracker
   cursorStreamObserver = new CursorStreamObserver({
     onWriteSignal: (composerId) => streamService.notifyComposerWriteSignal(composerId),
     onProcessEvent: (event) => streamService.notifyNativeProcessSnapshot(event),
@@ -468,9 +482,19 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   let activeRunId = teamControlService.getActiveRunId()
   disposeRunContext = teamControlService.subscribe((snapshot) => {
     const nextRunId = snapshot.activeRun?.id
-    if (nextRunId === activeRunId) return
-    activeRunId = nextRunId
-    taskPoolService?.notifyRunChanged()
+    const nextRunStatus = snapshot.activeRun?.status
+    if (nextRunId !== activeRunId) {
+      activeRunId = nextRunId
+      taskPoolService?.notifyRunChanged()
+    }
+    const usageDecision = cursorUsageRunDecision(
+      { runId: usageRunId, status: usageRunStatus },
+      { runId: nextRunId, status: nextRunStatus }
+    )
+    if (usageDecision.reset) usageRunId = nextRunId
+    if (usageDecision.reset) cursorUsageTracker.reset()
+    usageRunStatus = nextRunStatus
+    cursorUsageTracker.setCollecting(usageDecision.collecting)
   })
   disposeIpc = registerSessionIpc(desktopSessionService, () => mainWindow)
   const cursorCdpSettingsStore = new CursorCdpSettingsStore(join(app.getPath('userData'), 'cursor-cdp.json'))
@@ -581,6 +605,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
 app.on('before-quit', () => {
   void accountBrowserHostDisposeRef?.().catch(() => {})
   cursorStreamObserver?.dispose()
+  cursorUsageTrackerRef?.dispose()
   desktopSessionService?.dispose()
   channelMessageRelay?.stop()
   teamFailoverService?.stop()

@@ -4,9 +4,30 @@ import {
   type CursorUsageEvent,
   type CursorUsageSnapshot
 } from '../domain/cursor-usage'
+import type { TeamRunStatus } from '../domain/team-control'
+
+export interface CursorUsageRunState {
+  runId?: string
+  status?: TeamRunStatus
+}
+
+export function cursorUsageRunDecision(
+  previous: CursorUsageRunState,
+  next: CursorUsageRunState
+): { reset: boolean; collecting: boolean } {
+  const runChanged = previous.runId !== next.runId
+  const sameRunRestarted = !runChanged
+    && next.status === 'launching'
+    && previous.status !== 'launching'
+    && previous.status !== 'running'
+  return {
+    reset: runChanged || sameRunRestarted,
+    collecting: next.status === 'launching' || next.status === 'running' || next.status === 'attention'
+  }
+}
 
 /**
- * Cursor 会话用量聚合器（主进程内存态）。
+ * Cursor 会话用量聚合器（主进程实时态 + 本地持久化回调）。
  *
  * 输入：CursorStreamObserver 的 onUsageEvent（bundle 补丁在每回合
  * turnEnded 推送的真实计费 token）。
@@ -17,7 +38,7 @@ import {
  * 查该 composer 当前模型（resolveModelForComposer 注入），查不到按默认档。
  * 快照为深拷贝（structuredClone 同构的浅复制即可：值均为原始类型）。
  *
- * 应用重启后从零计（Cursor 侧 turnTokenUsage 不落盘，无历史可恢复）。
+ * 快照由调用方按 TeamRun 持久化；团队运行时采集，结束/暂停后冻结。
  */
 export interface CursorUsageTrackerOptions {
   /** composerId → 当前模型 id（费用估算用；缺省走默认价格档）。 */
@@ -26,6 +47,12 @@ export interface CursorUsageTrackerOptions {
   notifyDelayMs?: number
   /** 测试时钟。 */
   now?: () => number
+  /** 启动时恢复的 composer 累积快照。 */
+  initialSnapshot?: CursorUsageSnapshot
+  /** 每次计数变化后同步持久化；失败由 tracker 隔离。 */
+  persistSnapshot?: (snapshot: CursorUsageSnapshot) => void
+  /** 缺省 true；主进程按 TeamRun 状态切换。 */
+  collecting?: boolean
 }
 
 const DEFAULT_NOTIFY_DELAY_MS = 800
@@ -34,26 +61,46 @@ export class CursorUsageTracker {
   private readonly resolveModelForComposer: (composerId: string) => string | undefined
   private readonly notifyDelayMs: number
   private readonly now: () => number
+  private readonly persistSnapshot: (snapshot: CursorUsageSnapshot) => void
   private readonly sessions = new Map<string, CursorSessionUsage>()
   private readonly listeners = new Set<(snapshot: CursorUsageSnapshot) => void>()
   private notifyTimer?: ReturnType<typeof setTimeout>
   private disposed = false
+  private collecting: boolean
 
   constructor(options: CursorUsageTrackerOptions = {}) {
     this.resolveModelForComposer = options.resolveModelForComposer ?? (() => undefined)
     this.notifyDelayMs = options.notifyDelayMs ?? DEFAULT_NOTIFY_DELAY_MS
     this.now = options.now ?? (() => Date.now())
+    this.persistSnapshot = options.persistSnapshot ?? (() => {})
+    this.collecting = options.collecting ?? true
+    for (const [composerId, usage] of Object.entries(options.initialSnapshot ?? {})) {
+      if (usage.turns > 0) this.sessions.set(composerId, { ...usage })
+    }
   }
 
   /** 记录一回合用量并调度快照推送（节流合并密集回合）。 */
   record(event: CursorUsageEvent): void {
-    if (this.disposed) return
+    if (this.disposed || !this.collecting) return
     const model = this.resolveModelForComposer(event.composerId)
     this.sessions.set(event.composerId, accumulateUsage(
       this.sessions.get(event.composerId),
       event,
       model ?? ''
     ))
+    this.persist()
+    this.scheduleNotify()
+  }
+
+  setCollecting(collecting: boolean): void {
+    this.collecting = collecting
+  }
+
+  /** 新 TeamRun 开始前清零；立即推送空快照，旧徽章同步消失。 */
+  reset(): void {
+    if (this.disposed) return
+    this.sessions.clear()
+    this.persist()
     this.scheduleNotify()
   }
 
@@ -70,10 +117,19 @@ export class CursorUsageTracker {
   }
 
   dispose(): void {
+    this.persist()
     this.disposed = true
     if (this.notifyTimer) clearTimeout(this.notifyTimer)
     this.notifyTimer = undefined
     this.listeners.clear()
+  }
+
+  private persist(): void {
+    try {
+      this.persistSnapshot(this.getSnapshot())
+    } catch {
+      // 用量文件损坏/磁盘只读不影响 Cursor 会话与实时事件主链。
+    }
   }
 
   private scheduleNotify(): void {

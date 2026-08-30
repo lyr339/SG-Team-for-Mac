@@ -596,23 +596,20 @@ const api: QingtianDesktopApi = {
     desktopListeners.add(listener)
     return () => desktopListeners.delete(listener)
   },
-  // 用量预览：给大厅会话卡注入一份数据让徽章可见（无推送，仅初始拉取）。
-  getCursorUsageSnapshot: async () => {
-    const composer = state.desktop.sessions.find((session) => session.composerId)?.composerId
-    return composer ? {
-      [composer]: {
-        composerId: composer,
-        turns: 3,
-        inputTokens: 12_168,
-        outputTokens: 42,
-        cacheReadTokens: 3_968,
-        cacheWriteTokens: 0,
-        estimatedCostUsd: 0.0421,
-        pricedModel: 'Claude Sonnet',
-        lastTurnAt: previewNow
-      }
-    } : {}
-  },
+  // 用量预览：每个已绑定 Composer 都有独立累计，便于走查工作台顶部统计。
+  getCursorUsageSnapshot: async () => Object.fromEntries(state.desktop.sessions.flatMap((session, index) => (
+    session.composerId ? [[session.composerId, {
+      composerId: session.composerId,
+      turns: index + 2,
+      inputTokens: 12_168 * (index + 1),
+      outputTokens: 42 * (index + 1),
+      cacheReadTokens: 3_968 * (index + 1),
+      cacheWriteTokens: 0,
+      estimatedCostUsd: 0.0421 * (index + 1),
+      pricedModel: session.executionProfile?.displayName ?? 'Claude Sonnet',
+      lastTurnAt: previewNow
+    }]] : []
+  ))),
   onCursorUsageSnapshot: () => () => {},
   onTaskPoolSnapshot: () => () => {},
   onTeamControlSnapshot: (listener) => {

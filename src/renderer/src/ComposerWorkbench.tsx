@@ -365,7 +365,7 @@ export function ComposerWorkbench({
           />
         </div>
         <div className="composer-topbar__right">
-          <SessionUsageStat usage={session.usage} />
+          <SessionUsageStat usage={session.usage} bound={bound} />
           <span className={bound ? 'composer-meta is-positive' : 'composer-meta'} title={session.telemetry?.detail}>
             <LinkIcon />
             {bound ? 'Cursor 已绑定' : '会话待绑定'}

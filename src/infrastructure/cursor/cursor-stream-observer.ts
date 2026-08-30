@@ -39,7 +39,7 @@ const ATTACH_TIMEOUT_MS = 8_000
  * 自轮询重试（2s 间隔，上限 60 次），保证重载后 hook 自动恢复，不依赖重连。
  */
 export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
-  const HOOK_VERSION = 8
+  const HOOK_VERSION = 11
   let attempts = 0
   const pendingSnapshots = new Set()
   let snapshotQueued = false
@@ -190,7 +190,10 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
           : [])
       }
     }
-    return { isGenerating, process: items.length || todos?.length ? { items: items.slice(-36), todos, generatingBubbleCount } : undefined }
+    return {
+      isGenerating,
+      process: items.length || todos?.length ? { items: items.slice(-36), todos, generatingBubbleCount } : undefined
+    }
   }
   function scheduleProcessSnapshot(composerId) {
     if (!composerId) return

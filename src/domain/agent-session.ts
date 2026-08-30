@@ -94,7 +94,7 @@ export interface AgentSession {
   waiting: boolean
   contextUsage?: ContextUsage
   changes?: ChangeSummary
-  /** 本轮应用运行期该 composer 的累积 token 用量与费用估算（主进程内存态，重启清零）。 */
+  /** 该 Composer 的持久化累积 token 用量与费用估算。 */
   usage?: import('./cursor-usage').CursorSessionUsage
   workingFiles: string[]
   healthEvidence: string[]

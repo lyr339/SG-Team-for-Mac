@@ -84,7 +84,7 @@ describe('CursorStreamObserver', () => {
       }
     }
     runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
-    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(8)
+    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(11)
     expect(manager.markDirty({ composerId: 'composer-1' })).toBe(1)
     expect(observed).toEqual([1])
     await manager.updateWithoutMarkingDirty({ composerId: 'composer-1' })
@@ -125,7 +125,8 @@ describe('CursorStreamObserver', () => {
                   }
                 }
               },
-              generatingBubbleIds: []
+              generatingBubbleIds: [],
+              modelConfig: { modelName: 'claude-sonnet-4-5' }
             })
           }
         },

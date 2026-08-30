@@ -172,10 +172,12 @@ describe('SessionWorkspace', () => {
     })
 
     expect(html).toContain('16.2K')
-    expect(html).toContain('≈$0.042')
+    expect(html).toContain('$0.042')
+    expect(html).toContain('Tokens')
+    expect(html).not.toContain('≈$')
     expect(html.match(/class="session-usage-stat"/g)).toHaveLength(1)
     expect(html.indexOf('session-usage-stat')).toBeLessThan(html.indexOf('composer-duration'))
-    expect(html).toContain('title="本运行期真实计费 token（Claude Sonnet，4 回合）')
+    expect(html).toContain('title="本轮 TeamRun 的 Cursor 会话真实计费 token（Claude Sonnet，4 回合）')
 
     const idle = renderWorkspace({
       session: {
@@ -193,6 +195,14 @@ describe('SessionWorkspace', () => {
       }
     })
     expect(idle).not.toContain('session-usage-stat')
+  })
+
+  it('Composer 已绑定但尚无计费帧时保留明确占位，不再整块消失', () => {
+    const html = renderWorkspace({
+      session: { telemetry: { state: 'bound', detail: '已绑定', source: 'cursor-local' } }
+    })
+    expect(html).toContain('session-usage-pending')
+    expect(html).toContain('Token 待读取')
   })
 
   it('长文本消息包裹折叠结构（clamped-message）', () => {

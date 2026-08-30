@@ -176,6 +176,7 @@ html[data-color-mode="dark"] { --app-background-image: url("./assets/backgrounds
 
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; }
+/* hiddenInset 红黄绿按钮最右缘约 70px；84px 安全区再叠加顶栏 gutter。 */
 html[data-platform="darwin"] { --window-control-safe-left: 84px; }
 /* Windows titleBarOverlay 三按钮（最小化/最大化/关闭）约 138px，占据顶栏右上。 */
 html[data-platform="win32"] { --window-control-safe-right: 138px; }
@@ -324,9 +325,13 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
-  /* Keep the grid centered in the window. macOS still reserves its left traffic-light inset;
-     Windows reserves the right overlay only on the actions, so it cannot move the middle nav. */
-  padding: 0 16px 0 calc(16px + var(--window-control-safe-left));
+  /* 顶栏背景必须铺满窗口；交互内容完整避让原生窗口按钮。中栏再抵消左右
+     安全区差值，导航仍严格落在物理窗口中线。旧版使用 safe/2 margin，导致
+     macOS 品牌 Logo 侵入绿灯且标题栏左侧露出一截底图。 */
+  --topbar-gutter: 16px;
+  margin: 0;
+  padding: 0 calc(var(--window-control-safe-right) + var(--topbar-gutter))
+    0 calc(var(--window-control-safe-left) + var(--topbar-gutter));
   background: color-mix(in srgb, var(--color-background-primary) 84%, transparent);
   border-bottom: 1px solid var(--color-border-tertiary);
   box-shadow: 0 1px 10px rgb(35 52 77 / 0.06);
@@ -358,7 +363,7 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 .workspace-detection-chip.is-different > b { color: var(--text-amber-deep); background: var(--surface-amber); }
 .workspace-detection-chip.is-ambiguous { color: var(--amber); }
 
-.topbar-nav { min-width: 0; max-width: 100%; height: 100%; justify-self: center; display: flex; align-items: stretch; gap: 14px; padding: 0 8px; overflow: visible; background: transparent; border: 0; -webkit-app-region: no-drag; }
+.topbar-nav { min-width: 0; max-width: 100%; height: 100%; justify-self: center; display: flex; align-items: stretch; gap: 14px; padding: 0 8px; overflow: visible; background: transparent; border: 0; transform: translateX(calc((var(--window-control-safe-right) - var(--window-control-safe-left)) / 2)); -webkit-app-region: no-drag; }
 .topbar-nav button { position: relative; flex: 0 1 76px; min-width: 66px; height: 100%; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 1px 8px 0; color: var(--color-text-tertiary); background: transparent; border: 0; border-radius: 0; font-size: var(--fs-11); font-weight: 600; transition: color 150ms ease; }
 .topbar-nav button::after { content: ""; position: absolute; left: 13px; right: 13px; bottom: 5px; height: 2px; background: var(--accent); border-radius: var(--border-radius-full); opacity: 0; transform: scaleX(0.45); transition: opacity 150ms ease, transform 170ms ease; }
 .topbar-nav button:hover { color: var(--text); }
@@ -367,7 +372,7 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 .topbar-nav button.is-active::after { opacity: 1; transform: scaleX(1); }
 .topbar-nav button svg { width: 16px; height: 16px; }
 
-.topbar__actions { min-width: 0; justify-self: end; display: flex; align-items: center; gap: 8px; margin-right: var(--window-control-safe-right); overflow: visible; }
+.topbar__actions { min-width: 0; justify-self: end; display: flex; align-items: center; gap: 8px; overflow: visible; }
 .appearance-control { position: relative; flex: 0 0 auto; display: grid; place-items: center; }
 .appearance-button {
   width: 36px; height: 36px;
@@ -583,6 +588,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 .session-usage-stat__cost { color: var(--color-text-success); }
 .session-usage-stat small { color: var(--muted); font-size: 9px; font-weight: 500; }
 .session-usage-stat { min-height: 28px; padding: 0 9px; background: var(--color-background-info); border: 1px solid color-mix(in srgb, var(--color-border-info) 60%, transparent); border-radius: var(--border-radius-full); }
+.session-usage-pending { min-height: 28px; display: inline-flex; align-items: center; padding: 0 9px; color: var(--muted); background: var(--color-background-secondary); border: 1px solid var(--color-border-tertiary); border-radius: var(--border-radius-full); font-size: var(--fs-10); white-space: nowrap; }
 .rail-session-card__model { min-width: 0; grid-area: model; justify-self: end; align-self: center; }
 .rail-session-card__model > b { display: block; max-width: 116px; overflow: hidden; padding: 5px 7px; color: var(--model-provider-fg, white); background: var(--model-provider-bg, var(--accent-deep)); border: 1px solid var(--model-provider-border, transparent); border-radius: 6px; font: 600 var(--fs-10)/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .rail-session-card__model.is-muted > b { color: var(--muted); background: var(--surface-soft); }
@@ -1292,7 +1298,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 }
 
 @media (max-width: 1050px) {
-  .topbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; padding: 0 12px 0 calc(12px + var(--window-control-safe-left)); }
+  .topbar { --topbar-gutter: 12px; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; margin: 0; }
   .desktop-body { grid-template-columns: minmax(0, 1fr); }
   .overview-page__scroll { padding: 14px 18px 28px; }
   .task-page__scroll { padding: 14px 16px 26px; }
@@ -1302,7 +1308,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 }
 
 @media (max-width: 760px) {
-  .topbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; padding: 0 8px 0 calc(8px + var(--window-control-safe-left)); }
+  .topbar { --topbar-gutter: 8px; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; margin: 0; }
   .connection-chip__label, .connection-chip__online { display: none; }
   .connection-chip { min-width: 42px; padding: 0 9px; justify-content: center; gap: 6px; }
   .brand strong { display: none; }

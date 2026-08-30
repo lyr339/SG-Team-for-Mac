@@ -49,7 +49,7 @@ describe('ComposerWorkbench', () => {
     expect(html).toContain('title="添加图片或文件附件"')
     expect(html).toContain('report.md')
     expect(html).toContain('2.0 KB')
-    expect(html).not.toContain('Token')
+    expect(html).toContain('Token 待读取')
   })
 
   it('renders send errors as alerts without hiding the draft', () => {

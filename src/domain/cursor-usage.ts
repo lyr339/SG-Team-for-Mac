@@ -22,7 +22,7 @@ export interface CursorUsageEvent {
   occurredAt: number
 }
 
-/** 会话级累积用量（主进程内存态；应用重启后从零计）。 */
+/** 当前 TeamRun 内的会话级累积用量（按 composerId 本地持久化）。 */
 export interface CursorSessionUsage {
   composerId: string
   /** 已完成的回合数。 */
@@ -153,5 +153,5 @@ export function formatCostUsd(costUsd: number): string {
 }
 
 export function cursorUsageDetail(usage: CursorSessionUsage): string {
-  return `本运行期真实计费 token（${usage.pricedModel}，${usage.turns} 回合）：输入 ${usage.inputTokens.toLocaleString()} · 输出 ${usage.outputTokens.toLocaleString()} · 缓存读 ${usage.cacheReadTokens.toLocaleString()} · 缓存写 ${usage.cacheWriteTokens.toLocaleString()}；等价 API 成本估算 ${formatCostUsd(usage.estimatedCostUsd)}；拾光重启后清零`
+  return `本轮 TeamRun 的 Cursor 会话真实计费 token（${usage.pricedModel}，${usage.turns} 回合）：输入 ${usage.inputTokens.toLocaleString()} · 输出 ${usage.outputTokens.toLocaleString()} · 缓存读 ${usage.cacheReadTokens.toLocaleString()} · 缓存写 ${usage.cacheWriteTokens.toLocaleString()}；等价 API 成本估算 ${formatCostUsd(usage.estimatedCostUsd)}；团队结束后冻结，下轮启动时清零`
 }

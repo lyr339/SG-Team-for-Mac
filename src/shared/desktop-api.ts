@@ -252,7 +252,7 @@ export interface QingtianDesktopApi {
     team: TeamControlSnapshot
   }>
   onSnapshot(listener: (snapshot: DesktopSnapshot) => void): () => void
-  /** Cursor 会话用量快照（composerId → 累积 token/费用估算；内存态）。 */
+  /** 当前 TeamRun 的 Cursor 会话用量快照；结束冻结，下轮启动清零。 */
   getCursorUsageSnapshot(): Promise<CursorUsageSnapshot>
   onCursorUsageSnapshot(listener: (snapshot: CursorUsageSnapshot) => void): () => void
   onTaskPoolSnapshot(listener: (snapshot: TaskPoolSnapshot) => void): () => void
