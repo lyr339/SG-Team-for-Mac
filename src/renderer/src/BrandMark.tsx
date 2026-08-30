@@ -3,5 +3,5 @@ interface BrandMarkProps {
 }
 
 export function BrandMark({ className }: BrandMarkProps): React.JSX.Element {
-  return <img className={className} src="./brand-team.png" alt="" />
+  return <img className={className} src="./brand-shiguang.png" alt="" />
 }

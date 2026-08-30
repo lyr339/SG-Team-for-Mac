@@ -77,9 +77,10 @@ describe('team control domain', () => {
     expect(prompt).toContain('team_get_context')
     expect(prompt).toContain('完成 Bridge v2，并提供回归测试证据')
     expect(prompt).toContain("channel_id:'2'")
-    expect(prompt).toContain('qunshu')
+    expect(prompt).toContain('SG Team')
     expect(prompt).not.toContain('qtwx-mcp-2')
-    expect(prompt).toContain('[[QINGTIAN_TEAM_BIND:generation123:CH-2]]')
+    expect(prompt).toContain('[[SG_TEAM_BIND:generation123:CH-2]]')
+    expect(prompt).not.toContain('QINGTIAN')
     expect(prompt).toContain('停止自动重试')
     expect(prompt).toContain('默认控制在 1—4 句')
     expect(prompt).toContain('不要固定输出“当前结论 / 下一步 / 阻塞项”')
@@ -127,6 +128,32 @@ describe('team control domain', () => {
     })
     expect(prompt).toContain('/mcp-builder')
     expect(prompt).toContain('CH-7')
+  })
+
+  it('briefs an acting lead with real coordinator duties while retaining the specialist role', () => {
+    const bundle = createDefaultTeamBundle({
+      workspaceId: 'acting', workspaceName: 'acting', workspacePath: '/workspace/acting',
+      channelIds: ['1', '2'], now: 100
+    })
+    bundle.run.goal = '完成真实主控交接'
+    const role = bundle.roles.find((candidate) => candidate.templateKey === 'builder')!
+    const slot = bundle.slots.find((candidate) => candidate.roleId === role.id)!
+    const prompt = buildTeamRoleBriefing({
+      run: bundle.run,
+      role,
+      slot,
+      effectiveLead: true,
+      binding: {
+        id: 'binding-acting', workspaceId: bundle.workspace.id, runId: bundle.run.id,
+        slotId: slot.id, channelId: '2', agentSessionId: 'acting:ch-2:generation123',
+        generation: 'generation123', installedAt: 100, launchStatus: 'acknowledged',
+        launchDetail: '', lastCheckInNote: '', composerBindingKey: 'generation123'
+      }
+    })
+    expect(prompt).toContain('唯一有效主控')
+    expect(prompt).toContain('全局规划、调度、消息协调')
+    expect(prompt).toContain('team_list_board')
+    expect(prompt).toContain('team_broadcast + team_collect_responses')
   })
 
   it('requires exactly one lead regardless of team size', () => {

@@ -67,7 +67,11 @@ describe('AozaiCardVault', () => {
     expect(vault.save('CARD-SECRET-6l8Q')).toBe('••••6l8Q')
     expect(vault.maskedCode()).toBe('••••6l8Q')
     expect(readFileSync(path, 'utf8')).not.toContain('CARD-SECRET-6l8Q')
-    expect(statSync(path).mode & 0o777).toBe(0o600)
+    // POSIX 权限位断言只在类 Unix 平台生效：Windows 的 statSync 恒报 0666
+    // （Node 仅映射只读位，无 0600 语义）；macOS 行为不变。
+    if (process.platform !== 'win32') {
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+    }
     expect(vault.credential()).toBe('CARD-SECRET-6l8Q')
     vault.clear()
     expect(vault.maskedCode()).toBeUndefined()
@@ -77,6 +81,18 @@ describe('AozaiCardVault', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'qingtian-aozai-card-')), 'card.json')
     const vault = new AozaiCardVault(path, crypto)
     expect(() => vault.save('abc')).toThrowError(/卡密长度无效/)
+  })
+
+  it('系统钥匙变化时返回可操作提示而不是暴露 safeStorage 底层异常', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-aozai-card-')), 'card.json')
+    const vault = new AozaiCardVault(path, crypto)
+    vault.save('CARD-SECRET-6l8Q')
+    const unreadable = new AozaiCardVault(path, {
+      ...crypto,
+      decrypt: () => { throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.') }
+    })
+    expect(() => unreadable.credential()).toThrowError(/重新粘贴卡密/)
+    expect(() => unreadable.credential()).not.toThrowError(/safeStorage/)
   })
 })
 

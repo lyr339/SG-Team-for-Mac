@@ -28,7 +28,7 @@ describe('CursorUpdatePreferencesStore', () => {
     const persisted = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
 
     expect(result).toMatchObject({ changed: true, autoUpdateDisabled: true, updateMode: 'none' })
-    expect(result.backupPath).toBe(`${path}.qunshu-backup-2026-08-26T12-00-00-000Z`)
+    expect(result.backupPath).toBe(`${path}.shiguang-backup-2026-08-26T12-00-00-000Z`)
     expect(existsSync(result.backupPath!)).toBe(true)
     expect(persisted['editor.formatOnSave']).toBe(true)
     expect(persisted['update.mode']).toBe('none')

@@ -118,6 +118,22 @@ describe('CursorWorkspaceDetector', () => {
       workspace: { id: workspaceIdentityOf(data.projectA).id }
     })
   })
+
+  it('matches quoted Windows Cursor.exe command lines (Win32_Process CommandLine)', () => {
+    const data = fixture()
+    const detector = new CursorWorkspaceDetector({
+      globalStateDatabase: data.databasePath,
+      workspaceStorageRoot: data.storage,
+      // PowerShell Get-CimInstance 返回的 CommandLine 保留 CreateProcess 的引号
+      listProcesses: () => '"C:\\Users\\demo\\AppData\\Local\\Programs\\Cursor\\Cursor.exe" --ms-enable-electron-run-as-node'
+    })
+    expect(detector.detect()).toMatchObject({
+      state: 'detected',
+      confidence: 'likely',
+      source: 'cursor-recent',
+      workspace: { id: workspaceIdentityOf(data.projectA).id }
+    })
+  })
 })
 
 describe('workspace auto-follow policy', () => {
@@ -149,6 +165,22 @@ describe('workspace auto-follow policy', () => {
       detection: detection('likely'),
       activeWorkspaceId: 'old',
       activeRunStatus: 'completed'
+    })).toBe(false)
+  })
+
+  it('follows recent-only evidence on a fresh install with nothing bound yet', () => {
+    // 全新装机例外：S4 全局 MCP 注册后 certain 级证据不可达，
+    // 未绑定任何工程时接受 likely（最近打开工程）证据，首启直达组队页。
+    expect(shouldAutoFollowCursorWorkspace({
+      detection: detection('likely'),
+      activeWorkspaceId: undefined,
+      activeRunStatus: undefined
+    })).toBe(true)
+    // 运行中的团队仍然绝不被悄悄抛弃（即使未绑定）
+    expect(shouldAutoFollowCursorWorkspace({
+      detection: detection('likely'),
+      activeWorkspaceId: undefined,
+      activeRunStatus: 'running'
     })).toBe(false)
   })
 })

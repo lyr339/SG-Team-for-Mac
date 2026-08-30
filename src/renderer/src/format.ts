@@ -6,16 +6,6 @@ export function formatClock(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-/** 统一的完整日期时间格式，全应用长格式唯一出口。 */
-export function formatDateTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleString([], {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
-
 export function formatRelativeTime(timestamp?: number): string {
   if (!timestamp) return '暂无活动证据'
   const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1_000))
@@ -25,19 +15,6 @@ export function formatRelativeTime(timestamp?: number): string {
   if (minutes < 60) return `${minutes} 分钟前活动`
   const hours = Math.floor(minutes / 60)
   return `${hours} 小时前活动`
-}
-
-/** 紧凑相对时间（会话卡片指标行等窄空间）：刚刚 / N 秒前 / N 分钟前 / N 小时前 / N 天前。 */
-export function formatRelativeTimeCompact(timestamp?: number): string | undefined {
-  if (!timestamp) return undefined
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1_000))
-  if (seconds < 10) return '刚刚'
-  if (seconds < 60) return `${seconds} 秒前`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟前`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.floor(hours / 24)} 天前`
 }
 
 export function formatTokenCount(tokens: number): string {
@@ -103,26 +80,33 @@ export function modelDisplayName(
   return sessionModelName || profile?.displayName || '配置待读取'
 }
 
-/** 模型徽章（MAX / 思考 / 1M 一类），来自 Cursor 运行配置。 */
-export function executionBadges(
-  profile?: AgentExecutionProfile,
-  sessionModelName?: string
-): string[] {
-  if (sessionModelName || !profile) return []
-  const badges = [...profile.options]
-  if (profile.maxMode && !badges.includes('Max')) badges.push('Max')
-  return badges
+/** 模型徽章（Max / Think / 1M 一类），来自 Cursor 运行配置；有会话模型名时同样展示。 */
+export function executionBadges(profile?: AgentExecutionProfile): string[] {
+  if (!profile) return []
+  return [...profile.options].sort((left, right) => badgeRank(left) - badgeRank(right))
 }
 
-/** 徽章色系：Max→橙、思考→紫、上下文规格（1M/200K）→蓝、其余→绿。 */
-export type BadgeTone = 'max' | 'think' | 'context' | 'plain'
+/** 徽章色系：思考/强度→紫、上下文规格→蓝、其余→绿。 */
+export type BadgeTone = 'max' | 'think' | 'context' | 'effort' | 'fast' | 'plain'
 
 export function badgeTone(label: string): BadgeTone {
   const normalized = label.trim().toLowerCase()
-  if (normalized === 'max') return 'max'
-  if (normalized.includes('think') || label.includes('思考') || label.includes('推理')) return 'think'
+  if (normalized === 'max mode') return 'max'
+  if (normalized.includes('think')) return 'think'
   if (/^\d+(\.\d+)?\s*[km]$/.test(normalized) || label.includes('上下文')) return 'context'
+  if (['low', 'medium', 'high', 'extra high', 'max'].includes(normalized)) return 'effort'
+  if (normalized === 'fast') return 'fast'
   return 'plain'
+}
+
+/** 徽章固定顺序：Thinking → Context → Effort → Fast/其余。 */
+function badgeRank(label: string): number {
+  const normalized = label.trim().toLowerCase()
+  if (normalized.includes('think')) return 0
+  const tone = badgeTone(label)
+  if (tone === 'context') return 1
+  if (['low', 'medium', 'high', 'extra high', 'max'].includes(normalized)) return 2
+  return normalized === 'fast' ? 3 : 4
 }
 
 function formatContextTokenCount(value: number): string {
@@ -146,11 +130,9 @@ export function formatExecutionProfile(
   profile?: AgentExecutionProfile,
   sessionModelName?: string
 ): string {
-  if (sessionModelName) return sessionModelName
-  if (!profile) return '运行配置待读取'
-  const options = [...profile.options]
-  if (profile.maxMode && !options.includes('Max')) options.push('Max')
-  return [profile.displayName, ...options].join(' · ')
+  if (!profile) return sessionModelName ?? '运行配置待读取'
+  const name = sessionModelName || profile.displayName
+  return [name, ...executionBadges(profile)].join(' · ')
 }
 
 export function statusLabel(status: string): string {

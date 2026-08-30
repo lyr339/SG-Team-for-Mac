@@ -12,25 +12,29 @@ import { homedir } from 'node:os'
 import { join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
-import type { AgentExecutionProfile } from '../../domain/agent-session'
+import type {
+  AgentExecutionProfile,
+  ContextUsage,
+  ContextUsageBreakdown
+} from '../../domain/agent-session'
+import { badgesFromParameters, contextTokensFromValue, readableParameterValue } from '../../shared/model-badges'
 import type {
   CursorModelOption,
   CursorModelParameter,
-  CursorModelParameterDefinition
+  CursorModelParameterDefinition,
+  CursorModelVariant
 } from '../../domain/cursor-model'
 import type { RuntimeBinding } from '../../domain/team-control'
 import {
+  BINDING_MARKER_PATTERN,
+  canonicalBindingMarker,
   cursorComposerBindingMarker,
   emptyCursorTelemetrySnapshot,
   type CursorChannelActivity,
   type CursorComposerActivity,
   type ComposerBindingCandidate,
   type CursorComposerTelemetry,
-  type CursorTelemetrySnapshot,
-  type CursorWorkDetail,
-  type CursorWorkEntry,
-  type CursorWorkTodo,
-  type CursorWorkToolKind
+  type CursorTelemetrySnapshot
 } from '../../domain/cursor-telemetry'
 
 const COMPOSER_HEADERS_KEY = 'composer.composerHeaders'
@@ -51,16 +55,20 @@ const RECENT_TRANSCRIPT_GRACE_MS = 30_000
 // （构建/测试可达数分钟）执行期间暂停增长属正常——宽限期内不构成死亡证据
 const WORK_ACTIVITY_GRACE_MS = 5 * 60_000
 const MAX_PROJECT_DIRS = 512
-const MAX_WORK_ENTRIES = 80
-const MAX_WORK_TEXT_CHARS = 600
-const MAX_WORK_DETAIL_CHARS = 1_400
-const MAX_WORK_READ_PER_POLL = 4 * 1024 * 1024
 // 僵尸轮询硬上限：传输层声称 keepalive/waiting（每秒都在轮询 check_messages，
 // 每次轮询都会写转录），但通道转录沉默超过该时长——两者矛盾，判定为
 // 认证失效的僵尸会话（正面矛盾证据，不是「证据缺失」）
 // 注：从 6 分钟缩短到 60 秒，更快检测假在线
 const CHANNEL_POLL_SILENCE_MS = 60_000
 const CHANNEL_SCAN_MAX_FILES = 48
+/** 通道活性属于 presence 证据，不需要跟 250ms 流式正文同频；1s 足以判断监听状态。 */
+const DEFAULT_CHANNEL_ACTIVITY_POLL_MS = 1_000
+/**
+ * 全局项目目录结构极少变化。此前每次 getSnapshot 都遍历最多 512 个项目目录，
+ * 单轮即产生大量 readdir/stat；缓存 2s 只影响“新 Composer 首次发现”延迟，
+ * 已绑定 Composer 的正文流仍通过精确文件路径按 250ms 增量读取。
+ */
+const DEFAULT_TRANSCRIPT_INDEX_TTL_MS = 2_000
 
 type UnknownRecord = Record<string, unknown>
 
@@ -68,6 +76,7 @@ interface ParsedComposer {
   telemetry: CursorComposerTelemetry
   bindingText: string
   workspaceStorageId?: string
+  persistedActivity?: CursorComposerActivity
 }
 
 interface TranscriptAction {
@@ -89,304 +98,6 @@ interface CachedTranscriptSignals extends TranscriptSignals {
   modifiedAt: number
 }
 
-interface CachedTranscriptWork {
-  path: string
-  offset: number
-  remainder: Buffer
-  /** 已处理的转录物理行数（含空行/解析失败行），作为条目稳定行号来源。 */
-  line: number
-  entries: CursorWorkEntry[]
-  activeTurn?: string
-  activeTurnEntryStart?: number
-  pendingListenBoundaryLine?: number
-  updatedAt: number
-}
-
-interface ParsedTranscriptWorkLine {
-  entries: CursorWorkEntry[]
-  explicitTurn?: string
-  closesTurn: boolean
-  listenBoundary: boolean
-}
-
-/** 工具名 → 动作分组（图标/中文动作名由渲染层按组决定）。 */
-function workToolKind(name: string): CursorWorkToolKind {
-  const lower = name.toLowerCase()
-  if (/shell|command|terminal|\brun\b/.test(lower)) return 'command'
-  if (/read|open|view|\bcat\b/.test(lower)) return 'read'
-  if (/glob|grep|search|find|query|\brg\b/.test(lower)) return 'search'
-  if (/edit|replace|patch|delete|strreplace/.test(lower)) return 'edit'
-  if (/write|create/.test(lower)) return 'write'
-  return 'other'
-}
-
-const INTERNAL_MCP_TOOL_NAMES = new Set([
-  'check_messages',
-  'qingtian',
-  'record_process',
-  'record_reply',
-  'wait_messages',
-  'list_available',
-  'list_mine',
-  'get_task',
-  'claim_task',
-  'claim_review',
-  'submit_for_review',
-  'fail_task',
-  'report_status'
-])
-
-function internalMcpCall(input: UnknownRecord | undefined, toolName: string): boolean {
-  const normalized = toolName.trim()
-  const server = boundedString(input?.server, 160)?.toLowerCase() ?? ''
-  const namespace = boundedString(input?.namespace, 160)?.toLowerCase() ?? ''
-  if (/^(qtwx|qingtian|qunshu)/.test(server) || /(^|-)qunshu$/.test(namespace) || /^(qtwx|qingtian|qunshu)/.test(namespace)) return true
-  if (INTERNAL_MCP_TOOL_NAMES.has(normalized)) return true
-  return normalized.startsWith('team_') || normalized.startsWith('qingtian_') || normalized.startsWith('qtwx_')
-}
-
-function boundedMultiline(value: unknown, maxLength = MAX_WORK_DETAIL_CHARS): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const normalized = value
-    .replace(/\r\n/g, '\n')
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
-    .trim()
-  if (!normalized) return undefined
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized
-}
-
-function isRedactedOnlyText(value: string): boolean {
-  const normalized = value.trim()
-  if (!/\[REDACTED\]/i.test(normalized)) return false
-  const withoutRedactedMarkers = normalized.replace(/\[REDACTED\]/gi, '')
-  return withoutRedactedMarkers.replace(/[\s`'"“”‘’.,;:!?|()[\]{}<>_\-—–/\\*#•·，。！？、；：]+/g, '') === ''
-}
-
-function pushDetail(
-  details: CursorWorkDetail[],
-  label: string,
-  value: unknown,
-  kind: CursorWorkDetail['kind'] = 'text'
-): void {
-  const normalized = typeof value === 'number' || typeof value === 'boolean' ? String(value) : value
-  const text = kind === 'code'
-    ? boundedMultiline(normalized)
-    : boundedString(normalized, MAX_WORK_DETAIL_CHARS)
-  if (text && !isRedactedOnlyText(text)) details.push({ label, value: text, kind })
-}
-
-function patchTouchedFiles(patch: string): string {
-  const files = new Set<string>()
-  for (const match of patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) {
-    const file = match[1]?.trim()
-    if (file) files.add(file)
-  }
-  return [...files].slice(0, 6).join(', ')
-}
-
-function countLines(value: string): number {
-  if (!value) return 0
-  return value.split('\n').length
-}
-
-function workToolDetails(name: string, input: UnknownRecord | undefined, rawInput: unknown): CursorWorkDetail[] | undefined {
-  const details: CursorWorkDetail[] = []
-  const lower = name.toLowerCase()
-  if (name === 'ApplyPatch') {
-    const patch = boundedMultiline(rawInput, MAX_WORK_DETAIL_CHARS)
-    if (patch) {
-      pushDetail(details, '文件', patchTouchedFiles(patch), 'path')
-      pushDetail(details, 'Patch', patch, 'code')
-    }
-    return details.length ? details : undefined
-  }
-  if (!input) return undefined
-
-  if (lower === 'shell') {
-    pushDetail(details, '命令', input.command, 'code')
-    pushDetail(details, '工作目录', input.working_directory, 'path')
-    pushDetail(details, '说明', input.description)
-    return details.length ? details : undefined
-  }
-  if (lower === 'awaitshell') {
-    pushDetail(details, 'Shell ID', input.shell_id)
-    pushDetail(details, '等待模式', input.pattern)
-    pushDetail(details, '最长等待', input.block_until_ms)
-    return details.length ? details : undefined
-  }
-  if (lower === 'strreplace') {
-    const oldText = boundedMultiline(input.old_string)
-    const newText = boundedMultiline(input.new_string)
-    pushDetail(details, '文件', input.path, 'path')
-    if (typeof input.old_string === 'string' || typeof input.new_string === 'string') {
-      details.push({
-        label: '变更规模',
-        value: `+${countLines(String(input.new_string ?? ''))} / -${countLines(String(input.old_string ?? ''))}`
-      })
-    }
-    pushDetail(details, '替换前', oldText, 'code')
-    pushDetail(details, '替换后', newText, 'code')
-    pushDetail(details, '全部替换', input.replace_all)
-    return details.length ? details : undefined
-  }
-  if (lower === 'write') {
-    pushDetail(details, '文件', input.path, 'path')
-    pushDetail(details, '写入内容', input.contents, 'code')
-    return details.length ? details : undefined
-  }
-
-  pushDetail(details, '文件', input.path ?? input.file_path ?? input.target_file, 'path')
-  pushDetail(details, '目录', input.target_directory ?? input.working_directory, 'path')
-  pushDetail(details, '模式', input.glob_pattern ?? input.glob)
-  pushDetail(details, '关键词', input.pattern ?? input.query)
-  pushDetail(details, '命令', input.command ?? input.cmd, 'code')
-  pushDetail(details, 'URL', input.url)
-  pushDetail(details, '输出模式', input.output_mode)
-  pushDetail(details, '限制', input.limit ?? input.head_limit)
-  pushDetail(details, '偏移', input.offset)
-  pushDetail(details, '上下文', input['-C'] ?? input['-A'] ?? input['-B'])
-  return details.length ? details : undefined
-}
-
-/**
- * 工具调用的过程摘要。返回 undefined 表示该调用是噪音，不应出现在过程视图：
- * GetDynamicTools 只是工具发现；qtwx/qingtian/team MCP 是群枢内部同步通道。
- * TodoWrite 不进摘要走 toolKind=todo，由渲染层展示结构化任务卡片。
- */
-function workToolSummary(
-  name: string,
-  input: UnknownRecord | undefined,
-  rawInput: unknown
-): { text: string; toolName?: string; toolKind: CursorWorkToolKind; todos?: CursorWorkTodo[]; details?: CursorWorkDetail[] } | undefined {
-  if (name === 'GetDynamicTools') return undefined
-  if (name === 'TodoWrite') {
-    const raw = Array.isArray(input?.todos) ? input.todos : []
-    const todos = raw.flatMap((item): CursorWorkTodo[] => {
-      const record = recordOf(item)
-      const content = boundedString(record?.content, 200)
-      if (!content) return []
-      return [{ content, status: boundedString(record?.status, 40) || 'pending' }]
-    })
-    if (!todos.length) return undefined
-    return { text: '任务清单', toolName: name, toolKind: 'todo', todos }
-  }
-  if (name === 'CallMcpTool' || name === 'CallDynamicTool') {
-    const toolName = boundedString(input?.toolName, 160)
-    if (!toolName || internalMcpCall(input, toolName)) return undefined
-    const details: CursorWorkDetail[] = []
-    pushDetail(details, '命名空间', input?.namespace)
-    pushDetail(details, '服务', input?.server)
-    pushDetail(details, '参数', JSON.stringify(input?.arguments ?? {}), 'code')
-    return { text: `调用 ${toolName}`, toolName, toolKind: 'mcp', details: details.length ? details : undefined }
-  }
-  // 模式/命令类参数信息量高于路径类：Glob 的模式、Grep 的关键词、Shell 的命令
-  const hint = [
-    input?.glob_pattern, input?.pattern, input?.query, input?.command, input?.cmd,
-    input?.path, input?.file_path, input?.target_file, input?.target_directory, input?.url
-  ].map((value) => boundedString(value, 120)).find(Boolean)
-  return {
-    text: hint ? `${name} ${hint}` : name,
-    toolName: name,
-    toolKind: workToolKind(name),
-    details: workToolDetails(name, input, rawInput)
-  }
-}
-
-function toolInputOf(block: UnknownRecord): UnknownRecord | undefined {
-  return recordOf(block.input)
-}
-
-function protocolToolName(block: UnknownRecord): string | undefined {
-  if (block.name !== 'CallMcpTool' && block.name !== 'CallDynamicTool') return undefined
-  return boundedString(toolInputOf(block)?.toolName, 160)
-}
-
-function protocolTurn(block: UnknownRecord): string | undefined {
-  const toolName = protocolToolName(block)
-  if (toolName !== 'record_process' && toolName !== 'record_reply') return undefined
-  const args = recordOf(toolInputOf(block)?.arguments)
-  return boundedString(args?.turn, 120)
-}
-
-function visibleToolSummary(block: UnknownRecord):
-  | { text: string; toolName?: string; toolKind: CursorWorkToolKind; todos?: CursorWorkTodo[]; details?: CursorWorkDetail[] }
-  | undefined {
-  if (block.type !== 'tool_use') return undefined
-  const name = boundedString(block.name, 120)
-  if (!name) return undefined
-  return workToolSummary(name, toolInputOf(block), block.input)
-}
-
-function parseTranscriptWorkLine(line: string, lineNumber: number, at: number): ParsedTranscriptWorkLine {
-  let entry: UnknownRecord | undefined
-  try { entry = recordOf(JSON.parse(line)) } catch { return { entries: [], closesTurn: false, listenBoundary: false } }
-  if (!entry || entry.role !== 'assistant') return { entries: [], closesTurn: false, listenBoundary: false }
-  const message = recordOf(entry.message)
-  const content = Array.isArray(message?.content) ? recordArray(message.content) : []
-  const entries: CursorWorkEntry[] = []
-  let explicitTurn: string | undefined
-  let closesTurn = false
-  let listenBoundary = false
-  let protocolOnly = false
-  let hasRecordProcess = false
-  let hasVisibleTool = false
-
-  for (const block of content) {
-    if (block.type !== 'tool_use') continue
-    const toolName = protocolToolName(block)
-    const turn = protocolTurn(block)
-    if (turn) explicitTurn = turn
-    if (toolName === 'record_reply') closesTurn = true
-    if (toolName === 'check_messages' || toolName === 'wait_messages') listenBoundary = true
-    if (toolName === 'record_process') hasRecordProcess = true
-    const visibleSummary = visibleToolSummary(block)
-    if (visibleSummary) hasVisibleTool = true
-    else if (toolName || block.name === 'GetDynamicTools') protocolOnly = true
-  }
-
-  // 只有内部协议工具的行（等待/同步/团队回执）常伴随“继续轮询”等旁白；
-  // 这些不是用户要看的 Cursor 工作过程。record_process 例外：它通常携带本轮过程说明。
-  const suppressText = protocolOnly && !hasVisibleTool && !hasRecordProcess
-
-  for (const block of content) {
-    if (block.type === 'text') {
-      if (suppressText || typeof block.text !== 'string') continue
-      // 叙述保留换行（多段叙述/推理），只截断不压缩
-      const text = block.text.trim()
-      if (!text || isRedactedOnlyText(text)) continue
-      entries.push({
-        kind: 'text',
-        text: text.length > MAX_WORK_TEXT_CHARS ? `${text.slice(0, MAX_WORK_TEXT_CHARS)}…` : text,
-        line: lineNumber,
-        at
-      })
-      continue
-    }
-    const summary = visibleToolSummary(block)
-    if (!summary) continue
-    entries.push({
-      kind: 'tool',
-      text: summary.text,
-      toolName: summary.toolName,
-      toolKind: summary.toolKind,
-      todos: summary.todos,
-      details: summary.details,
-      status: 'running',
-      line: lineNumber,
-      at
-    })
-  }
-  return { entries, explicitTurn, closesTurn, listenBoundary }
-}
-
-/**
- * 从单行转录解析助手侧过程条目（可见叙述 / 工具调用摘要）。
- * 只处理 role=assistant 行；user 行是启动提示词或工具结果，不属于 Agent 的工作动作。
- * 工具条目标记 running，由增量读取层在后续新条目出现时翻转为 done。
- */
-export function workEntriesFromTranscriptLine(line: string, lineNumber: number, at: number): CursorWorkEntry[] {
-  return parseTranscriptWorkLine(line, lineNumber, at).entries
-}
 
 export interface CursorComposerTelemetryPaths {
   globalStateDatabase: string
@@ -397,6 +108,8 @@ export interface CursorComposerTelemetryPaths {
 export interface CursorComposerTelemetryReaderOptions extends Partial<CursorComposerTelemetryPaths> {
   now?: () => number
   isProcessAlive?: (pid: number) => boolean
+  channelActivityPollMs?: number
+  transcriptIndexTtlMs?: number
 }
 
 export interface CursorComposerTelemetrySource {
@@ -404,8 +117,12 @@ export interface CursorComposerTelemetrySource {
 }
 
 function defaultPaths(): CursorComposerTelemetryPaths {
+  // 平台分离：mac = ~/Library/Application Support/Cursor；win = %APPDATA%\Cursor
+  //（与 cursor-update-preferences 的解析规则一致）
   const supportRoot = process.env.QINGTIAN_CURSOR_SUPPORT_ROOT?.trim()
-    || join(homedir(), 'Library', 'Application Support', 'Cursor')
+    || (process.platform === 'win32'
+      ? join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'Cursor')
+      : join(homedir(), 'Library', 'Application Support', 'Cursor'))
   return {
     globalStateDatabase: process.env.QINGTIAN_CURSOR_GLOBAL_STATE?.trim()
       || join(supportRoot, 'User', 'globalStorage', 'state.vscdb'),
@@ -495,57 +212,41 @@ function matchingVariant(entry: UnknownRecord, selected: Map<string, string>): U
   })
 }
 
-function readableParameterValue(value: string): string {
-  const normalized = value.trim()
-  if (/^\d+(?:\.\d+)?[km]$/i.test(normalized)) return normalized.toUpperCase()
-  const labels: Record<string, string> = {
-    low: 'Low',
-    medium: 'Medium',
-    high: 'High',
-    xhigh: 'Extra High',
-    max: 'Max'
-  }
-  return labels[normalized.toLowerCase()] ?? normalized
-}
-
 function selectedOptionLabels(entry: UnknownRecord, selected: Map<string, string>): string[] {
-  const definitions = new Map(recordArray(entry.parameterDefinitions).flatMap((definition) => {
+  const kinds = new Map<string, 'boolean' | 'enum'>()
+  for (const definition of recordArray(entry.parameterDefinitions)) {
     const id = boundedString(definition.id, 80)
-    return id ? [[id, definition] as const] : []
-  }))
-  const labels: string[] = []
-  for (const [id, value] of selected) {
-    const definition = definitions.get(id)
-    if (!definition) continue
+    if (!id) continue
     const parameterType = recordOf(definition.parameterType)
-    const booleanParameter = recordOf(parameterType?.booleanParameter)
-    const enumParameter = recordOf(parameterType?.enumParameter)
-    if (booleanParameter && value !== 'true') continue
-    const valueDefinition = recordArray(booleanParameter?.values ?? enumParameter?.values).find(
-      (candidate) => boundedString(candidate.value, 160) === value
-    )
-    const label = boundedString(valueDefinition?.displayName, 80)
-      || (booleanParameter ? boundedString(definition.name, 80) : readableParameterValue(value))
-    if (label && !labels.includes(label)) labels.push(label)
+    if (recordOf(parameterType?.booleanParameter)) kinds.set(id, 'boolean')
+    else if (recordOf(parameterType?.enumParameter)) kinds.set(id, 'enum')
   }
-  return labels
+  return badgesFromParameters(
+    [...selected].map(([id, value]) => ({ id, value })),
+    kinds
+  )
 }
 
-function selectedContextTokenLimit(entry: UnknownRecord, selected: Map<string, string>): number | undefined {
-  const selectedContext = selected.get('context')?.trim().toLowerCase()
-  const match = selectedContext?.match(/^(\d+(?:\.\d+)?)([km])$/)
-  if (match) {
-    const amount = Number(match[1])
-    if (Number.isFinite(amount)) return Math.round(amount * (match[2] === 'm' ? 1_000_000 : 1_000))
+function selectedContextTokenLimit(
+  entry: UnknownRecord,
+  selected: Map<string, string>,
+  maxMode?: boolean
+): number | undefined {
+  const selectedContext = selected.get('context')
+  const tokens = selectedContext ? contextTokensFromValue(selectedContext) : undefined
+  if (tokens !== undefined) return tokens
+  const regular = nonNegativeInteger(entry.contextTokenLimit)
+  if (maxMode === true) return nonNegativeInteger(entry.contextTokenLimitForMaxMode) ?? regular
+  if (maxMode === false && entry.supportsMaxMode === true && regular !== undefined) {
+    return Math.min(regular, 200_000)
   }
-  return nonNegativeInteger(entry.contextTokenLimit)
+  return regular
 }
 
-function parseComposerProfile(value: unknown): AgentExecutionProfile | undefined {
-  const root = recordOf(value)
-  const aiSettings = recordOf(root?.aiSettings)
-  const modelConfig = recordOf(aiSettings?.modelConfig)
-  const composerConfig = recordOf(modelConfig?.composer)
+function profileFromModelConfig(
+  root: UnknownRecord | undefined,
+  composerConfig: UnknownRecord | undefined
+): AgentExecutionProfile | undefined {
   if (!root || !composerConfig) return undefined
 
   const selectedModel = recordArray(composerConfig.selectedModels)[0]
@@ -565,14 +266,23 @@ function parseComposerProfile(value: unknown): AgentExecutionProfile | undefined
 
   const parameters = selectedModel ? selectedParameterMap(selectedModel) : new Map<string, string>()
   const variant = matchingVariant(entry, parameters)
+  const maxMode = composerConfig.maxMode === true || variant?.isMaxMode === true
   return {
     scope: 'cursor-composer-current',
     modelId,
     displayName,
     options: selectedOptionLabels(entry, parameters),
-    maxMode: variant?.isMaxMode === true,
-    contextTokenLimit: selectedContextTokenLimit(entry, parameters)
+    maxMode,
+    contextTokenLimit: selectedContextTokenLimit(entry, parameters, maxMode)
   }
+}
+
+/** 全局当前 Composer 配置（aiSettings.modelConfig.composer）。 */
+function parseComposerProfile(value: unknown): AgentExecutionProfile | undefined {
+  const root = recordOf(value)
+  const aiSettings = recordOf(root?.aiSettings)
+  const modelConfig = recordOf(aiSettings?.modelConfig)
+  return profileFromModelConfig(root, recordOf(modelConfig?.composer))
 }
 
 function cursorParameterDefinitions(entry: UnknownRecord): CursorModelParameterDefinition[] {
@@ -588,12 +298,15 @@ function cursorParameterDefinitions(entry: UnknownRecord): CursorModelParameterD
     const values = rawValues.flatMap((rawValue) => {
       const parameterValue = boundedString(rawValue.value, 160)
       if (parameterValue === undefined) return []
-      const fallback = kind === 'boolean'
-        ? parameterValue === 'true' ? 'On' : 'Off'
-        : readableParameterValue(parameterValue)
+      // Cursor 目录提供展示名时以它为唯一规格源；布尔项常省略展示名，
+      // 仅这种情况使用稳定的英文 On/Off。未知枚举值只做可读化兜底。
+      const displayName = boundedString(rawValue.displayName, 80)
+        || (kind === 'boolean'
+          ? (parameterValue === 'true' ? 'On' : 'Off')
+          : readableParameterValue(parameterValue))
       return [{
         value: parameterValue,
-        displayName: boundedString(rawValue.displayName, 80) || fallback,
+        displayName,
         increasesCost: rawValue.increasesModelCost === true
       }]
     })
@@ -621,6 +334,29 @@ function defaultModelParameters(entry: UnknownRecord): CursorModelParameter[] {
     ?? variants.find((variant) => variant.isDefaultMaxConfig === true)
     ?? variants[0]
   return parametersOf(preferred?.parameterValues)
+}
+
+function cursorModelVariants(
+  entry: UnknownRecord,
+  definitions: CursorModelParameterDefinition[]
+): CursorModelVariant[] {
+  const definitionById = new Map(definitions.map((definition) => [definition.id, definition]))
+  return recordArray(entry.variants).slice(0, 512).flatMap((variant) => {
+    const parameters = parametersOf(variant.parameterValues)
+    if (parameters.length !== definitions.length) return []
+    const unique = new Set(parameters.map((parameter) => parameter.id))
+    if (unique.size !== definitions.length) return []
+    const valid = parameters.every((parameter) => {
+      const definition = definitionById.get(parameter.id)
+      return definition?.values.some((value) => value.value === parameter.value) === true
+    })
+    return valid ? [{
+      parameters,
+      maxMode: variant.isMaxMode === true,
+      isDefaultMaxConfig: variant.isDefaultMaxConfig === true || undefined,
+      isDefaultNonMaxConfig: variant.isDefaultNonMaxConfig === true || undefined
+    }] : []
+  })
 }
 
 function completeModelParameters(
@@ -658,6 +394,7 @@ function parseCursorModels(value: unknown): CursorModelOption[] {
       || modelId
     const selected = modelId === selectedModelId || catalogEntryMatchesModel(entry, selectedModelId ?? '')
     const parameterDefinitions = cursorParameterDefinitions(entry)
+    const variants = cursorModelVariants(entry, parameterDefinitions)
     const defaultParameters = defaultModelParameters(entry)
     const parameters = completeModelParameters(
       parameterDefinitions,
@@ -665,14 +402,20 @@ function parseCursorModels(value: unknown): CursorModelOption[] {
       defaultParameters
     )
     const parameterMap = new Map(parameters.map((parameter) => [parameter.id, parameter.value]))
+    const variant = matchingVariant(entry, parameterMap)
     options.set(modelId, {
       modelId,
       displayName,
       parameters,
+      maxMode: selected ? composerConfig?.maxMode === true || variant?.isMaxMode === true : variant?.isMaxMode === true,
+      supportsMaxMode: entry.supportsMaxMode === true,
+      supportsNonMaxMode: entry.supportsNonMaxMode !== false,
       selected,
       optionLabels: selected ? selectedOptionLabels(entry, parameterMap) : [],
       parameterDefinitions,
-      contextTokenLimit: selectedContextTokenLimit(entry, parameterMap)
+      variants,
+      contextTokenLimit: selectedContextTokenLimit(entry, parameterMap),
+      contextTokenLimitForMaxMode: nonNegativeInteger(entry.contextTokenLimitForMaxMode)
     })
   }
   if (selectedModelId && ![...options.values()].some((option) => option.selected)) {
@@ -680,10 +423,15 @@ function parseCursorModels(value: unknown): CursorModelOption[] {
       modelId: selectedModelId,
       displayName: selectedModelId,
       parameters: selectedParameters,
+      maxMode: composerConfig?.maxMode === true,
+      supportsMaxMode: false,
+      supportsNonMaxMode: true,
       selected: true,
       optionLabels: [],
       parameterDefinitions: [],
-      contextTokenLimit: undefined
+      variants: [],
+      contextTokenLimit: undefined,
+      contextTokenLimitForMaxMode: undefined
     })
   }
   return [...options.values()]
@@ -695,6 +443,7 @@ function parseCursorModels(value: unknown): CursorModelOption[] {
 function readComposerModelState(database: DatabaseSync): {
   profile?: AgentExecutionProfile
   models: CursorModelOption[]
+  root?: UnknownRecord
 } {
   try {
     const row = database.prepare(
@@ -703,12 +452,101 @@ function readComposerModelState(database: DatabaseSync): {
     const json = sqliteText(row?.value)
     if (!json || Buffer.byteLength(json, 'utf8') > MAX_APPLICATION_USER_BYTES) return { models: [] }
     const value = JSON.parse(json)
-    return { profile: parseComposerProfile(value), models: parseCursorModels(value) }
+    const root = recordOf(value)
+    return { profile: parseComposerProfile(value), models: parseCursorModels(value), root }
   } catch {
     // Composer headers remain useful even if Cursor changes or is midway
     // through writing this unrelated global preference record.
     return { models: [] }
   }
+}
+
+/**
+ * 逐会话模型配置：Cursor 在每个 Composer 的 cursorDiskKV `composerData:<id>`
+ * 里写入独立 modelConfig（拾光逐会话选模经 setModelConfigForComposer 写入的
+ * 正是该载体）。json_extract 只抽该字段，避免解析整条会话 blob；
+ * 与全局配置同一套解析，产出逐会话 profile。表缺失/结构变化时静默回退全局配置。
+ */
+function readComposerPersistentDetails(
+  database: DatabaseSync,
+  root: UnknownRecord | undefined,
+  composerIds: string[]
+): {
+  profiles: Map<string, AgentExecutionProfile>
+  contextUsage: Map<string, ContextUsage>
+} {
+  const profiles = new Map<string, AgentExecutionProfile>()
+  const contextUsage = new Map<string, ContextUsage>()
+  if (!composerIds.length) return { profiles, contextUsage }
+  try {
+    const statement = database.prepare(
+      `SELECT
+        json_extract(value, '$.modelConfig') AS model_config,
+        json_extract(value, '$.contextUsagePercent') AS context_percent,
+        json_extract(value, '$.contextTokensUsed') AS context_used,
+        json_extract(value, '$.contextTokenLimit') AS context_limit,
+        json_extract(value, '$.promptTokenBreakdown') AS token_breakdown
+      FROM cursorDiskKV WHERE key = ?`
+    )
+    for (const composerId of composerIds) {
+      const row = statement.get(`composerData:${composerId}`) as {
+        model_config?: unknown
+        context_percent?: unknown
+        context_used?: unknown
+        context_limit?: unknown
+        token_breakdown?: unknown
+      } | undefined
+      const modelJson = sqliteText(row?.model_config)
+      if (root && modelJson) {
+        const profile = profileFromModelConfig(root, recordOf(JSON.parse(modelJson)))
+        if (profile) profiles.set(composerId, profile)
+      }
+      const breakdownJson = sqliteText(row?.token_breakdown)
+      const breakdown = breakdownJson ? nativeContextBreakdown(JSON.parse(breakdownJson)) : undefined
+      const used = nonNegativeInteger(row?.context_used) ?? breakdown?.totalUsedTokens
+      const limit = nonNegativeInteger(row?.context_limit) ?? breakdown?.maxTokens
+      const percent = finiteNumber(row?.context_percent)
+      const ratio = percent === undefined
+        ? used !== undefined && limit ? used / limit : undefined
+        : Math.min(100, Math.max(0, percent)) / 100
+      if (ratio !== undefined) contextUsage.set(composerId, { used, limit, ratio, breakdown })
+    }
+  } catch {
+    // 逐会话详情是增强信息；读取失败时会话卡回退头部指标/全局配置。
+  }
+  return { profiles, contextUsage }
+}
+
+/**
+ * 通道活性指纹：快照内容经 channelActivities 依赖（水合候选、工作过程通道集）。
+ * state 由转录年龄分档（含 now 派生），翻档时必须重算——纳入键自然触发；
+ * detail 为静态文案不进键。
+ */
+function channelActivitiesFingerprint(activities?: Record<string, CursorChannelActivity>): string {
+  if (!activities) return ''
+  return Object.values(activities)
+    .map((activity) => `${activity.channelId}:${activity.composerId ?? ''}:${activity.state}:${activity.observedAt ?? ''}`)
+    .sort()
+    .join('|')
+}
+
+/**
+ * 绑定列表指纹：遥测快照内容依赖 bindings（通道/会话绑定/生成代数），
+ * 任一关键字段变化都必须让整轮缓存失效；lastCheckInAt 不参与——签到刷心跳
+ * 不改变遥测内容，避免无意义的全量重读。
+ */
+function bindingsFingerprint(bindings: RuntimeBinding[]): string {
+  return bindings
+    .map((binding) => [
+      binding.channelId,
+      binding.slotId,
+      binding.composerId ?? '',
+      binding.generation,
+      binding.installedAt,
+      binding.launchStatus
+    ].join(':'))
+    .sort()
+    .join('|')
 }
 
 function canonicalPath(value: string): string {
@@ -754,6 +592,21 @@ function optionalModelName(header: UnknownRecord): string | undefined {
     || boundedString(modelConfig?.modelName, 160)
 }
 
+function nativeContextBreakdown(value: unknown): ContextUsageBreakdown | undefined {
+  const breakdown = recordOf(value)
+  if (!breakdown) return undefined
+  const totalUsedTokens = nonNegativeInteger(breakdown.totalUsedTokens)
+  const maxTokens = nonNegativeInteger(breakdown.maxTokens)
+  if (totalUsedTokens === undefined || maxTokens === undefined || maxTokens === 0) return undefined
+  const categories = recordArray(breakdown.categories).slice(0, 24).flatMap((category) => {
+    const id = boundedString(category.id, 80)
+    const label = boundedString(category.label, 120)
+    const estimatedTokens = nonNegativeInteger(category.estimatedTokens)
+    return id && label && estimatedTokens !== undefined ? [{ id, label, estimatedTokens }] : []
+  })
+  return { totalUsedTokens, maxTokens, categories }
+}
+
 function parseComposer(header: unknown, expectedWorkspace: string): ParsedComposer | undefined {
   const value = recordOf(header)
   if (!value) return undefined
@@ -773,6 +626,26 @@ function parseComposer(header: unknown, expectedWorkspace: string): ParsedCompos
   const files = nonNegativeInteger(value.filesChangedCount)
   const title = boundedString(value.name, 240) || `Cursor 会话 ${composerId.slice(0, 8)}`
   const subtitle = boundedString(value.subtitle, 1_200) || ''
+  const persistedStatus = boundedString(value.status, 80)?.toLowerCase() || ''
+  const generating = value.isGenerating === true
+    || (Array.isArray(value.generatingBubbleIds) && value.generatingBubbleIds.length > 0)
+  const abortReason = boundedString(value.abortReason, 200)
+  const terminal = ['aborted', 'cancelled', 'canceled', 'error', 'failed', 'stopped'].includes(persistedStatus)
+  const persistedActivity: CursorComposerActivity | undefined = terminal
+    ? {
+        state: 'stopped',
+        detail: abortReason
+          ? `Cursor 持久状态确认 Agent 已停止（${persistedStatus || abortReason}）`
+          : `Cursor 持久状态确认 Agent 已停止（${persistedStatus}）`,
+        observedAt: lastUpdatedAt
+      }
+    : generating
+      ? {
+          state: 'active',
+          detail: 'Cursor 持久状态确认 Agent 正在生成',
+          observedAt: lastUpdatedAt
+        }
+      : undefined
 
   const normalizedPercent = contextPercent === undefined
     ? undefined
@@ -798,7 +671,8 @@ function parseComposer(header: unknown, expectedWorkspace: string): ParsedCompos
       } : undefined
     },
     bindingText: `${title}\n${subtitle}`,
-    workspaceStorageId: workspaceStorageIdOf(value)
+    workspaceStorageId: workspaceStorageIdOf(value),
+    persistedActivity
   }
 }
 
@@ -818,7 +692,7 @@ function channelIdFromServer(server: unknown): string | undefined {
   return value?.match(/(?:^|-)qtwx-mcp-(\d{1,12})(?:$|-)/)?.[1]
 }
 
-/** 统一服务器（qunshu）按工具参数 channel_id 区分通道——从调用参数提取通道号。 */
+/** 统一服务器（SG Team）按工具参数 channel_id 区分通道——从调用参数提取通道号。 */
 function channelIdFromArguments(args: UnknownRecord | undefined): string | undefined {
   const value = boundedString(args?.channel_id, 12)
   return value && /^\d{1,12}$/.test(value) ? value : undefined
@@ -867,15 +741,14 @@ function lastTranscriptAction(text: string): TranscriptAction | undefined {
 
 function extractTranscriptSignals(text: string): TranscriptSignals {
   const signals = emptyTranscriptSignals()
-  for (const match of text.matchAll(
-    /\[\[QINGTIAN_TEAM_BIND:[a-zA-Z0-9_-]{1,128}:CH-\d{1,12}\]\]/g
-  )) {
-    signals.bindingMarkers.add(match[0])
+  for (const match of text.matchAll(BINDING_MARKER_PATTERN)) {
+    // 旧品牌标记规范化为现行格式，老转录仍能命中绑定匹配。
+    signals.bindingMarkers.add(canonicalBindingMarker(match[0]))
   }
   for (const match of text.matchAll(/(?:qtwx-mcp|qingtian-team-ch)-(\d{1,12})/g)) {
     signals.channelIds.add(match[1]!)
   }
-  // 统一服务器（qunshu）形态：服务器名不含通道号，通道身份在工具参数 channel_id 里
+  // 统一服务器（SG Team）形态：服务器名不含通道号，通道身份在工具参数 channel_id 里
   for (const match of text.matchAll(/"channel_id"\s*:\s*"(\d{1,12})"/g)) {
     signals.channelIds.add(match[1]!)
   }
@@ -1184,12 +1057,23 @@ function composerActivity(
           channelId: expectedChannelId ?? action.channelId
         }
       }
-      return {
-        state: 'stopped',
-        detail: 'Cursor 曾调用 check_messages，但当前等待租约已经结束',
-        observedAt,
-        channelId: expectedChannelId ?? action.channelId
-      }
+      // 等待租约结束最常见的原因就是“刚收到消息开始干活”。如果后续长命令
+      // 暂时没有转录增量，no-waiting 仍不是死亡证据；正面死亡由上方 fatal
+      // 租约、Cursor terminal 状态或 composer 消失承担。
+      return transcriptAge !== undefined && transcriptAge <= WORK_ACTIVITY_GRACE_MS
+        ? {
+            state: 'unknown',
+            workInProgress: true,
+            detail: '长轮询已结束，Agent 可能正在执行长任务（等待正面活动或终止证据）',
+            observedAt,
+            channelId: expectedChannelId ?? action.channelId
+          }
+        : {
+            state: 'unknown',
+            detail: '长轮询已结束，当前缺少 Agent 活动或终止证据',
+            observedAt,
+            channelId: expectedChannelId ?? action.channelId
+          }
     }
     return {
       state: 'waiting',
@@ -1394,20 +1278,130 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
   private readonly now: () => number
   private readonly isProcessAlive: (pid: number) => boolean
   private readonly transcriptSignalCache = new Map<string, CachedTranscriptSignals>()
-  private readonly transcriptWorkCache = new Map<string, CachedTranscriptWork>()
   private readonly channelSignalCache = new Map<string, TranscriptSignals & { path: string }>()
+  private readonly channelActivityPollMs: number
+  private readonly transcriptIndexTtlMs: number
+  private channelActivityRun?: {
+    bindingsKey: string
+    at: number
+    result: Record<string, CursorChannelActivity> | undefined
+  }
+  private transcriptFileIndex?: {
+    at: number
+    files: { path: string; modifiedAt: number; composerId: string }[]
+  }
+  /**
+   * 快照级缓存：state.vscdb+wal 指纹（mtime/size/ino）、bindings、通道活性与上轮触及的
+   * 转录文件（mtime/size）任一变化即失效。主进程遥测轮询（750ms-1s）此前每轮对 20GB 库
+   * 新开同步 DatabaseSync 并全量解析，空闲期占住主进程；vscdb 由 Cursor 在会话活跃时
+   * 高频写回，活跃期缓存自然失效。转录依赖必须纳入判定：转录追加不经过 vscdb，
+   * 漏掉会冻结工作过程/上下文信号（有既有测试钉死该语义）。
+   */
+  private lastSnapshotRun?: {
+    fingerprint: string
+    workspaceKey: string
+    bindingsKey: string
+    activitiesKey: string
+    transcriptDeps: Array<{ path: string; mtimeMs: number; size: number }>
+    result: CursorTelemetrySnapshot
+  }
+  /** 本轮计算触及的转录文件收集器（仅正常计算路径非空）。 */
+  private transcriptDepsCollector?: Array<{ path: string; mtimeMs: number; size: number }>
+  /** 复用的只读连接：WAL 模式下读事务可见其他进程新提交；inode 变更才重开。 */
+  private sharedDatabase?: { handle: DatabaseSync; path: string; ino: number }
 
   constructor(options: CursorComposerTelemetryReaderOptions = {}) {
-    const { now, isProcessAlive, ...paths } = options
+    const {
+      now,
+      isProcessAlive,
+      channelActivityPollMs,
+      transcriptIndexTtlMs,
+      ...paths
+    } = options
     this.paths = { ...defaultPaths(), ...paths }
     this.now = now ?? Date.now
     this.isProcessAlive = isProcessAlive ?? processIsAlive
+    this.channelActivityPollMs = Math.max(0, channelActivityPollMs ?? DEFAULT_CHANNEL_ACTIVITY_POLL_MS)
+    this.transcriptIndexTtlMs = Math.max(0, transcriptIndexTtlMs ?? DEFAULT_TRANSCRIPT_INDEX_TTL_MS)
+  }
+
+  /** 进程退出/测试收尾时关闭复用连接（未打开过则空操作）。 */
+  dispose(): void {
+    this.channelActivityRun = undefined
+    this.transcriptFileIndex = undefined
+    if (!this.sharedDatabase) return
+    try {
+      this.sharedDatabase.handle.close()
+    } catch {
+      // 关闭失败不影响进程退出语义
+    }
+    this.sharedDatabase = undefined
   }
 
   readWorkspace(workspacePath: string, bindings: RuntimeBinding[]): CursorTelemetrySnapshot {
-    const channelActivities = this.readChannelActivities(bindings, this.now())
+    const at = this.now()
+    const key = bindingsFingerprint(bindings)
+    const cached = this.channelActivityRun
+    const channelActivities = cached
+      && cached.bindingsKey === key
+      && at - cached.at < this.channelActivityPollMs
+      ? cached.result
+      : this.readChannelActivities(bindings, at)
+    if (!cached || cached.bindingsKey !== key || at - cached.at >= this.channelActivityPollMs) {
+      this.channelActivityRun = { bindingsKey: key, at, result: channelActivities }
+    }
     const snapshot = this.readWorkspaceSnapshot(workspacePath, bindings, channelActivities)
     return channelActivities ? { ...snapshot, channelActivities } : snapshot
+  }
+
+  private transcriptFiles(now: number): { path: string; modifiedAt: number; composerId: string }[] {
+    const cached = this.transcriptFileIndex
+    if (cached && now - cached.at < this.transcriptIndexTtlMs) return cached.files
+    const files = listTranscriptFiles(this.paths.projectsRoot)
+    this.transcriptFileIndex = { at: now, files }
+    return files
+  }
+
+  /** vscdb+wal 的 mtime/size/ino 指纹；库不存在返回 undefined（不缓存，走原错误路径）。 */
+  private databaseFingerprint(): string | undefined {
+    try {
+      const database = statSync(this.paths.globalStateDatabase)
+      let wal = 'none'
+      try {
+        const walStat = statSync(`${this.paths.globalStateDatabase}-wal`)
+        wal = `${walStat.mtimeMs}:${walStat.size}:${walStat.ino}`
+      } catch {
+        // WAL 不存在（检查点合并后）是正常状态
+      }
+      return `${database.mtimeMs}:${database.size}:${database.ino}:${wal}`
+    } catch {
+      return undefined
+    }
+  }
+
+  private acquireDatabase(): DatabaseSync {
+    const path = this.paths.globalStateDatabase
+    const ino = statSync(path).ino
+    const existing = this.sharedDatabase
+    if (existing && existing.path === path && existing.ino === ino) {
+      return existing.handle
+    }
+    if (existing) {
+      try {
+        existing.handle.close()
+      } catch {
+        // 旧文件句柄关闭失败不阻断新连接
+      }
+    }
+    const handle = new DatabaseSync(path, {
+      readOnly: true,
+      timeout: 300,
+      defensive: true
+    })
+    handle.exec('PRAGMA query_only = ON')
+    handle.exec('PRAGMA busy_timeout = 300')
+    this.sharedDatabase = { handle, path, ino }
+    return handle
   }
 
   /**
@@ -1422,7 +1416,7 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
       bindings.map((binding) => binding.channelId).filter((id) => /^\d{1,12}$/.test(id))
     )]
     if (!channelIds.length) return undefined
-    const files = listTranscriptFiles(this.paths.projectsRoot)
+    const files = this.transcriptFiles(now)
     if (!files.length) return undefined
     const result: Record<string, CursorChannelActivity> = {}
     for (const channelId of channelIds) {
@@ -1471,7 +1465,7 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
     // 一个标记出现在多份转录 / 一份转录含多个通道标记——都拒绝猜测，保持未绑定
     const markerToComposers = new Map<string, Set<string>>()
     const composerToMarkers = new Map<string, Set<string>>()
-    for (const file of listTranscriptFiles(this.paths.projectsRoot)) {
+    for (const file of this.transcriptFiles(this.now())) {
       const signals = this.channelTranscriptSignals(file.path, file.modifiedAt)
       for (const marker of signals.bindingMarkers) {
         if (!wanted.has(marker)) continue
@@ -1509,6 +1503,21 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
     if (!normalizedWorkspace) {
       return emptyCursorTelemetrySnapshot('unavailable', '尚未绑定 Cursor 工作区')
     }
+    const fingerprint = this.databaseFingerprint()
+    const bindingsKey = bindingsFingerprint(bindings)
+    const activitiesKey = channelActivitiesFingerprint(channelActivities)
+    const cached = this.lastSnapshotRun
+    if (
+      cached
+      && fingerprint !== undefined
+      && cached.fingerprint === fingerprint
+      && cached.workspaceKey === normalizedWorkspace
+      && cached.bindingsKey === bindingsKey
+      && cached.activitiesKey === activitiesKey
+      && this.transcriptDepsFresh(cached.transcriptDeps)
+    ) {
+      return cached.result
+    }
     if (!existsSync(this.paths.globalStateDatabase)) {
       return {
         ...emptyCursorTelemetrySnapshot('unavailable', '找不到 Cursor 本机会话数据库'),
@@ -1516,27 +1525,22 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
       }
     }
 
-    let database: DatabaseSync | undefined
     try {
-      database = new DatabaseSync(this.paths.globalStateDatabase, {
-        readOnly: true,
-        timeout: 300,
-        defensive: true
-      })
-      database.exec('PRAGMA query_only = ON')
-      database.exec('PRAGMA busy_timeout = 300')
+      this.transcriptDepsCollector = []
+      // 复用只读连接（WAL 读事务可见新提交），替代每轮对 20GB 库新开/关闭。
+      const database = this.acquireDatabase()
       const modelState = readComposerModelState(database)
       const row = database.prepare(
         'SELECT value FROM ItemTable WHERE key = ?'
       ).get(COMPOSER_HEADERS_KEY) as { value?: unknown } | undefined
       const json = sqliteText(row?.value)
       if (!json) {
-        return {
+        return this.cacheSnapshotRun(fingerprint, normalizedWorkspace, bindingsKey, activitiesKey, {
           ...emptyCursorTelemetrySnapshot('unavailable', 'Cursor 尚未生成会话遥测'),
           workspacePath: normalizedWorkspace,
           composerProfile: modelState.profile,
           cursorModels: modelState.models
-        }
+        })
       }
       if (Buffer.byteLength(json, 'utf8') > MAX_HEADERS_BYTES) {
         throw new Error('Cursor 会话索引异常过大，已停止读取')
@@ -1577,6 +1581,11 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
         }
       }
       const allComposers = [...parsed, ...hydrated]
+      const persistentDetails = readComposerPersistentDetails(
+        database,
+        modelState.root,
+        allComposers.map((composer) => composer.telemetry.composerId)
+      )
       const transcriptSignals = new Map(allComposers.map((composer) => [
         composer.telemetry.composerId,
         this.readTranscriptSignals([workspacePath, normalizedWorkspace], composer)
@@ -1584,13 +1593,6 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
       const bindingByComposer = new Map(bindings.flatMap((binding) =>
         binding.composerId ? [[binding.composerId, binding] as const] : []
       ))
-      // 通道转录定位到的 composer（跨工作区/数字目录）同样解析工作过程，
-      // 与上下文用量的 displayComposer 回退语义保持一致
-      const workChannelComposerIds = new Set(
-        Object.values(channelActivities ?? {})
-          .map((activity) => activity.composerId)
-          .filter((id): id is string => Boolean(id))
-      )
       const now = this.now()
       const composers = allComposers.map((composer): CursorComposerTelemetry => {
         const binding = bindingByComposer.get(composer.telemetry.composerId)
@@ -1606,13 +1608,25 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
           : { observed: false, connected: false, waiting: false, fatal: false, detail: '会话尚未绑定通道' }
         return {
           ...composer.telemetry,
-          activity: composerActivity(signals, binding?.channelId, lease, now, composer.telemetry.lastUpdatedAt),
-          workEntries: binding || workChannelComposerIds.has(composer.telemetry.composerId)
-            ? this.readTranscriptWorkEntries([workspacePath, normalizedWorkspace], composer)
-            : undefined
+          modelProfile: persistentDetails.profiles.get(composer.telemetry.composerId),
+          contextUsage: (() => {
+            const headerUsage = composer.telemetry.contextUsage
+            const detailUsage = persistentDetails.contextUsage.get(composer.telemetry.composerId)
+            if (!headerUsage) return detailUsage
+            if (!detailUsage) return headerUsage
+            return {
+              used: headerUsage.used ?? detailUsage.used,
+              limit: headerUsage.limit ?? detailUsage.limit,
+              ratio: headerUsage.ratio,
+              breakdown: detailUsage.breakdown
+            }
+          })(),
+          activity: composer.persistedActivity
+            ? { ...composer.persistedActivity, channelId: binding?.channelId }
+            : composerActivity(signals, binding?.channelId, lease, now, composer.telemetry.lastUpdatedAt)
         }
       })
-      return {
+      return this.cacheSnapshotRun(fingerprint, normalizedWorkspace, bindingsKey, activitiesKey, {
         availability: 'available',
         workspacePath: normalizedWorkspace,
         composerProfile,
@@ -1628,7 +1642,7 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
           return [...local, ...globalMarkerCandidates.filter((candidate) => !covered.has(candidate.channelId))]
         })(),
         updatedAt: now
-      }
+      })
     } catch (error) {
       return {
         ...emptyCursorTelemetrySnapshot(
@@ -1638,8 +1652,47 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
         workspacePath: normalizedWorkspace
       }
     } finally {
-      database?.close()
+      this.transcriptDepsCollector = undefined
     }
+  }
+
+  /** 写入快照缓存：fingerprint 缺失（库不存在）或错误路径不缓存，下轮重试。 */
+  private cacheSnapshotRun(
+    fingerprint: string | undefined,
+    workspaceKey: string,
+    bindingsKey: string,
+    activitiesKey: string,
+    result: CursorTelemetrySnapshot
+  ): CursorTelemetrySnapshot {
+    if (fingerprint !== undefined) {
+      this.lastSnapshotRun = {
+        fingerprint,
+        workspaceKey,
+        bindingsKey,
+        activitiesKey,
+        transcriptDeps: this.transcriptDepsCollector ?? [],
+        result
+      }
+    }
+    return result
+  }
+
+  /** 上轮触及的转录文件全部未变（mtime+size）才允许复用缓存。 */
+  private transcriptDepsFresh(deps: Array<{ path: string; mtimeMs: number; size: number }>): boolean {
+    for (const dep of deps) {
+      try {
+        const stat = statSync(dep.path)
+        if (stat.mtimeMs !== dep.mtimeMs || stat.size !== dep.size) return false
+      } catch {
+        return false
+      }
+    }
+    return true
+  }
+
+  /** 记录本轮计算实际读取的转录文件（供下轮缓存判定；与调用处已有的 statSync 共享结果）。 */
+  private noteTranscriptDep(path: string, stat: { mtimeMs: number; size: number }): void {
+    this.transcriptDepsCollector?.push({ path, mtimeMs: stat.mtimeMs, size: stat.size })
   }
 
   private readTranscriptSignals(workspacePaths: string[], composer: ParsedComposer): TranscriptSignals {
@@ -1647,6 +1700,7 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
     if (!path) return emptyTranscriptSignals()
     try {
       const stat = statSync(path)
+      this.noteTranscriptDep(path, stat)
       const cached = this.transcriptSignalCache.get(composer.telemetry.composerId)
       if (
         cached &&
@@ -1672,117 +1726,5 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
     }
   }
 
-  /**
-   * 增量解析转录中的助手工作过程（可见叙述 / 工具调用），供会话视图回显。
-   * 首轮直接从尾部窗口起读；过程回显关心最新条目，无需为历史过程全量解析大转录。
-   */
-  private readTranscriptWorkEntries(
-    workspacePaths: string[],
-    composer: ParsedComposer
-  ): CursorWorkEntry[] | undefined {
-    const path = transcriptPath(this.paths, workspacePaths, composer)
-    if (!path) return undefined
-    try {
-      const stat = statSync(path)
-      let cached = this.transcriptWorkCache.get(composer.telemetry.composerId)
-      if (!cached || cached.path !== path || stat.size < cached.offset) {
-        cached = {
-          path,
-          offset: Math.max(0, stat.size - MAX_WORK_READ_PER_POLL),
-          remainder: Buffer.alloc(0),
-          line: 0,
-          entries: [],
-          updatedAt: stat.mtimeMs
-        }
-      }
-      let budget = MAX_WORK_READ_PER_POLL
-      if (cached.offset < stat.size && budget > 0) {
-        const descriptor = openSync(path, 'r')
-        try {
-          while (cached.offset < stat.size && budget > 0) {
-            const length = Math.min(1024 * 1024, stat.size - cached.offset, budget)
-            const chunk = Buffer.allocUnsafe(length)
-            const bytesRead = readSync(descriptor, chunk, 0, length, cached.offset)
-            if (bytesRead <= 0) break
-            cached.offset += bytesRead
-            budget -= bytesRead
-            const combined = Buffer.concat([cached.remainder, chunk.subarray(0, bytesRead)])
-            const lastNewline = combined.lastIndexOf(0x0a)
-            if (lastNewline < 0) {
-              cached.remainder = combined.length > 2 * 1024 * 1024 ? Buffer.alloc(0) : combined
-              continue
-            }
-            const complete = combined.subarray(0, lastNewline).toString('utf8')
-            cached.remainder = combined.subarray(lastNewline + 1)
-            const observedAt = this.now()
-            for (const line of complete.split('\n')) {
-              cached.line += 1
-              const parsedLine = parseTranscriptWorkLine(line, cached.line, observedAt)
-              if (parsedLine.listenBoundary && !parsedLine.entries.length) {
-                // check_messages / wait_messages 表示 Agent 已回到监听队列。它本身
-                // 不产生可见过程，但下一条真实工作输出必须开启新隐式回合；
-                // 否则没有显式 turn 的 Cursor transcript 会把多次用户对话串成一段。
-                for (const entry of cached.entries) {
-                  if (entry.status === 'running') entry.status = 'done'
-                }
-                cached.activeTurn = undefined
-                cached.activeTurnEntryStart = undefined
-                cached.pendingListenBoundaryLine = cached.line
-              }
-              if (parsedLine.explicitTurn) {
-                if (cached.activeTurn?.startsWith('implicit:')) {
-                  const start = cached.activeTurnEntryStart ?? cached.entries.length
-                  for (let index = start; index < cached.entries.length; index += 1) {
-                    cached.entries[index]!.turn = parsedLine.explicitTurn
-                  }
-                }
-                const turnChanged = cached.activeTurn !== parsedLine.explicitTurn
-                cached.activeTurn = parsedLine.explicitTurn
-                cached.activeTurnEntryStart = turnChanged
-                  ? cached.entries.length
-                  : cached.activeTurnEntryStart ?? cached.entries.length
-                cached.pendingListenBoundaryLine = undefined
-              }
-              if (!cached.activeTurn && parsedLine.entries.length) {
-                cached.activeTurn = `implicit:${cached.pendingListenBoundaryLine ?? cached.line}`
-                cached.activeTurnEntryStart = cached.entries.length
-                cached.pendingListenBoundaryLine = undefined
-              }
-              const parsed = parsedLine.entries.map((entry) => ({
-                ...entry,
-                turn: parsedLine.explicitTurn ?? cached.activeTurn
-              }))
-              if (parsed.length) {
-                // 新条目出现说明此前的工具调用均已拿到结果（Cursor 顺序执行：
-                // 结果返回后助手才会续写），翻转为完成态
-                for (const entry of cached.entries) {
-                  if (entry.status === 'running') entry.status = 'done'
-                }
-                cached.entries.push(...parsed)
-              }
-              if (parsedLine.closesTurn) {
-                for (const entry of cached.entries) {
-                  if (entry.status === 'running') entry.status = 'done'
-                }
-                cached.activeTurn = undefined
-                cached.activeTurnEntryStart = undefined
-              }
-            }
-          }
-        } finally {
-          closeSync(descriptor)
-        }
-        if (cached.entries.length > MAX_WORK_ENTRIES) {
-          cached.entries = cached.entries.slice(-MAX_WORK_ENTRIES)
-        }
-      }
-      cached.updatedAt = stat.mtimeMs
-      if (this.transcriptWorkCache.size >= MAX_TRANSCRIPT_SIGNAL_CACHE) this.transcriptWorkCache.clear()
-      this.transcriptWorkCache.set(composer.telemetry.composerId, cached)
-      return cached.entries.length ? [...cached.entries] : undefined
-    } catch {
-      // 转录尚未生成/暂不可读时过程区留空，不影响其余遥测
-      return undefined
-    }
-  }
+
 }

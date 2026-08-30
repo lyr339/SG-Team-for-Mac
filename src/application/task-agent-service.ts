@@ -57,10 +57,10 @@ export class TaskAgentService {
     const agentSessionId = identity.agentSessionId.trim()
     const runId = identity.runId.trim()
     if (!/^[a-zA-Z0-9:_-]{3,200}$/.test(agentSessionId)) {
-      throw new Error('QINGTIAN_AGENT_SESSION_ID 无效')
+      throw new Error('Agent 会话标识（agentSessionId）无效')
     }
     if (!/^[a-zA-Z0-9:_-]{3,200}$/.test(runId)) {
-      throw new Error('QINGTIAN_TEAM_RUN_ID 无效')
+      throw new Error('TeamRun 标识（runId）无效')
     }
     this.identity = {
       agentSessionId,
@@ -69,7 +69,7 @@ export class TaskAgentService {
       capabilities: [...new Set(identity.capabilities.map((item) => item.trim()).filter(Boolean))]
     }
     if (this.identity.slotId !== undefined && !/^[a-zA-Z0-9:_-]{3,240}$/.test(this.identity.slotId)) {
-      throw new Error('QINGTIAN_AGENT_SLOT_ID 无效')
+      throw new Error('Agent 槽位标识（slotId）无效')
     }
   }
 
@@ -313,6 +313,15 @@ export class TaskAgentService {
       throw new TaskPoolError('invalid_plan_size', '一次必须规划 1 到 30 条任务')
     }
     return transactTaskPool(this.repository, (pool) => pool.plan(this.identity.runId, inputs))
+  }
+
+  recoverLeadWork(fromAgentSessionId: string, targetSlotId: string): string[] {
+    this.ensureCoordinator()
+    return transactTaskPool(this.repository, (pool) => pool.recoverAgentWork({
+      fromAgentSessionId,
+      toAgentSessionId: this.identity.agentSessionId,
+      targetSlotId
+    }))
   }
 
   private ownedActiveAttempt(

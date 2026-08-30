@@ -21,7 +21,9 @@ interface LobbyHeroProps {
   /** 下一步行动的一句人话指引（如「写入 .cursor/mcp.json，约 10 秒」）。 */
   primaryHint: string
   runStateLabel?: string
-  runStateKind?: 'launching' | 'active' | 'paused'
+  runStateKind?: 'launching' | 'active' | 'paused' | 'offline'
+  runStateHint?: string
+  allowCreateNextRun?: boolean
   onSaveGoal: (goal: string) => Promise<void>
   onReconfigure: () => void
   onPrimary: () => void
@@ -66,6 +68,8 @@ export function LobbyHero({
   primaryHint,
   runStateLabel,
   runStateKind,
+  runStateHint,
+  allowCreateNextRun = false,
   onSaveGoal,
   onReconfigure,
   onPrimary,
@@ -96,9 +100,16 @@ export function LobbyHero({
       <PlayIcon />开始新一轮
     </button>
   ) : runStateLabel ? (
-    <span className={`lobby-command__state is-${runStateKind ?? 'active'}`}>
-      <i />{runStateLabel}
-    </span>
+    <>
+      <span className={`lobby-command__state is-${runStateKind ?? 'active'}`}>
+        <i />{runStateLabel}
+      </span>
+      {allowCreateNextRun ? (
+        <button className="lobby-command__restart" disabled={busy} onClick={onCreateNextRun}>
+          <PlayIcon />结束本轮并新建
+        </button>
+      ) : null}
+    </>
   ) : goalMissing && !editing ? (
     <button className="lobby-command__primary" disabled={busy} onClick={() => setEditing(true)}>
       <PlayIcon />填写团队目标
@@ -112,7 +123,7 @@ export function LobbyHero({
   const hint = status === 'completed'
     ? '本轮已验收完成，随时开启下一段协作'
     : runStateLabel
-      ? (runStateKind === 'paused' ? '团队已暂停，可在会话侧继续推进' : '团队运转中，可在下方补齐资源或查看状态')
+      ? runStateHint ?? (runStateKind === 'paused' ? '团队已暂停，可在会话侧继续推进' : '团队运转中，可在下方补齐资源或查看状态')
       : goalMissing
         ? '一句话说清要做什么，团队才能开跑'
         : primaryHint

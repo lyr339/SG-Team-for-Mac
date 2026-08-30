@@ -105,6 +105,8 @@ export interface AuthorizedTeamAgent {
   skills: AssignedAgentSkill[]
   /** 是否为临时主控：主控离线时由系统或手动指定，优先级高于角色模板。 */
   isActingLead?: boolean
+  /** 当前唯一有效主控；acting lead 存在时原始 lead 为 false。 */
+  isEffectiveLead?: boolean
 }
 
 /** 通道活性状态。 */
@@ -130,6 +132,7 @@ export interface TeamMemberDirectoryEntry {
   channelId?: string
   capabilities: string[]
   skills: AssignedAgentSkill[]
+  isEffectiveLead?: boolean
 }
 
 export interface TeamAgentRuntimeIdentity {

@@ -1,3 +1,4 @@
+import { numberOf, type SqliteRow } from './rows'
 import { DatabaseSync } from 'node:sqlite'
 import type {
   AgentAuthorizationIdentity,
@@ -5,13 +6,22 @@ import type {
 } from '../../application/agent-authorization'
 import { TaskPoolError } from '../../domain/task-pool'
 
-type SqliteRow = Record<string, string | number | bigint | null>
 
 function stringArrayOf(value: unknown): string[] {
   if (typeof value !== 'string' || !value) return []
   const parsed = JSON.parse(value)
   if (!Array.isArray(parsed)) throw new Error('Agent 能力字段不是合法 JSON 数组')
   return parsed.map(String).filter(Boolean)
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
+}
+
+function tableExists(database: DatabaseSync, table: string): boolean {
+  return Boolean(database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+  ).get(table))
 }
 
 function normalizedCapabilities(values: string[]): string[] {
@@ -153,7 +163,20 @@ export function assertAgentRegistrationAuthorized(
   database: DatabaseSync,
   identity: AgentAuthorizationIdentity
 ): void {
-  const row = database.prepare(`
+  const hasTeamControl = ['runtime_bindings', 'agent_slots', 'team_roles', 'team_runs']
+    .every((table) => tableExists(database, table))
+  const row = database.prepare(hasTeamControl ? `
+    SELECT ar.run_id, ar.capabilities_json, b.slot_id, r.template_key,
+      tr.acting_lead_slot_id, lead.capabilities_json AS lead_capabilities_json
+    FROM agent_registrations ar
+    LEFT JOIN runtime_bindings b
+      ON b.agent_session_id = ar.agent_session_id AND b.run_id = ar.run_id
+    LEFT JOIN agent_slots s ON s.id = b.slot_id AND s.run_id = b.run_id
+    LEFT JOIN team_roles r ON r.id = s.role_id AND r.run_id = b.run_id
+    LEFT JOIN team_runs tr ON tr.id = ar.run_id
+    LEFT JOIN team_roles lead ON lead.run_id = ar.run_id AND lead.template_key = 'lead'
+    WHERE ar.agent_session_id = ? AND ar.revoked_at IS NULL
+  ` : `
     SELECT run_id, capabilities_json
     FROM agent_registrations
     WHERE agent_session_id = ? AND revoked_at IS NULL
@@ -162,6 +185,14 @@ export function assertAgentRegistrationAuthorized(
     throw new TaskPoolError('agent_not_authorized', '当前 Agent generation 未注册或已被撤销')
   }
   const allowed = new Set(stringArrayOf(row.capabilities_json))
+  const leadCapabilities = new Set(stringArrayOf(row.lead_capabilities_json))
+  const actingLeadSlotId = optionalString(row.acting_lead_slot_id)
+  const slotId = optionalString(row.slot_id)
+  if (actingLeadSlotId && slotId === actingLeadSlotId) {
+    for (const capability of leadCapabilities) allowed.add(capability)
+  } else if (actingLeadSlotId && row.template_key === 'lead') {
+    for (const capability of leadCapabilities) allowed.delete(capability)
+  }
   if (identity.capabilities.some((capability) => !allowed.has(capability))) {
     throw new TaskPoolError('agent_capability_mismatch', '当前 Agent 请求了未注册的能力')
   }

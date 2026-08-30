@@ -6,7 +6,7 @@ import type { DesktopSnapshot } from '../src/shared/desktop-api'
 
 function bridgeSnapshot(): DesktopSnapshot {
   return {
-    connection: { state: 'connected', endpoint: 'qunshu://local-channel-runtime', attempt: 0, lastError: '' },
+    connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: [{
       id: 'qingtian-channel:1',
       channelId: '1',
@@ -98,7 +98,8 @@ describe('verified Agent runtime projection', () => {
       status: 'offline',
       online: false,
       connected: false,
-      waiting: false
+      waiting: false,
+      runtimeEvidence: 'stopped'
     })
     expect(snapshot.sessions[0]?.healthEvidence).toContain('Agent 已停止监听')
   })
@@ -142,13 +143,13 @@ describe('verified Agent runtime projection', () => {
     }
     const result = verifyAgentRuntime(snapshot, team(), telemetry('waiting'))
 
-    expect(result.sessions[0]).toMatchObject({ status: 'offline', online: false })
+    expect(result.sessions[0]).toMatchObject({ status: 'offline', online: false, runtimeEvidence: 'suspected' })
   })
 
   it('rejects activity from a different channel instead of reusing it', () => {
     const snapshot = verifyAgentRuntime(bridgeSnapshot(), team(), telemetry('waiting', '2'))
 
-    expect(snapshot.sessions[0]).toMatchObject({ status: 'offline', online: false })
+    expect(snapshot.sessions[0]).toMatchObject({ status: 'offline', online: false, runtimeEvidence: 'stopped' })
   })
 })
 
@@ -187,7 +188,7 @@ describe('证据缺失不再一票否决传输层活性（实机回归：Agent �
   it('未绑定 composerId 且传输断开 → 维持离线判词', () => {
     const snapshot = verifyAgentRuntime(offlineBridgeSnapshot(), teamWithoutComposer('running'), telemetry('waiting'))
 
-    expect(snapshot.sessions[0]).toMatchObject({ status: 'offline', online: false })
+    expect(snapshot.sessions[0]).toMatchObject({ status: 'offline', online: false, runtimeEvidence: 'suspected' })
     expect(snapshot.sessions[0]?.healthEvidence).toContain('TeamRun 已开始，但当前通道尚未绑定可验证的 Cursor 会话')
   })
 
@@ -235,7 +236,7 @@ describe('证据缺失不再一票否决传输层活性（实机回归：Agent �
     }
     const snapshot = verifyAgentRuntime(offlineBridgeSnapshot(), team(), activeTelemetry)
 
-    expect(snapshot.sessions[0]).toMatchObject({ online: true, connected: true, waiting: false, status: 'running' })
+    expect(snapshot.sessions[0]).toMatchObject({ online: true, connected: true, waiting: false, status: 'running', runtimeEvidence: 'active' })
     expect(snapshot.sessions[0]?.healthEvidence.join('\n')).toContain('通道租约陈旧')
   })
 
@@ -256,7 +257,7 @@ describe('证据缺失不再一票否决传输层活性（实机回归：Agent �
     expect(snapshot.sessions[0]?.healthEvidence.join('\n')).toContain('宽限期内保持在线')
   })
 
-  it('长任务宽限但 MCP 心跳已过期 → 诚实离线（消除假在线）', () => {
+  it('长任务宽限但 MCP 心跳已过期 → UI 可显示离线，但证据仍为 suspected、禁止接管', () => {
     const graceTelemetry: CursorTelemetrySnapshot = {
       availability: 'available',
       composers: [{
@@ -269,7 +270,7 @@ describe('证据缺失不再一票否决传输层活性（实机回归：Agent �
     }
     const snapshot = verifyAgentRuntime(offlineBridgeSnapshot(), team('running'), graceTelemetry)
 
-    expect(snapshot.sessions[0]).toMatchObject({ online: false, connected: false, status: 'offline' })
+    expect(snapshot.sessions[0]).toMatchObject({ online: false, connected: false, status: 'offline', runtimeEvidence: 'suspected' })
     expect(snapshot.sessions[0]?.healthEvidence.join('\n')).toContain('MCP 心跳已过期')
   })
 })

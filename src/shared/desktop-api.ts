@@ -7,15 +7,17 @@ import type { TeamContinuitySnapshot } from '../domain/team-continuity'
 import type { TeamMemorySnapshot } from '../domain/team-memory'
 import type { AgentSkillCatalogEntry } from '../domain/agent-skill'
 import type { TeamRoleTemplate } from '../domain/team-control'
-import type { CursorAccountMetadata } from '../domain/cursor-account'
+import type { CursorAccountMetadata, CursorRuntimeAccountMatch } from '../domain/cursor-account'
+import type { CursorMembershipStatus } from '../domain/cursor-membership'
 import type { ManualTeamHandoffInput, ManualTeamHandoffResult, TeamHandoffOptions } from '../domain/team-handoff'
 import type { CursorWorkspaceDetection } from '../domain/cursor-workspace'
-import type { CursorModelOption } from '../domain/cursor-model'
+import type { CursorModelOption, CursorModelSelection } from '../domain/cursor-model'
 import type { AozaiCardStatus, AozaiProcessResult, AozaiProgressEvent } from '../domain/aozai-service'
-import type { AgentLaunchPlan } from '../domain/agent-launch'
+import type { AgentLaunchPlan, AgentLaunchRequest } from '../domain/agent-launch'
 import type { CdpAutoHealEvent, CursorCdpSettings } from '../domain/cursor-cdp'
 import type { AccountAutomationRun, AccountAutomationSettings } from '../domain/account-automation'
 import type { CursorUpdatePreferences, CursorUpdateWriteResult } from '../domain/cursor-update'
+import type { CursorUsageSnapshot } from '../domain/cursor-usage'
 
 export type BridgeConnectionState =
   | 'disconnected'
@@ -24,10 +26,21 @@ export type BridgeConnectionState =
   | 'reconnecting'
   | 'error'
 
-/** 一回合的实时过程流：record_process 事件按 block.id upsert 聚合，回复归档后整体移除。 */
+/** 一回合的 Cursor 原生实时过程流。 */
 export interface LiveProcessState {
   turn: string
   blocks: ProcessBlock[]
+  startedAt: number
+  updatedAt: number
+}
+
+/** Cursor Composer 正在生成的原生回复；只存在于实时层，不写历史消息。 */
+export interface LiveAgentResponseState {
+  id: string
+  channelId: string
+  text: string
+  status: 'streaming' | 'complete'
+  startedAt: number
   updatedAt: number
 }
 
@@ -47,8 +60,10 @@ export interface DesktopSnapshot {
    * 用于系统内部通知等静默消息，让调度器能确认送达但不污染用户会话。
    */
   commandReceipts?: Record<string, ConversationEntry>
-  /** 进行中的实时过程流（record_process 事件聚合，按通道）。回复归档后对应 turn 移除。 */
+  /** 按通道映射的 Cursor 原生实时过程流。 */
   liveProcess?: Record<string, LiveProcessState>
+  /** 按通道映射的 Cursor 原生流式回复。record_reply 落地后自动移除。 */
+  liveAgentResponses?: Record<string, LiveAgentResponseState>
   protocolIssues: string[]
   cursorModels?: CursorModelOption[]
   updatedAt: number
@@ -57,6 +72,8 @@ export interface DesktopSnapshot {
 export interface SendMessageInput {
   channelId: string
   text: string
+  /** 主进程内部轮次栅栏；渲染层普通发送不填写。 */
+  scopeRunId?: string
   /** 消息附件（图片/文件） */
   attachments?: import('../domain/conversation-entry').MessageAttachment[]
   /**
@@ -105,6 +122,7 @@ export interface TeamSetupDraft {
   roleTemplates: TeamRoleTemplate[]
   avatarIds: string[]
   skills: AgentSkillCatalogEntry[]
+  cursorModels?: CursorModelOption[]
   initialMembers?: CreateTeamMemberInput[]
 }
 
@@ -113,6 +131,7 @@ export interface CreateTeamMemberInput {
   roleTemplateKey: string
   avatarId: string
   skillIds: string[]
+  modelSelection?: CursorModelSelection
 }
 
 export interface CreateTeamInput {
@@ -145,30 +164,47 @@ export interface QingtianDesktopApi {
   selectCursorAccount(accountId: string): Promise<CursorAccountMetadata[]>
   removeCursorAccount(accountId: string): Promise<CursorAccountMetadata[]>
   importCursorAccountFromLocalCursor(): Promise<CursorAccountMetadata[]>
-  webLoginCursorAccount(): Promise<CursorAccountMetadata[]>
   importCursorAccountFromBrowser(): Promise<CursorAccountMetadata[]>
+  /** 第一步「获取 Token」的指纹导入：读当前选中指纹浏览器 profile 的登录态（读毕关窗，cookie 留 profile）。 */
+  importCursorAccountFromFingerprint(): Promise<CursorAccountMetadata[]>
+  /** 打开选定的指纹浏览器窗口并导航到 cursor.com：用户可提前登录（cookie 落 profile，窗口不自动关）。 */
+  openFingerprintLoginPage(): Promise<void>
   /**
-   * 将选中账号注入 Cursor state.vscdb（写全三个 token key）。
-   * restart 默认 false：重启 Cursor 会断开全部群枢通道，仅用户在 UI 确认后传 true。
+   * 一键切换账号（FlyCursor「一键换号」同款时序）：确定性终止 Cursor → 独占写入
+   * 登录态（cursorAuth/* 键）→ 重置账号绑定机器码（machineid 文件 +
+   * storage.serviceMachineId + storage.json 遥测 4 键）→ 清理上一账号痕迹 →
+   * 拉起 Cursor（恒附带 --remote-debugging-port，会话创建能力无缝恢复）。
+   * 重启会断开全部拾光通道，UI 必须在调用前完成用户确认。
    */
-  injectCursorAccount(accountId: string, options?: { restart?: boolean }): Promise<{
-    injected: boolean
-    backupPath?: string
-    requiresRestart: boolean
-    cursorPid?: number
-    hotSwapped?: boolean
-    restartPerformed?: boolean
-    hotSwapFailure?: string
+  restartCursorWithAccount(accountId: string): Promise<{
+    switched: boolean
+    killedCursor: boolean
+    relaunchMode: 'cdp' | 'plain' | 'failed'
+    cdpPortReady?: boolean
+    machineIdentityApplied: boolean
+    backupDir?: string
     tokenExpiresAt?: number
     tokenExpired?: boolean
+    runtimeVerified: boolean
   }>
+  /**
+   * 核对 Cursor 运行时登录态（state.vscdb cursorAuth）与拾光活跃账号是否同一账号
+   * （JWT sub 比对；本地 SQLite 读，毫秒级）。发起会话前的闸门与大厅被动状态行共用。
+   */
+  verifyCursorRuntimeAccount(): Promise<CursorRuntimeAccountMatch>
+  /**
+   * 在线获取 Cursor 运行时账号的会员档位（api2.cursor.sh/auth/full_stripe_profile，
+   * Bearer 运行时 token；token 明文只在主进程内）。批量会话发起闸门与手动刷新共用；
+   * 失败返回 error 状态（fail-closed：过闸必须有权威结果）。
+   */
+  refreshCursorMembership(): Promise<CursorMembershipStatus>
   getAozaiCardStatus(): Promise<AozaiCardStatus>
   saveAozaiCard(cardCode: string): Promise<AozaiCardStatus>
   clearAozaiCard(): Promise<AozaiCardStatus>
   refreshAozaiBalance(): Promise<AozaiCardStatus>
   processAozaiAccount(input: { accountId: string; requestId: string }): Promise<AozaiProcessResult>
   onAozaiProgress(listener: (event: AozaiProgressEvent) => void): () => void
-  launchAgentSessions(channelIds: string[]): Promise<AgentLaunchPlan>
+  launchAgentSessions(requests: AgentLaunchRequest[]): Promise<AgentLaunchPlan>
   getAgentLaunchPlan(): Promise<AgentLaunchPlan | undefined>
   onAgentLaunchProgress(listener: (plan: AgentLaunchPlan) => void): () => void
   enableCursorCdp(): Promise<{ ok: boolean; message: string; suggestAutoHeal?: boolean }>
@@ -183,14 +219,21 @@ export interface QingtianDesktopApi {
   saveAccountAutomationSettings(settings: AccountAutomationSettings): Promise<AccountAutomationSettings>
   getAccountAutomationRun(): Promise<AccountAutomationRun>
   cancelAccountAutomation(): Promise<AccountAutomationRun>
+  /** 列出指纹浏览器窗口（账号自动化链的浏览器宿主；失败时 message 说明客户端状态）。 */
+  listAccountAutomationBitProfiles(): Promise<{ ok: boolean; profiles?: Array<{ id: string; name: string; seq?: number }>; message?: string }>
+  /** Roxy API Key 状态（已保存时只回掩码）。 */
+  getAccountAutomationRoxyApiKey(): Promise<{ saved: boolean; maskedKey?: string }>
+  /** 保存 Roxy API Key（明文仅入主进程 userData 文件，不回显）。 */
+  saveAccountAutomationRoxyApiKey(key: string): Promise<{ saved: boolean; maskedKey?: string }>
   onAccountAutomationProgress(listener: (run: AccountAutomationRun) => void): () => void
+  /**
+   * Windows 标题栏覆盖层（titleBarOverlay）颜色跟随应用主题；macOS 无覆盖层，
+   * 调用静默生效。渲染层在主题生效与系统深浅色切换时同步。
+   */
+  setWindowChromeColorMode(mode: 'light' | 'dark'): Promise<boolean>
   getSnapshot(): Promise<DesktopSnapshot>
   sendMessage(input: SendMessageInput): Promise<SendMessageAccepted>
   getTaskPoolSnapshot(): Promise<TaskPoolSnapshot>
-  createTask(input: CreateDesktopTaskInput): Promise<TeamTask>
-  cancelTask(taskId: string, reason?: string): Promise<TeamTask>
-  approveTask(taskId: string): Promise<TeamTask>
-  rejectTask(taskId: string, reason: string): Promise<TeamTask>
   installTaskMcp(): Promise<McpInstallationResult>
   getTeamControlSnapshot(): Promise<TeamControlSnapshot>
   detectCursorWorkspace(): Promise<CursorWorkspaceDetection>
@@ -199,26 +242,22 @@ export interface QingtianDesktopApi {
   createTeam(input: CreateTeamInput): Promise<TeamControlSnapshot>
   createNextTeamRun(): Promise<TeamControlSnapshot>
   prepareActiveTeamSetup(): Promise<TeamSetupDraft>
-  setActiveTeamWorkspace(workspaceId: string): Promise<TeamControlSnapshot>
   updateTeamGoal(goal: string): Promise<TeamControlSnapshot>
   launchTeam(): Promise<TeamControlSnapshot>
+  setSlotModelSelection(channelId: string, selection: CursorModelSelection): Promise<TeamControlSnapshot>
   getTeamCollaborationSnapshot(): Promise<TeamCollaborationSnapshot>
-  sendTeamMessage(input: SendDesktopTeamMessageInput): Promise<TeamMessage>
-  replyTeamMessage(messageId: string, content: string): Promise<TeamMessage>
-  markTeamMessageRead(messageId: string): Promise<TeamMessage>
-  getTeamContinuitySnapshot(): Promise<TeamContinuitySnapshot>
   getManualHandoffOptions(slotId: string): Promise<TeamHandoffOptions>
   manualHandoff(input: ManualTeamHandoffInput): Promise<{
     handoff: ManualTeamHandoffResult
     team: TeamControlSnapshot
   }>
-  getTeamMemorySnapshot(): Promise<TeamMemorySnapshot>
   onSnapshot(listener: (snapshot: DesktopSnapshot) => void): () => void
+  /** Cursor 会话用量快照（composerId → 累积 token/费用估算；内存态）。 */
+  getCursorUsageSnapshot(): Promise<CursorUsageSnapshot>
+  onCursorUsageSnapshot(listener: (snapshot: CursorUsageSnapshot) => void): () => void
   onTaskPoolSnapshot(listener: (snapshot: TaskPoolSnapshot) => void): () => void
   onTeamControlSnapshot(listener: (state: TeamControlSnapshot) => void): () => void
   onTeamCollaborationSnapshot(listener: (state: TeamCollaborationSnapshot) => void): () => void
-  onTeamContinuitySnapshot(listener: (state: TeamContinuitySnapshot) => void): () => void
-  onTeamMemorySnapshot(listener: (state: TeamMemorySnapshot) => void): () => void
 }
 
 export const IPC = {
@@ -227,9 +266,12 @@ export const IPC = {
   cursorAccountsSelect: 'cursor-accounts:select',
   cursorAccountsRemove: 'cursor-accounts:remove',
   cursorAccountsImportFromLocal: 'cursor-accounts:import-from-local',
-  cursorAccountsWebLogin: 'cursor-accounts:web-login',
   cursorAccountsImportFromBrowser: 'cursor-accounts:import-from-browser',
-  cursorAccountsInject: 'cursor-accounts:inject',
+  cursorAccountsImportFromFingerprint: 'cursor-accounts:import-from-fingerprint',
+  cursorAccountsOpenFingerprintLogin: 'cursor-accounts:open-fingerprint-login',
+  cursorAccountsRestartWith: 'cursor-accounts:restart-with',
+  cursorAccountsVerifyRuntime: 'cursor-accounts:verify-runtime',
+  cursorAccountsRefreshMembership: 'cursor-accounts:refresh-membership',
   aozaiGetCardStatus: 'aozai:get-card-status',
   aozaiSaveCard: 'aozai:save-card',
   aozaiClearCard: 'aozai:clear-card',
@@ -246,19 +288,21 @@ export const IPC = {
   cursorUpdateSetAutoUpdateDisabled: 'cursor-update:set-auto-update-disabled',
   cursorCdpCancelCountdown: 'cursor-cdp:cancel-countdown',
   cursorCdpAutoHealEvent: 'cursor-cdp:auto-heal-event',
+  cursorUsageGet: 'cursor-usage:get',
+  cursorUsageSnapshot: 'cursor-usage:snapshot',
   accountAutomationGetSettings: 'account-automation:get-settings',
   accountAutomationSaveSettings: 'account-automation:save-settings',
   accountAutomationGetRun: 'account-automation:get-run',
   accountAutomationCancel: 'account-automation:cancel',
+  accountAutomationListBitProfiles: 'account-automation:list-bit-profiles',
+  accountAutomationGetRoxyApiKey: 'account-automation:get-roxy-api-key',
+  accountAutomationSaveRoxyApiKey: 'account-automation:save-roxy-api-key',
   accountAutomationProgress: 'account-automation:progress',
-  getSnapshot: 'qunshu-session:get-snapshot',
-  sendMessage: 'qunshu-session:send-message',
-  snapshot: 'qunshu-session:snapshot',
+  windowSetChromeColorMode: 'window:set-chrome-color-mode',
+  getSnapshot: 'sg-team-session:get-snapshot',
+  sendMessage: 'sg-team-session:send-message',
+  snapshot: 'sg-team-session:snapshot',
   taskPoolGet: 'task-pool:get',
-  taskPoolCreate: 'task-pool:create',
-  taskPoolCancel: 'task-pool:cancel',
-  taskPoolApprove: 'task-pool:approve',
-  taskPoolReject: 'task-pool:reject',
   taskPoolSnapshot: 'task-pool:snapshot',
   taskMcpInstall: 'task-mcp:install',
   teamControlGet: 'team-control:get',
@@ -268,19 +312,12 @@ export const IPC = {
   teamControlCreateTeam: 'team-control:create-team',
   teamControlNextRun: 'team-control:next-run',
   teamControlPrepareActiveSetup: 'team-control:prepare-active-setup',
-  teamControlSetWorkspace: 'team-control:set-workspace',
   teamControlUpdateGoal: 'team-control:update-goal',
   teamControlLaunch: 'team-control:launch',
+  teamControlSetSlotModelSelection: 'team-control:set-slot-model-selection',
   teamControlSnapshot: 'team-control:snapshot',
   teamCollaborationGet: 'team-collaboration:get',
-  teamCollaborationSend: 'team-collaboration:send',
-  teamCollaborationReply: 'team-collaboration:reply',
-  teamCollaborationRead: 'team-collaboration:read',
   teamCollaborationSnapshot: 'team-collaboration:snapshot',
-  teamContinuityGet: 'team-continuity:get',
   teamContinuityHandoffOptions: 'team-continuity:handoff-options',
-  teamContinuityHandoff: 'team-continuity:handoff',
-  teamContinuitySnapshot: 'team-continuity:snapshot',
-  teamMemoryGet: 'team-memory:get',
-  teamMemorySnapshot: 'team-memory:snapshot'
+  teamContinuityHandoff: 'team-continuity:handoff'
 } as const

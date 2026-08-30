@@ -17,13 +17,10 @@ import {
 } from '../domain/channel-message'
 import {
   normalizeEscapedNewlines,
-  normalizeProcessBlockText,
   type ConversationEntry,
-  type MessageAttachment,
-  type ProcessBlock
+  type MessageAttachment
 } from '../domain/conversation-entry'
 import type { SqliteChannelMessageRepository } from '../infrastructure/channel-messages/sqlite-channel-message-repository'
-import type { LiveProcessState } from '../shared/desktop-api'
 import type {
   DesktopSnapshot,
   SendMessageAccepted,
@@ -32,7 +29,7 @@ import type {
 
 const MAX_ENTRIES_PER_CHANNEL = 500
 const MAX_MESSAGE_CHARS = 100_000
-const DEFAULT_POLL_MS = 1_000
+const DEFAULT_POLL_MS = 250
 const CONVERSATION_SCOPE_CLOCK_SKEW_MS = 5_000
 const CONVERSATION_DUPLICATE_ENTRY_WINDOW_MS = 5 * 60_000
 
@@ -56,11 +53,22 @@ function uniqueAttachmentName(name: string, used: Set<string>): string {
   }
 }
 
+/** 分相活性判定：processing/need_reply_sync 允许 5 分钟静默，其余相严格 120s。 */
+function presenceOnline(presence: ChannelPresence | undefined, now: number): boolean {
+  if (!presence) return false
+  if (presence.connectionPhase === 'cursor_stopped') return false
+  const staleMs = isProcessingPhase(presence.connectionPhase)
+    ? CHANNEL_PROCESSING_STALE_MS
+    : CHANNEL_PRESENCE_STALE_MS
+  return now - presence.lastSeenAt <= staleMs
+}
+
 function sessionStatusOf(presence: ChannelPresence, online: boolean): AgentSession['status'] {
   const phase = presence.connectionPhase.toLowerCase()
   if (phase.includes('reviv') || phase.includes('recover') || phase.includes('reconnect')) return 'reviving'
   if (phase.includes('review')) return 'review'
-  if (phase.includes('block') || phase.includes('approval') || phase.includes('need_')) return 'blocked'
+  // 生成中断（工具调用标记泄漏）需要用户介入，与阻塞同类呈现
+  if (phase.includes('block') || phase.includes('approval') || phase.includes('need_') || phase.includes('interrupt')) return 'blocked'
   if (!online) return 'offline'
   if (presence.waiting) return 'waiting'
   if (phase.includes('process') || phase.includes('deliver')) return 'running'
@@ -91,7 +99,7 @@ function isRecentDuplicateEntry(left: ConversationEntry, right: ConversationEntr
 /**
  * 通道消息中继（一体化 S1 主进程侧）。
  *
- * 职责对齐原 QingtianBridge 的 WS 链路，但后端是群枢 SQLite：
+ * 职责对齐原 QingtianBridge 的 WS 链路，但后端是拾光 SQLite：
  * - 发送改道：内嵌通道的用户消息直写 channel_outbox（Agent 长轮询取走）
  * - 入站消费：轮询 channel_replies，把 Agent record_reply 转入会话时间线
  * - 活性投影：channel_presence → AgentSession 覆盖（check_messages 调用流即心跳）
@@ -103,12 +111,12 @@ export class ChannelMessageRelay {
   private readonly listeners = new Set<RelayListener>()
   private readonly conversations = new Map<string, ConversationEntry[]>()
   private readonly commandReceipts = new Map<string, ConversationEntry>()
-  private readonly liveProcess = new Map<string, LiveProcessState & { fingerprint: string }>()
   /** sessions 增量缓存：fingerprint 命中即复用引用（结构共享，渲染层 memo 红利）。 */
   private readonly sessionCache = new Map<string, { fingerprint: string; session: AgentSession }>()
   private timer?: ReturnType<typeof setInterval>
   private polling = false
   private scopeStartedAt?: number
+  private scopeRunId?: string
 
   constructor(
     private readonly repository: SqliteChannelMessageRepository,
@@ -123,12 +131,29 @@ export class ChannelMessageRelay {
     return this.repository.listEmbeddedChannels()
   }
 
+  /** Cursor 实时桥确认绑定 Composer 已终止；持久化到 presence，重启后仍保持离线。 */
+  markCursorStopped(channelId: string, observedAt = this.now()): boolean {
+    const current = this.repository.getPresence(channelId)
+    if (current?.connectionPhase === 'cursor_stopped') return false
+    this.repository.touchPresence(channelId, {
+      lastSeenAt: observedAt,
+      waiting: false,
+      connectionPhase: 'cursor_stopped',
+      pendingReplySyncSince: null,
+      pendingGroupChat: false,
+      pendingGroupId: null
+    }, observedAt)
+    this.sessionCache.delete(channelId)
+    this.emit()
+    return true
+  }
+
   /** 发送改道入口：仅接受内嵌通道；入队即视为投递受理（无 WS 回执等待）。 */
   sendMessage(input: SendMessageInput): SendMessageAccepted {
     const channelId = String(input.channelId ?? '').trim()
     const text = String(input.text ?? '').trim()
     if (!/^\d+$/.test(channelId)) throw new Error('通道号无效')
-    if (!this.handlesChannel(channelId)) throw new Error(`CH-${channelId} 尚未接入群枢内嵌通道`)
+    if (!this.handlesChannel(channelId)) throw new Error(`CH-${channelId} 尚未接入拾光内嵌通道`)
     if (text.length > MAX_MESSAGE_CHARS) throw new Error(`消息不能超过 ${MAX_MESSAGE_CHARS} 字符`)
 
     const messageId = randomUUID()
@@ -137,7 +162,8 @@ export class ChannelMessageRelay {
     if (!text && !attachments?.length) throw new Error('消息不能为空')
     const silent = input.silent === true || isInternalCollaborationNotificationText(text)
     this.repository.dedupePendingOutbound(channelId, this.now())
-    const message = this.repository.enqueueOutbound(channelId, text, this.now(), attachments, silent)
+    const runId = input.scopeRunId?.trim() || this.scopeRunId
+    const message = this.repository.enqueueOutbound(channelId, text, this.now(), attachments, silent, runId)
     const commandId = randomUUID()
     const entry: ConversationEntry = {
       id: `outbox:${message.id}`,
@@ -223,11 +249,12 @@ export class ChannelMessageRelay {
   }
 
   /** 会话域切换（新 TeamRun）：清空时间线与 live 过程，丢弃域前的未消费回复。 */
-  resetScope(startedAt: number): void {
+  resetScope(runId: string, startedAt: number): void {
+    this.scopeRunId = runId.trim()
     this.scopeStartedAt = startedAt
+    this.repository.beginScope(this.scopeRunId, startedAt, this.now())
     this.conversations.clear()
     this.commandReceipts.clear()
-    this.liveProcess.clear()
     this.sessionCache.clear()
     for (const reply of this.repository.listUnconsumedReplies()) {
       if (reply.createdAt + CONVERSATION_SCOPE_CLOCK_SKEW_MS < startedAt) {
@@ -238,7 +265,15 @@ export class ChannelMessageRelay {
     this.emit()
   }
 
-  /** 轮询入站回复并转入会话时间线（幂等：消费即标记）；顺带聚合流式过程事件。 */
+  /** TeamRun 结束：立即结算本轮全部未完成通道状态，幂等且保留历史审计。 */
+  completeScope(completedAt = this.now()): void {
+    this.repository.retireScopeBefore(completedAt + 1, completedAt)
+    this.commandReceipts.clear()
+    this.sessionCache.clear()
+    this.emit()
+  }
+
+  /** 轮询入站回复并转入会话时间线（幂等：消费即标记）。 */
   pollReplies(): void {
     const replies = this.repository.listUnconsumedReplies()
     for (const reply of replies) {
@@ -251,7 +286,6 @@ export class ChannelMessageRelay {
       if (entry) this.appendEntry(entry)
       this.repository.markReplyConsumed(reply.id)
     }
-    this.pollProcessEvents()
   }
 
   /** 重启/切换域后从 SQLite 回放本轮可见消息，避免 UI 会话只依赖内存 Map。 */
@@ -293,7 +327,6 @@ export class ChannelMessageRelay {
         ))
         .slice(-MAX_ENTRIES_PER_CHANNEL))
     }
-    this.pollProcessEvents()
   }
 
   private timelineRoleOrder(role: ConversationEntry['role']): number {
@@ -319,11 +352,6 @@ export class ChannelMessageRelay {
 
   private entryFromReply(reply: ChannelInboundReply): ConversationEntry | undefined {
     if (reply.visible === false) return undefined
-    const processBlocks = reply.process?.length
-      ? reply.process.map(normalizeProcessBlockText)
-      : reply.turn
-        ? this.repository.listProcessEventsForTurn(reply.channelId, reply.turn).map((event) => normalizeProcessBlockText(event.block))
-        : undefined
     return {
       id: `reply:${reply.id}`,
       channelId: reply.channelId,
@@ -331,45 +359,7 @@ export class ChannelMessageRelay {
       text: visibleConversationText(reply.content),
       timestamp: reply.createdAt,
       status: 'complete',
-      source: 'cursor',
-      turn: reply.turn,
-      processBlocks: processBlocks?.length ? processBlocks : undefined
-    }
-  }
-
-  /**
-   * 聚合未归档过程事件 → liveProcess（每通道取最新活跃 turn）。
-   * fingerprint 不变不 emit——1s 轮询下避免对渲染层空推。
-   */
-  private pollProcessEvents(): void {
-    const activeChannels = new Set<string>()
-    for (const channelId of this.repository.listEmbeddedChannels()) {
-      const presence = this.repository.getPresence(channelId)
-      if (presence?.pendingReplySyncSince === undefined) continue
-      const events = this.repository.listLiveProcessEvents(channelId)
-      if (!events.length) continue
-      const latestUpdated = Math.max(...events.map((event) => event.updatedAt))
-      const turn = events.find((event) => event.updatedAt === latestUpdated)!.turn
-      const turnEvents = events.filter((event) => event.turn === turn)
-      // updatedAt 取选中 turn 内的最新事件时间（upsert 翻转实时反映在气泡时间戳上）
-      const turnUpdatedAt = Math.max(...turnEvents.map((event) => event.updatedAt))
-      const fingerprint = `${turn}:${turnEvents.length}:${turnUpdatedAt}`
-      const previous = this.liveProcess.get(channelId)
-      activeChannels.add(channelId)
-      if (previous?.fingerprint === fingerprint) continue
-      this.liveProcess.set(channelId, {
-        turn,
-        blocks: turnEvents.map((event) => normalizeProcessBlockText(event.block)),
-        updatedAt: turnUpdatedAt,
-        fingerprint
-      })
-      this.emit()
-    }
-    for (const channelId of [...this.liveProcess.keys()]) {
-      if (!activeChannels.has(channelId)) {
-        this.liveProcess.delete(channelId)
-        this.emit()
-      }
+      source: 'cursor'
     }
   }
 
@@ -383,6 +373,7 @@ export class ChannelMessageRelay {
       try {
         this.compactPendingOutbound()
         this.pollReplies()
+        this.emitPresenceFlips()
       } finally {
         this.polling = false
       }
@@ -412,15 +403,13 @@ export class ChannelMessageRelay {
    */
   applyTo(snapshot: DesktopSnapshot): DesktopSnapshot {
     const embedded = this.embeddedChannels()
-    const liveProcess = this.liveProcessSnapshot()
     const commandReceipts = this.commandReceiptsSnapshot(snapshot.commandReceipts)
     const commandReceiptsChanged = commandReceipts !== snapshot.commandReceipts
     if (!embedded.length) {
-      if (!liveProcess && !commandReceiptsChanged) return snapshot
+      if (!commandReceiptsChanged) return snapshot
       return {
         ...snapshot,
-        ...(commandReceipts ? { commandReceipts } : {}),
-        ...(liveProcess ? { liveProcess } : {})
+        ...(commandReceipts ? { commandReceipts } : {})
       }
     }
     const now = this.now()
@@ -443,14 +432,13 @@ export class ChannelMessageRelay {
       sessionByChannel.set(channelId, session)
       changed = true
     }
-    if (!changed && !liveProcess && !commandReceiptsChanged) return snapshot
+    if (!changed && !commandReceiptsChanged) return snapshot
     return {
       ...snapshot,
       sessions: [...sessionByChannel.values()]
         .sort((left, right) => Number(left.channelId) - Number(right.channelId) || left.channelId.localeCompare(right.channelId)),
       conversations,
-      ...(commandReceipts ? { commandReceipts } : {}),
-      ...(liveProcess ? { liveProcess } : {})
+      ...(commandReceipts ? { commandReceipts } : {})
     }
   }
 
@@ -458,16 +446,6 @@ export class ChannelMessageRelay {
   private commandReceiptsSnapshot(base?: Record<string, ConversationEntry>): Record<string, ConversationEntry> | undefined {
     if (!this.commandReceipts.size) return base
     return { ...(base ?? {}), ...Object.fromEntries(this.commandReceipts) }
-  }
-
-  /** liveProcess 透出（去掉内部 fingerprint 字段）。 */
-  private liveProcessSnapshot(): Record<string, LiveProcessState> | undefined {
-    if (!this.liveProcess.size) return undefined
-    const result: Record<string, LiveProcessState> = {}
-    for (const [channelId, state] of this.liveProcess) {
-      result[channelId] = { turn: state.turn, blocks: state.blocks, updatedAt: state.updatedAt }
-    }
-    return result
   }
 
   /**
@@ -483,12 +461,10 @@ export class ChannelMessageRelay {
     now: number
   ): AgentSession {
     // 分相活性：processing/need_reply_sync 表示 Agent 已取走消息正在执行——
-    // 长任务期间按协议不碰 MCP，presence 停刷属正常（证据缺失），用宽松阈值；
+    // 长任务期间按协议不碰 MCP，presence 停刷属正常（证据缺失），给 5 分钟宽限；
+    // 更长任务必须由上层 Cursor 遥测的正面活动证据续命，不能仅凭旧 phase 假在线。
     // waiting/keepalive 是「正在长轮询」的声称——沉默超 120s 即与声称矛盾，严格判离线。
-    const staleMs = presence && isProcessingPhase(presence.connectionPhase)
-      ? CHANNEL_PROCESSING_STALE_MS
-      : CHANNEL_PRESENCE_STALE_MS
-    const online = presence !== undefined && now - presence.lastSeenAt <= staleMs
+    const online = presenceOnline(presence, now)
     const fingerprint = [
       presence?.lastSeenAt ?? 0,
       presence?.waiting ? 1 : 0,
@@ -510,7 +486,7 @@ export class ChannelMessageRelay {
       id: previous?.id ?? `qingtian-channel:${channelId}`,
       channelId,
       generation: previous?.generation ?? 0,
-      displayName: previous?.displayName ?? `Qunshu CH-${channelId}`,
+      displayName: previous?.displayName ?? `SG Team CH-${channelId}`,
       roleName: previous?.roleName ?? '未绑定外置团队',
       status: presence ? sessionStatusOf(presence, online) : 'offline',
       currentTask: previous?.currentTask ?? '',
@@ -520,6 +496,9 @@ export class ChannelMessageRelay {
       connectionPhase: presence?.connectionPhase ?? '',
       online,
       connected: online,
+      runtimeEvidence: presence?.connectionPhase === 'cursor_stopped'
+        ? 'stopped'
+        : online ? 'active' : 'suspected',
       deliveryMode: 'queued',
       waiting: online && (presence?.waiting ?? false),
       workingFiles: previous?.workingFiles ?? [],
@@ -559,6 +538,25 @@ export class ChannelMessageRelay {
       this.commandReceipts.delete(oldest)
     }
     this.emit()
+  }
+
+  /**
+   * 活性翻转自调度：online 由「now - lastSeenAt」推导，阈值跨越瞬间没有任何数据
+   * 变化，纯事件驱动的 emit 不会触发——不扫查的话界面会永久停在旧的在线状态。
+   * 每秒比对缓存会话的 online 位，任一通道翻转即 emit（下游 getSnapshot 重算推送）。
+   */
+  private emitPresenceFlips(): void {
+    const now = this.now()
+    let flipped = false
+    for (const channelId of this.repository.listEmbeddedChannels()) {
+      const cached = this.sessionCache.get(channelId)
+      if (!cached) continue
+      if (cached.session.online !== presenceOnline(this.repository.getPresence(channelId), now)) {
+        flipped = true
+        break
+      }
+    }
+    if (flipped) this.emit()
   }
 
   private emit(): void {

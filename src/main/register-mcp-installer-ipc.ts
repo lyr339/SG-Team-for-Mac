@@ -51,7 +51,7 @@ export function registerMcpInstallerIpc(
       registrationMode: 'global',
       activateAgents: (batch) => teamService.recordInstallation(batch)
     })
-    // 一体化接管落成：qunshu-ch-N 统一条目已指向群枢内嵌 server，
+    // 一体化接管落成：SG Team 统一条目已指向拾光内嵌 server，
     // 登记内嵌通道，发送链路与活性投影自此改道 SQLite；
     // 同步迁移插件文件队列中的未读存量，防止切换后消息滞留。
     if (channelMessages) {

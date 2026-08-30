@@ -6,7 +6,12 @@ import type { TeamCollaborationAgentService } from '../application/team-collabor
 import type { TeamMemoryAgentService } from '../application/team-memory-agent-service'
 import type { TeamControlRepository } from '../application/team-control-repository'
 import { buildChannelWaitInstruction } from '../domain/channel-wait-policy'
-import { QUNSHU_MCP_SERVER_NAME } from '../domain/channel-message'
+import {
+  SG_TEAM_MCP_SERVER_ID,
+  hasInFlightExecution,
+  isExplicitlyStoppedPhase,
+  type ChannelPresence
+} from '../domain/channel-message'
 import { TaskPoolError } from '../domain/task-pool'
 
 /** 单通道运行时：统一服务器按 channel_id 懒加载并缓存。 */
@@ -15,6 +20,9 @@ export interface TeamChannelRuntime {
   collaboration?: TeamCollaborationAgentService
   memory?: TeamMemoryAgentService
   controlRepository?: TeamControlRepository
+  isChannelOnline?: (channelId: string) => boolean
+  /** 主控接管必须读取完整相位，裸 online/no-pong 不足以区分“忙碌”与“死亡”。 */
+  channelPresence?: (channelId: string) => ChannelPresence | undefined
 }
 
 export interface TeamToolsDeps {
@@ -30,17 +38,17 @@ export interface TeamToolsDeps {
 /** 所有工具必传 channel_id：单 MCP 条目下区分通道的唯一参数。 */
 const channelSchema = {
   channel_id: z.string().regex(/^\d+$/)
-    .describe('群枢分配给当前 Agent 的通道号（如 "2"），启动指令中声明，每次调用必传')
+    .describe('拾光分配给当前 Agent 的通道号（如 "2"），启动指令中声明，每次调用必传')
 }
 
 function waitingAction(channelId: string): Record<string, string> {
   return {
     type: 'enter_channel_wait',
     channelId,
-    communicationServer: QUNSHU_MCP_SERVER_NAME,
+    communicationServer: SG_TEAM_MCP_SERVER_ID,
     instruction: buildChannelWaitInstruction({
       channelId,
-      communicationServerName: QUNSHU_MCP_SERVER_NAME
+      communicationServerName: SG_TEAM_MCP_SERVER_ID
     })
   }
 }
@@ -87,12 +95,12 @@ function taskStatusResult(
 
 async function safely(
   service: TaskAgentService,
-  operation: () => Record<string, unknown> | null,
+  operation: () => Record<string, unknown> | null | Promise<Record<string, unknown> | null>,
   refreshIdentity?: () => void
 ) {
   try {
     refreshIdentity?.()
-    return toolSuccess(service.identity.agentSessionId, operation() ?? {})
+    return toolSuccess(service.identity.agentSessionId, await operation() ?? {})
   } catch (error) {
     return toolFailure(service.identity.agentSessionId, error)
   }
@@ -101,11 +109,11 @@ async function safely(
 /** 统一服务器系统说明：协议级内容底层注入，不进入会话可见消息。 */
 export function buildUnifiedServerInstructions(): string {
   return [
-    `这是群枢（Qunshu）统一 MCP 服务器「${QUNSHU_MCP_SERVER_NAME}」：团队工具与通信保活同服，每次工具调用必须传 channel_id（当前 Agent 的群枢通道号，启动指令中声明）。`,
+    `这是拾光（SG Team）统一 MCP 服务器「${SG_TEAM_MCP_SERVER_ID}」：团队工具与通信保活同服，每次工具调用必须传 channel_id（当前 Agent 的拾光通道号，启动指令中声明）。`,
     '收到启动指令后先调用 team_check_in 领取角色简报；简报是角色职责与团队目标的唯一依据，不要在会话里复述它。',
-    '过程中每次工具调用或关键思考后，用 record_process({ channel_id, turn, block }) 流式上报（同 block.id 重复上报即状态翻转）；record_reply 带同一 turn 归档整批，软件界面实时渲染过程流。禁止只在 record_reply 直带 process 而跳过流式上报（界面将整批展示即断流，返回带 streamingWarning）。',
+    '思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件，不要额外复述或上报过程；record_reply 只同步完整可见回复正文。',
     '每次真实用户可见回复后必须 record_reply 同步，再 check_messages 长轮询待命；团队内部通知只用 team_* 回执处理，不要写用户可见回复。',
-    'check_messages/qingtian 返回 keepalive、无未读或已读重复时必须静默续等：不要输出“继续等待/已读过/继续轮询”等可见回复，也不要 record_reply。',
+    'check_messages 返回 keepalive、无未读或已读重复时必须静默续等：不要输出“继续等待/已读过/继续轮询”等可见回复，也不要 record_reply。',
     '真实用户消息投递后未 record_reply 直接再取消息会被 need_reply_sync 拒绝；内部通知不会触发该守门。',
     'Lease token 由服务端保管，不会暴露给模型；不要替其他 Agent 操作任务，不要猜测 taskId；不要用终端或脚本调用 MCP。'
   ].join('\n')
@@ -115,7 +123,7 @@ export function buildUnifiedServerInstructions(): string {
 export function registerTeamTools(server: McpServer, deps: TeamToolsDeps): void {
   const safe = (
     channelId: string,
-    operation: (rt: TeamChannelRuntime) => Record<string, unknown> | null
+    operation: (rt: TeamChannelRuntime) => Record<string, unknown> | null | Promise<Record<string, unknown> | null>
   ) => {
     const rt = deps.runtimeFor(channelId)
     return safely(
@@ -597,6 +605,9 @@ export function registerTeamTools(server: McpServer, deps: TeamToolsDeps): void 
       },
       async ({ channel_id, targetChannelId, timeoutMs }) => safe(channel_id, (rt) => {
         if (!rt.collaboration) throw new TaskPoolError('collaboration_unavailable', '当前通道未接入团队协作服务')
+        if (!rt.collaboration.isCoordinator()) {
+          throw new TaskPoolError('lead_only_ping', '只有当前有效主控可以发起活性验证')
+        }
         const result = rt.collaboration.ping({ targetChannelId, timeoutMs })
         return {
           ...result,
@@ -639,6 +650,9 @@ export function registerTeamTools(server: McpServer, deps: TeamToolsDeps): void 
       },
       async ({ channel_id, targetChannelId }) => safe(channel_id, (rt) => {
         if (!rt.collaboration) throw new TaskPoolError('collaboration_unavailable', '当前通道未接入团队协作服务')
+        if (!rt.collaboration.isCoordinator()) {
+          throw new TaskPoolError('lead_only_liveness', '只有当前有效主控可以查询成员活性')
+        }
         const liveness = rt.collaboration.checkLiveness(targetChannelId)
         return {
           channelId: targetChannelId,
@@ -701,7 +715,7 @@ export function registerTeamTools(server: McpServer, deps: TeamToolsDeps): void 
         if (!rt.controlRepository) throw new TaskPoolError('control_unavailable', '当前通道未接入团队控制仓库')
         const agent = rt.collaboration?.['currentAgent']()
         if (!agent) throw new TaskPoolError('agent_not_authorized', '当前 Agent 未授权')
-        if (agent.roleTemplateKey !== 'lead' && !agent.isActingLead) {
+        if (!agent.isEffectiveLead) {
           throw new TaskPoolError('lead_only_transfer', '只有主控协调或临时主控可以转移主控权限')
         }
         const state = rt.controlRepository.loadTeamControl()
@@ -713,11 +727,167 @@ export function registerTeamTools(server: McpServer, deps: TeamToolsDeps): void 
         if (!targetSlot) throw new TaskPoolError('target_slot_not_found', '目标 AgentSlot 不属于当前 TeamRun')
         const targetBinding = state.bindings.find((binding) => binding.slotId === targetSlot.id && binding.runId === run.id)
         if (!targetBinding) throw new TaskPoolError('target_not_bound', '目标 Agent 尚未完成 MCP 绑定')
+        if (rt.isChannelOnline && !rt.isChannelOnline(targetBinding.channelId)) {
+          throw new TaskPoolError('target_offline', '目标 Agent 当前离线，不能接收主控权限')
+        }
         rt.controlRepository.setActingLead({ runId: run.id, slotId: targetSlot.id, at: Date.now() })
         return {
           actingLeadSlotId: targetSlot.id,
           message: `主控权限已转移给 ${targetSlot.name}`,
           reason: reason?.trim(),
+          nextAction: waitingAction(channel_id)
+        }
+      })
+    )
+
+    server.registerTool(
+      'team_claim_lead',
+      {
+        title: '主控离线接管',
+        description: '任何已绑定成员可调用：仅在有效主控有可验证终止证据时自荐接管。processing/need_reply_sync 代表主控正在执行，期间不要求及时 pong；普通租约超时和无 pong 都只是证据不足。只有明确 cursor_stopped（或主控已无有效绑定）才允许切换临时主控。',
+        inputSchema: z.object(channelSchema).extend({
+          reason: z.string().max(500).optional(),
+          pongTimeoutMs: z.number().int().min(2_000).max(30_000).optional()
+        }),
+        annotations: { readOnlyHint: false, idempotentHint: true }
+      },
+      async ({ channel_id, reason, pongTimeoutMs }) => safe(channel_id, async (rt) => {
+        if (!rt.controlRepository) throw new TaskPoolError('control_unavailable', '当前通道未接入团队控制仓库')
+        if (!rt.collaboration) throw new TaskPoolError('collaboration_unavailable', '当前通道未接入团队协作服务')
+        const agent = rt.collaboration['currentAgent']()
+        if (!agent) throw new TaskPoolError('agent_not_authorized', '当前 Agent 未授权')
+        const state = rt.controlRepository.loadTeamControl()
+        const run = state.runs.find((candidate) => candidate.id === agent.runId)
+        if (!run || !['launching', 'running', 'attention'].includes(run.status)) {
+          throw new TaskPoolError('run_inactive', '只有运行中的 TeamRun 可以接管主控')
+        }
+        const leadRole = state.roles.find((role) => role.runId === run.id && role.templateKey === 'lead')
+        const leadSlot = leadRole
+          ? state.slots.find((slot) => slot.runId === run.id && slot.roleId === leadRole.id)
+          : undefined
+        const effectiveLeadSlotId = run.actingLeadSlotId ?? leadSlot?.id
+        if (agent.isEffectiveLead || effectiveLeadSlotId === agent.slotId) {
+          return {
+            actingLeadSlotId: agent.slotId,
+            alreadyLead: true,
+            message: '当前 Agent 已是有效主控，无需接管',
+            nextAction: waitingAction(channel_id)
+          }
+        }
+        const evidence: string[] = []
+        const effectiveLeadBinding = effectiveLeadSlotId
+          ? state.bindings.find((binding) => binding.runId === run.id && binding.slotId === effectiveLeadSlotId)
+          : undefined
+        if (!effectiveLeadSlotId || !effectiveLeadBinding) {
+          evidence.push('有效主控不存在或已无 MCP 绑定')
+        } else {
+          const beforePresence = rt.channelPresence?.(effectiveLeadBinding.channelId)
+          if (hasInFlightExecution(beforePresence)) {
+            throw new TaskPoolError(
+              'lead_busy',
+              '有效主控正在处理已领取的消息；执行期间不要求响应 pong，保持现有主控权限'
+            )
+          }
+          const explicitlyStopped = isExplicitlyStoppedPhase(beforePresence?.connectionPhase ?? '')
+          if (explicitlyStopped) {
+            evidence.push(`Cursor 已明确终止（connectionPhase=${beforePresence!.connectionPhase}）`)
+          }
+          // ping 只做复核，no-pong 本身不再作为接管证明：长命令、推理和生成阶段
+          // 都可能暂时处理不了内部通知，必须再与通道相位/活性窗口交叉验证。
+          const prior = rt.collaboration.checkLiveness(effectiveLeadBinding.channelId)
+          if (prior && prior.liveness !== 'active') {
+            evidence.push(`既有活性记录 ${prior.liveness}（连续失败 ${prior.consecutiveFailures} 次）`)
+          }
+          if (!explicitlyStopped) {
+            const pongTimeout = pongTimeoutMs ?? 8_000
+            const { sentAt } = rt.collaboration.ping({
+              targetChannelId: effectiveLeadBinding.channelId,
+              timeoutMs: pongTimeout
+            })
+            const deadline = Date.now() + pongTimeout
+            let answered = false
+            while (Date.now() < deadline) {
+              const record = rt.collaboration.checkLiveness(effectiveLeadBinding.channelId)
+              if (record?.liveness === 'active' && (record.lastPongAt ?? 0) >= sentAt) {
+                answered = true
+                break
+              }
+              await new Promise((resolve) => setTimeout(resolve, 200))
+            }
+            const afterPresence = rt.channelPresence?.(effectiveLeadBinding.channelId)
+            const phase = afterPresence?.connectionPhase ?? ''
+            const calledMcpAfterPing = (afterPresence?.lastSeenAt ?? 0) >= sentAt
+            if (answered || calledMcpAfterPing) {
+              throw new TaskPoolError(
+                'lead_still_active',
+                answered
+                  ? '有效主控对活性验证作出了 pong 回应，不能接管；如需转移请由其本人调用 team_transfer_lead'
+                  : '有效主控在复核期间产生了新的 MCP 活性，不能接管'
+              )
+            }
+            if (hasInFlightExecution(afterPresence)) {
+              throw new TaskPoolError(
+                'lead_busy',
+                '有效主控已进入消息处理相位；执行期间无 pong 不代表掉线，保持现有主控权限'
+              )
+            }
+            if (!isExplicitlyStoppedPhase(phase)) {
+              throw new TaskPoolError(
+                'lead_liveness_unproven',
+                `有效主控在 ${Math.round(pongTimeout / 1000)}s 内没有 pong，但通道没有 Cursor/运行时明确终止证据；保持现有主控权限`
+              )
+            }
+            evidence.push(`Cursor 已明确终止，复核 ${Math.round(pongTimeout / 1000)}s 无 pong`)
+          }
+        }
+        const at = Date.now()
+        rt.controlRepository.setActingLead({ runId: run.id, slotId: agent.slotId, at })
+        // 权限切换后立即刷新同一 MCP runtime 的动态身份；后续任务迁移与上下文
+        // 生成必须以新主控权限执行，不能等下一次工具调用。
+        let recoveredTaskIds: string[] = []
+        let contextMessageId: string | undefined
+        let recoveryWarning: string | undefined
+        try {
+          deps.refreshIdentity?.(channel_id)
+          recoveredTaskIds = effectiveLeadBinding
+            ? rt.service.recoverLeadWork(effectiveLeadBinding.agentSessionId, agent.slotId)
+            : []
+          contextMessageId = rt.collaboration.createLeadTakeoverContext({
+            previousLeadSlotId: effectiveLeadSlotId,
+            evidence,
+            recoveredTaskIds
+          }).id
+        } catch (error) {
+          // 权限切换已经持久生效；后续恢复失败必须显式返回 warning，不能把成功
+          // 包装成 MCP error 诱导重复接管。
+          recoveryWarning = error instanceof Error ? error.message : String(error)
+        }
+        let auditWarning: string | undefined
+        try {
+          rt.collaboration?.broadcast({
+            kind: 'notice',
+            subject: '主控离线接管审计',
+            content: [
+              `【接管审计】席位 ${agent.slotId} 通过 team_claim_lead 接管临时主控权限。`,
+              `失联证据：${evidence.join('；')}。`,
+              reason?.trim() ? `接管原因：${reason.trim()}。` : '',
+              '原主控恢复后可调用 team_transfer_lead 收回权限，或 team_clear_acting_lead 复位。'
+            ].filter(Boolean).join('')
+          })
+        } catch (error) {
+          // 接管已生效；审计广播失败只降级为警告，不把成功状态回滚成 MCP 错误。
+          auditWarning = error instanceof Error ? error.message : String(error)
+        }
+        return {
+          actingLeadSlotId: agent.slotId,
+          previousLeadSlotId: effectiveLeadSlotId,
+          recoveredTaskIds,
+          contextMessageId,
+          evidence,
+          reason: reason?.trim(),
+          ...(auditWarning ? { auditWarning } : {}),
+          ...(recoveryWarning ? { recoveryWarning } : {}),
+          message: '已接管临时主控权限',
           nextAction: waitingAction(channel_id)
         }
       })
@@ -735,7 +905,7 @@ export function registerTeamTools(server: McpServer, deps: TeamToolsDeps): void 
         if (!rt.controlRepository) throw new TaskPoolError('control_unavailable', '当前通道未接入团队控制仓库')
         const agent = rt.collaboration?.['currentAgent']()
         if (!agent) throw new TaskPoolError('agent_not_authorized', '当前 Agent 未授权')
-        if (agent.roleTemplateKey !== 'lead' && !agent.isActingLead) {
+        if (!agent.isEffectiveLead) {
           throw new TaskPoolError('lead_only_clear', '只有主控协调或临时主控可以清除临时主控')
         }
         rt.controlRepository.setActingLead({ runId: agent.runId, slotId: null, at: Date.now() })

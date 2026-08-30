@@ -35,10 +35,10 @@ function notificationEnvelope(input: {
 }): string {
   const requiresResponse = teamMessageRequiresResponse(input.kind)
   return [
-    '【群枢内部协作通知】',
+    '【拾光内部协作通知】',
     `消息 ID：${input.messageId}`,
     `发送者：${input.senderLabel}；类型：${input.kind}。`,
-    `请调用当前 CH-${input.channelId} 群枢统一 MCP 的 team_read_message（服务器 qunshu，channel_id:'${input.channelId}'），使用上面的 messageId 读取持久化正文。`,
+    `请调用当前 CH-${input.channelId} 的 SG Team MCP team_read_message（channel_id:'${input.channelId}'），使用上面的 messageId 读取持久化正文。`,
     requiresResponse
       ? '处理后必须调用 team_respond_message 建立明确关联回应；不要只在普通回复中声称已处理。'
       : '读取并纳入当前工作上下文即可；如需回复，再调用 team_respond_message 建立关联。'
@@ -121,6 +121,7 @@ export class TeamMessageDispatcher {
         try {
           const accepted = this.bridge.sendMessage({
             channelId,
+            scopeRunId: message.runId,
             // 系统内部协作通知对用户不可见：只投递给 Agent，不写入会话时间线
             silent: true,
             text: notificationEnvelope({
@@ -133,7 +134,7 @@ export class TeamMessageDispatcher {
           const updated = this.repository.markNotificationSending(
             message.id,
             accepted.commandId,
-            `已交给 CH-${channelId} 的群枢投递队列`
+            `已交给 CH-${channelId} 的拾光投递队列`
           )
           if (updated.receipt.notificationState !== 'sending') continue
           this.inFlight.set(message.id, {
@@ -167,11 +168,11 @@ export class TeamMessageDispatcher {
         this.repository.markNotificationResult(
           messageId,
           'notified',
-          `群枢已确认通知送入 CH-${pending.channelId}`,
+          `拾光已确认通知送入 CH-${pending.channelId}`,
           entry.timestamp
         )
       } else if (entry.status === 'failed') {
-        const detail = entry.error || '群枢通知投递失败'
+        const detail = entry.error || '拾光通知投递失败'
         const uncertain = /连接中断|未自动重发|超时/.test(detail)
         this.repository.markNotificationResult(
           messageId,

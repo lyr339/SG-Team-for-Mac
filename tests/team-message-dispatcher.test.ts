@@ -12,7 +12,7 @@ class FakeBridge implements TeamMessageDispatcherBridge {
   readonly sent: Array<SendMessageInput & { commandId: string }> = []
   private readonly listeners = new Set<(snapshot: DesktopSnapshot) => void>()
   private snapshot: DesktopSnapshot = {
-    connection: { state: 'connected', endpoint: 'qunshu://local-channel-runtime', attempt: 0, lastError: '' },
+    connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: [],
     conversations: {},
     protocolIssues: [],

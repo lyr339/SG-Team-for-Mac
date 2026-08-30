@@ -65,4 +65,18 @@ describe('MessageContent', () => {
     expect(html).toContain('<ul>')
     expect(html).not.toContain('\\n')
   })
+
+  it('hides dangling bold openers from truncated model output but keeps glob patterns', () => {
+    // 生成中断/截断残留的未闭合 ** 不应字面渲染（2026-08-28 CH-1 事故）
+    const broken = renderToStaticMarkup(<MessageContent text={'结论先说：分析到一半 **'} />)
+    expect(broken).not.toContain('**')
+    const mixed = renderToStaticMarkup(<MessageContent text={'1. **服务层** 已确认，**中继聚合'} />)
+    expect(mixed).toContain('<strong>服务层</strong>')
+    expect(mixed).not.toContain('**')
+    // 合法字面保留：路径通配与数学写法
+    const glob = renderToStaticMarkup(<MessageContent text={'匹配 **/*.ts 与 src/**/tests'} />)
+    expect(glob).toContain('**/*.ts')
+    expect(glob).toContain('src/**/tests')
+    expect(messagePlainText('**结论**：完成了 **一半')).toBe('结论：完成了 一半')
+  })
 })

@@ -26,7 +26,7 @@ function createTaskMcpServer(
   })
 }
 
-describe('Qunshu collaboration MCP', () => {
+describe('SG Team collaboration MCP', () => {
   it('moves a lead directive through inbox, read and correlated response tools', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'qingtian-collab-mcp-')), 'team.sqlite3')
     const team = new SqliteTeamControlRepository(path)

@@ -41,7 +41,7 @@ export const sessions: AgentSession[] = [
       scope: 'cursor-composer-current',
       modelId: 'fable-5',
       displayName: 'Fable 5',
-      options: ['思考', '1M'],
+      options: ['Think', '1M'],
       maxMode: true,
       contextTokenLimit: 1_000_000
     },
@@ -73,7 +73,7 @@ export const sessions: AgentSession[] = [
       scope: 'cursor-composer-current',
       modelId: 'fable-5',
       displayName: 'Fable 5',
-      options: ['思考'],
+      options: ['Think'],
       maxMode: false,
       contextTokenLimit: 1_000_000
     },
@@ -88,54 +88,6 @@ export const sessions: AgentSession[] = [
     waiting: false,
     contextUsage: usage(0.72),
     changes: { additions: 275, deletions: 17, files: 10 },
-    workEntries: [
-      {
-        kind: 'tool',
-        text: 'ReadFile src/renderer/src/styles.css',
-        toolName: 'ReadFile',
-        toolKind: 'read',
-        details: [
-          { label: '文件', value: 'src/renderer/src/styles.css', kind: 'path' },
-          { label: '限制', value: '220', kind: 'text' }
-        ],
-        status: 'done',
-        line: 41,
-        at: NOW - 50_000,
-        turn: 'turn-demo-1'
-      },
-      {
-        kind: 'tool',
-        text: 'StrReplace src/renderer/src/SessionWorkspace.tsx',
-        toolName: 'StrReplace',
-        toolKind: 'edit',
-        details: [
-          { label: '文件', value: 'src/renderer/src/SessionWorkspace.tsx', kind: 'path' },
-          { label: '变更规模', value: '+5 / -3', kind: 'text' },
-          { label: '替换前', value: 'const cursorProcessPanel = workCount > 0 ? (\n  <aside className=\"workspace-worklog\">...', kind: 'code' },
-          { label: '替换后', value: '<CursorProcessPanel\n  key={`${session.id}:${session.composerId ?? \"\"}`}\n  entries={workEntries}\n/>', kind: 'code' }
-        ],
-        status: 'done',
-        line: 42,
-        at: NOW - 30_000,
-        turn: 'turn-demo-1'
-      },
-      {
-        kind: 'tool',
-        text: 'Shell npm run typecheck',
-        toolName: 'Shell',
-        toolKind: 'command',
-        details: [
-          { label: '命令', value: 'npm run typecheck', kind: 'code' },
-          { label: '工作目录', value: '/Users/demo/projects/wedge-demo', kind: 'path' },
-          { label: '说明', value: '验证过程面板拆分后的类型边界', kind: 'text' }
-        ],
-        status: 'running',
-        line: 43,
-        at: NOW - 20_000,
-        turn: 'turn-demo-1'
-      },
-      { kind: 'text', text: '正在统一过程视图：会话页只负责布局，CursorProcessPanel 独立负责分组、展开和工具输入明细。', line: 44, at: NOW - 12_000, turn: 'turn-demo-1' }
-    ],
     workingFiles: ['src/renderer/src/SessionWorkspace.tsx'],
     healthEvidence: ['mcp-heartbeat', 'cursor-run'],
     telemetry: { state: 'bound', detail: 'Cursor 遥测已绑定（channel marker）', source: 'cursor-local' }
@@ -172,7 +124,7 @@ export const conversations: Record<string, ConversationEntry[]> = {
       id: 'e1',
       channelId: '2',
       role: 'user',
-      text: '进入持续对话模式，反复调用 qtwx-mcp-2 的 check_messages 接收消息。每轮回复结束后先 record_reply 同步全文，再继续 check_messages。',
+      text: '进入持续对话模式，反复调用 SG Team 的 check_messages 接收消息。每轮回复结束后先 record_reply 同步全文，再继续 check_messages。',
       timestamp: NOW - 26 * 60 * MIN,
       status: 'complete',
       source: 'desktop'
@@ -181,7 +133,7 @@ export const conversations: Record<string, ConversationEntry[]> = {
       id: 'e2',
       channelId: '2',
       role: 'assistant',
-      text: '收到，本窗口绑定通道 qtwx-mcp-2。我先按工作区约定读取 AGENTLOG.md 了解现状，然后进入持续对话循环等待插件侧消息。',
+      text: '收到，本窗口已绑定 SG Team CH-2。我先按工作区约定读取 AGENTLOG.md 了解现状，然后进入持续对话循环等待插件侧消息。',
       timestamp: NOW - 26 * 60 * MIN + 40_000,
       status: 'complete',
       source: 'cursor',
@@ -199,7 +151,7 @@ export const conversations: Record<string, ConversationEntry[]> = {
       text: '如图去找到这个项目，然后先来深度了解，记住不要使用 subagent。',
       timestamp: NOW - 55 * MIN,
       status: 'complete',
-      source: 'qingtian',
+      source: 'desktop',
       attachments: [
         {
           id: 'att-1',
@@ -218,7 +170,7 @@ export const conversations: Record<string, ConversationEntry[]> = {
       text: '补充：了解完之后给我一份完整的架构报告。',
       timestamp: NOW - 54 * MIN,
       status: 'complete',
-      source: 'qingtian'
+      source: 'desktop'
     },
     {
       id: 'e5',
@@ -245,7 +197,7 @@ export const conversations: Record<string, ConversationEntry[]> = {
       text: '通道投递超时：Cursor Agent 未在 30 秒内确认接收。',
       timestamp: NOW - 5 * MIN,
       status: 'failed',
-      source: 'qingtian',
+      source: 'desktop',
       error: '投递超时'
     },
     {
@@ -281,17 +233,23 @@ export const conversations: Record<string, ConversationEntry[]> = {
         '## 二、关键链路',
         '',
         '1. 消息链路：renderer → IPC → relay → outbox → MCP 长轮询 → Agent；回复反向经 record_reply 落库后由 relay 轮询消费进时间线。',
-        '2. 过程链路：record_process 按 turn upsert 过程事件，relay 聚合为 liveProcess 实时透出；record_reply 带同 turn 归档整批，时间线改由回复气泡承载。',
+        '2. 过程链路：Cursor 内存模型写入后通过 CDP binding 直推，拾光按原生顺序渲染 thinking、工具状态与输出。',
         '3. 活性链路：presence 分相阈值（processing 30 分钟 / waiting 120 秒），遥测侧按 transcript 与 composer 索引水合。',
         '',
         '## 三、风险与建议',
         '',
         '- 数据库 WAL 持续增长需要定期 checkpoint；',
-        '- 过程事件依赖 Agent 自觉上报，协议文本已补指引；',
+        '- Cursor 更新后需要验证原生字段锚点是否漂移；',
         '- 长回复在会话气泡中折叠展示，展开全文需用户主动点击；',
         '- 附件同名落盘已做去重，批量上传同名截图不再互相覆盖。',
         '',
-        '以上为完整结论，后续按优先级推进即可。'
+        '以上为完整结论，后续按优先级推进即可。',
+        '',
+        '接下来可以：',
+        '1. 补齐过程视图的浏览器回归测试',
+        '2. 提交当前界面重构',
+        '3. 观察实时消息链路',
+        '4. 更新实现状态文档'
       ].join('\n'),
       timestamp: NOW - 20_000,
       status: 'complete',
@@ -333,7 +291,7 @@ export const conversations: Record<string, ConversationEntry[]> = {
 export const desktopSnapshot: DesktopSnapshot = {
   connection: {
     state: 'connected',
-    endpoint: 'qunshu://local-channel-runtime',
+    endpoint: 'shiguang://local-channel-runtime',
     attempt: 0,
     lastError: ''
   },
@@ -342,12 +300,25 @@ export const desktopSnapshot: DesktopSnapshot = {
   liveProcess: {
     '2': {
       turn: 'turn-demo-1',
+      startedAt: NOW - 24_000,
       updatedAt: NOW - 8_000,
       blocks: [
-        { kind: 'tool', id: 'live-1', toolName: 'Search', toolKind: 'search', summary: 'process 展示', status: 'done', output: '命中 3 个文件' },
-        { kind: 'thinking', id: 'live-2', text: '正在比对渲染层挂接点与数据契约，确认 live 区与归档气泡的替换时机……', status: 'running' },
-        { kind: 'command', id: 'live-3', command: 'npx vitest run tests/relay', output: '', status: 'running' }
+        { kind: 'thinking', id: 'live-1', text: '正在比对渲染层挂接点与数据契约，确认原生事件顺序与状态翻转……', status: 'done', durationMs: 3_200 },
+        { kind: 'message', id: 'live-message', text: '先检查过程卡的实时渲染，再运行浏览器验证。', status: 'done' },
+        { kind: 'tool', id: 'live-2', toolName: 'Search', toolKind: 'search', summary: 'process 展示', status: 'done', output: '命中 3 个文件' },
+        { kind: 'tool', id: 'live-3', toolName: 'browser_navigate', toolKind: 'browser', summary: 'http://127.0.0.1:5173', status: 'done', output: '页面已加载' },
+        { kind: 'tool', id: 'live-4', toolName: 'run_terminal_cmd', toolKind: 'command', summary: 'npx vitest run tests/relay', status: 'running', input: { command: 'npx vitest run tests/relay' } }
       ]
+    }
+  },
+  liveAgentResponses: {
+    '2': {
+      id: 'preview-live-response',
+      channelId: '2',
+      text: '正在统一过程视图：实时步骤已经归一到同一回合，接下来会完成类型检查并整理最终结论。',
+      status: 'streaming',
+      startedAt: NOW - 5_000,
+      updatedAt: NOW - 500
     }
   },
   cursorModels: [
@@ -356,6 +327,8 @@ export const desktopSnapshot: DesktopSnapshot = {
       displayName: 'Composer 2.5',
       parameters: [{ id: 'fast', value: 'true' }],
       selected: true,
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
       optionLabels: ['Fast'],
       parameterDefinitions: [{
         id: 'fast',
@@ -366,7 +339,8 @@ export const desktopSnapshot: DesktopSnapshot = {
           { value: 'true', displayName: 'Fast', increasesCost: true }
         ]
       }],
-      contextTokenLimit: 200_000
+      contextTokenLimit: 200_000,
+      contextTokenLimitForMaxMode: 200_000
     },
     {
       modelId: 'claude-fable-5',
@@ -377,6 +351,8 @@ export const desktopSnapshot: DesktopSnapshot = {
         { id: 'effort', value: 'max' }
       ],
       selected: false,
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
       optionLabels: [],
       parameterDefinitions: [
         {
@@ -402,13 +378,16 @@ export const desktopSnapshot: DesktopSnapshot = {
           }))
         }
       ],
-      contextTokenLimit: 1_000_000
+      contextTokenLimit: 300_000,
+      contextTokenLimitForMaxMode: 1_000_000
     },
     {
       modelId: 'gpt-5.2',
       displayName: 'GPT-5.2',
       parameters: [{ id: 'reasoning', value: 'medium' }],
       selected: false,
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
       optionLabels: [],
       parameterDefinitions: [{
         id: 'reasoning', displayName: 'Reasoning', kind: 'enum',
@@ -418,7 +397,8 @@ export const desktopSnapshot: DesktopSnapshot = {
           increasesCost: false
         }))
       }],
-      contextTokenLimit: 400_000
+      contextTokenLimit: 272_000,
+      contextTokenLimitForMaxMode: 272_000
     }
   ],
   protocolIssues: ['CH-3 收到无法关联的 submitResult'],
@@ -464,7 +444,7 @@ const members: TeamMemberView[] = bundle.slots.map((slot, index) => {
 const previewStandbyChannels = [
   {
     channelId: '4',
-    displayName: 'QingTian CH-4',
+    displayName: 'SG Team CH-4',
     status: 'waiting' as const,
     online: true,
     waiting: true,
@@ -475,7 +455,7 @@ const previewStandbyChannels = [
   },
   {
     channelId: '5',
-    displayName: 'QingTian CH-5',
+    displayName: 'SG Team CH-5',
     status: 'offline' as const,
     online: false,
     waiting: false,
@@ -491,12 +471,12 @@ export const teamControlSnapshot: TeamControlSnapshot = {
   revision: 42,
   activeWorkspaceId: bundle.workspace.id,
   workspaces: [bundle.workspace],
-  runs: [{ ...bundle.run, goal: '完成群枢桌面端视觉与交互升级，并保证全部测试通过。', status: 'running' }],
+  runs: [{ ...bundle.run, goal: '完成拾光桌面端视觉与交互升级，并保证全部测试通过。', status: 'running' }],
   roles: bundle.roles,
   slots: bundle.slots,
   bindings: members.map((member) => member.binding!),
   updatedAt: NOW - 3 * MIN,
-  activeRun: { ...bundle.run, goal: '完成群枢桌面端视觉与交互升级，并保证全部测试通过。', status: 'running' },
+  activeRun: { ...bundle.run, goal: '完成拾光桌面端视觉与交互升级，并保证全部测试通过。', status: 'running' },
   members,
   runtimeChannels: [...sessions.map((session) => ({
     channelId: session.channelId,
@@ -545,7 +525,7 @@ const taskDefs = [
   { id: 't1', key: 'design-tokens', title: '统一设计令牌与字号体系', status: 'done' as const, priority: 1, progress: 100, attempts: 1 },
   { id: 't2', key: 'chat-bubbles', title: '重构会话时间线为气泡体系', status: 'running' as const, priority: 0, progress: 62, attempts: 1 },
   { id: 't3', key: 'memory-ui', title: '团队共识审核界面', status: 'review' as const, priority: 1, progress: 100, attempts: 1 },
-  { id: 't4', key: 'brand-team', title: '统一群枢品牌标识', status: 'queued' as const, priority: 2, progress: 0, attempts: 0 },
+  { id: 't4', key: 'brand-team', title: '统一拾光品牌标识', status: 'queued' as const, priority: 2, progress: 0, attempts: 0 },
   { id: 't5', key: 'a11y-pass', title: '可访问性走查与修复', status: 'failed' as const, priority: 3, progress: 0, attempts: 3 }
 ]
 
@@ -695,7 +675,7 @@ export const continuitySnapshot: TeamContinuitySnapshot = {
       digest: 'digest-2',
       capsule: {
         schemaVersion: 1,
-        goal: '完成群枢桌面端视觉与交互升级。',
+        goal: '完成拾光桌面端视觉与交互升级。',
         runName: bundle.run.name,
         runStatus: 'running',
         members: bundle.slots.map((slot) => ({
@@ -727,7 +707,7 @@ export const continuitySnapshot: TeamContinuitySnapshot = {
       digest: 'digest-1',
       capsule: {
         schemaVersion: 1,
-        goal: '完成群枢桌面端视觉与交互升级。',
+        goal: '完成拾光桌面端视觉与交互升级。',
         runName: bundle.run.name,
         runStatus: 'running',
         members: [],

@@ -3,11 +3,13 @@ import type { DesktopSnapshot } from '../../shared/desktop-api'
 import type { CursorWorkspaceDetection } from '../../domain/cursor-workspace'
 import {
   GridIcon,
+  SettingsIcon,
   SessionsIcon,
   WorkspaceIcon
 } from './UiIcons'
 import { BrandMark } from './BrandMark'
 import { ResizableColumns } from './ResizableColumns'
+import { AppearanceSettings } from './AppearanceSettings'
 
 export type AppModule = 'lobby' | 'sessions'
 
@@ -15,16 +17,16 @@ interface DesktopShellProps {
   snapshot: DesktopSnapshot
   activeModule: AppModule
   sidebar: ReactNode
-  collaborationUnread?: number
-  cursorAccountLabel?: string
-  cursorAccountCount?: number
   cursorWorkspace?: CursorWorkspaceDetection
   displayedWorkspaceId?: string
   wideContent?: boolean
   teamChannelIds?: string[]
+  cardOpacity: number
+  colorMode: 'system' | 'light' | 'dark'
   onModuleChange: (module: AppModule) => void
-  onOpenCursorAccounts: () => void
   onDetectedWorkspaceClick: () => void
+  onCardOpacityChange: (value: number) => void
+  onColorModeChange: (value: 'system' | 'light' | 'dark') => void
   children: ReactNode
 }
 
@@ -44,25 +46,32 @@ const MODULE_LABELS: Record<AppModule, string> = {
 const MODULE_ORDER: AppModule[] = ['lobby', 'sessions']
 const CONTEXT_SIDEBAR_SPECS = [{ defaultSize: 270, minSize: 220, maxSize: 500 }] as const
 const SESSION_SIDEBAR_SPECS = [{ defaultSize: 326, minSize: 286, maxSize: 420 }] as const
+// 快捷键提示平台化：mac 显示 ⌘，其余平台（Windows）显示 Ctrl+；事件侧已兼容两键。
+const MODULE_SWITCH_MODIFIER = typeof document !== 'undefined'
+  && document.documentElement.dataset.platform === 'darwin'
+  ? '⌘'
+  : 'Ctrl+'
 
 export function DesktopShell({
   snapshot,
   activeModule,
   sidebar,
-  collaborationUnread = 0,
-  cursorAccountLabel,
-  cursorAccountCount = 0,
   cursorWorkspace,
   displayedWorkspaceId,
   wideContent = false,
   teamChannelIds,
+  cardOpacity,
+  colorMode,
   onModuleChange,
-  onOpenCursorAccounts,
   onDetectedWorkspaceClick,
+  onCardOpacityChange,
+  onColorModeChange,
   children
 }: DesktopShellProps): React.JSX.Element {
   const [showConnection, setShowConnection] = useState(false)
+  const [showAppearance, setShowAppearance] = useState(false)
   const popoverRef = useRef<HTMLElement>(null)
+  const appearanceRef = useRef<HTMLDivElement>(null)
   // 顶栏在线统计只按团队成员口径（备用/未编入通道不计入，避免 1/4 式困惑）
   const teamSessions = teamChannelIds?.length
     ? snapshot.sessions.filter((session) => teamChannelIds.includes(session.channelId))
@@ -81,6 +90,7 @@ export function DesktopShell({
     const handler = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         setShowConnection(false)
+        setShowAppearance(false)
         return
       }
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
@@ -97,27 +107,30 @@ export function DesktopShell({
   }, [onModuleChange])
 
   useEffect(() => {
-    if (!showConnection) return
+    if (!showConnection && !showAppearance) return
     const handler = (event: MouseEvent): void => {
       const target = event.target as Node | null
       if (!target) return
       if (popoverRef.current?.contains(target)) return
+      if (appearanceRef.current?.contains(target)) return
       if ((target as HTMLElement).closest?.('.connection-chip')) return
+      if ((target as HTMLElement).closest?.('.appearance-button')) return
       setShowConnection(false)
+      setShowAppearance(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [showConnection])
+  }, [showAppearance, showConnection])
 
-  const navButton = (module: AppModule, icon: ReactNode, label: string, badge?: number): ReactNode => (
+  const navButton = (module: AppModule, icon: ReactNode, label: string): ReactNode => (
     <button
       className={activeModule === module ? 'is-active' : ''}
-      title={`${MODULE_LABELS[module]} ⌘${MODULE_ORDER.indexOf(module) + 1}`}
+      aria-current={activeModule === module ? 'page' : undefined}
+      title={`${MODULE_LABELS[module]} ${MODULE_SWITCH_MODIFIER}${MODULE_ORDER.indexOf(module) + 1}`}
       onClick={() => onModuleChange(module)}
     >
       {icon}
       <span>{label}</span>
-      {badge ? <em className="topbar-nav__badge">{badge > 99 ? '99+' : badge}</em> : null}
     </button>
   )
 
@@ -125,9 +138,9 @@ export function DesktopShell({
     <div className="desktop-shell">
       <header className="topbar">
         <div className="topbar__context">
-          <button className="brand" onClick={() => onModuleChange('lobby')} aria-label="返回群枢大厅">
+          <button className="brand" onClick={() => onModuleChange('lobby')} aria-label="返回拾光大厅">
             <span className="brand__mark"><BrandMark /></span>
-            <strong>群枢</strong>
+            <strong>拾光</strong>
           </button>
           {showWorkspaceDetection ? (
             <button
@@ -143,17 +156,40 @@ export function DesktopShell({
         </div>
 
         <nav className="topbar-nav" aria-label="主要功能">
-          {navButton('lobby', <GridIcon />, '大厅', collaborationUnread)}
+          {navButton('lobby', <GridIcon />, '大厅')}
           {navButton('sessions', <SessionsIcon />, '会话')}
         </nav>
 
         <div className="topbar__actions">
-          <button className="cursor-account-chip" onClick={onOpenCursorAccounts} title="管理本机 Cursor 账号凭据">
-            <i>@</i><span>{cursorAccountLabel || 'Cursor 账号'}</span>{cursorAccountCount > 0 ? <b>{cursorAccountCount}</b> : null}
-          </button>
+          <div className="appearance-control" ref={appearanceRef}>
+            <button
+              className={`appearance-button ${showAppearance ? 'is-active' : ''}`}
+              onClick={() => {
+                setShowConnection(false)
+                setShowAppearance((value) => !value)
+              }}
+              title="外观设置"
+              aria-label="外观设置"
+              aria-expanded={showAppearance}
+            >
+              <SettingsIcon />
+            </button>
+            {showAppearance ? (
+              <AppearanceSettings
+                cardOpacity={cardOpacity}
+                colorMode={colorMode}
+                onCardOpacityChange={onCardOpacityChange}
+                onColorModeChange={onColorModeChange}
+                onClose={() => setShowAppearance(false)}
+              />
+            ) : null}
+          </div>
           <button
             className={`connection-chip connection-chip--${snapshot.connection.state}`}
-            onClick={() => setShowConnection((value) => !value)}
+            onClick={() => {
+              setShowAppearance(false)
+              setShowConnection((value) => !value)
+            }}
             title={issues.length ? `${issues.length} 条协议异常，点击查看` : undefined}
             aria-expanded={showConnection}
             aria-controls="connection-popover"
@@ -169,8 +205,8 @@ export function DesktopShell({
           <section className="connection-popover" id="connection-popover" ref={popoverRef}>
             <header>
               <div>
-                <strong>群枢本地通道</strong>
-                <span>消息与活性经群枢内嵌 MCP 直达 Cursor；Agent 在线状态单独核验</span>
+                <strong>拾光本地通道</strong>
+                <span>消息与活性经 SG Team MCP 直达 Cursor；Agent 在线状态单独核验</span>
               </div>
               <button onClick={() => setShowConnection(false)}>×</button>
             </header>

@@ -18,7 +18,8 @@ interface KeeperFixture {
   advance: (ms: number) => void
 }
 
-function fixture(): KeeperFixture {
+function fixture(options: { platform?: NodeJS.Platform } = {}): KeeperFixture {
+  const platform = options.platform ?? 'darwin'
   let currentTime = 1_000_000
   let running: { pid: number; startedAt: string } | undefined = { pid: 4242, startedAt: 'Tue Aug 25 06:00:00 2026' }
   let portReady = false
@@ -29,6 +30,11 @@ function fixture(): KeeperFixture {
   const restartWorkspaces: Array<string | undefined> = []
 
   const execFileFn = (async (command: string, args: string[]) => {
+    if (command === 'powershell.exe') {
+      // Windows：一次调用返回 pid + StartTime 压缩 JSON；未运行输出空
+      if (!running) return { stdout: '', stderr: '' }
+      return { stdout: JSON.stringify({ Id: running.pid, StartTime: running.startedAt }), stderr: '' }
+    }
     if (command === 'pgrep') {
       if (!running) {
         const error = new Error('no matching processes') as Error & { code: number }
@@ -62,7 +68,7 @@ function fixture(): KeeperFixture {
       return Promise.resolve()
     },
     now: () => currentTime,
-    platform: 'darwin'
+    platform
   })
 
   return {
@@ -100,6 +106,21 @@ describe('CursorCdpKeeper（CDP 端口 auto-heal 看门）', () => {
     await keeper.checkNow()
     expect(events).toHaveLength(0)
     expect(restarts).toHaveLength(0)
+  })
+
+  it('stays silent during a suppression window even if the port is not ready (account switch boot window)', async () => {
+    const { keeper, events, restarts, advance } = fixture()
+    // 账号切换流程：杀进程（指纹清空）→ 带端口拉起新进程 → 启动窗口内端口未就绪
+    keeper.suppress(120_000)
+    await keeper.checkNow()
+    await keeper.checkNow()
+    expect(events).toHaveLength(0)
+    expect(restarts).toHaveLength(0)
+
+    // 抑制窗口过期后恢复正常看门行为（新进程仍端口未就绪 → 进入倒计时）
+    advance(120_001)
+    await keeper.checkNow()
+    expect(events[0]).toMatchObject({ phase: 'countdown' })
   })
 
   it('counts down and restarts with the port arg when the port is missing and not cancelled', async () => {
@@ -209,5 +230,34 @@ describe('CursorCdpKeeper（CDP 端口 auto-heal 看门）', () => {
     // 下一轮按新进程指纹重新评估：倒计时并重启一次
     await keeper.checkNow()
     expect(restarts).toEqual([9333])
+  })
+
+  // ── Windows（PowerShell 探测，与 mac pgrep/ps 彻底分离）──────────────────────
+
+  it('windows: counts down and restarts via the PowerShell process probe', async () => {
+    const { keeper, events, restarts } = fixture({ platform: 'win32' })
+    await keeper.checkNow()
+    // PowerShell 探测返回的指纹（pid + StartTime）参与倒计时事件
+    expect(events[0]).toMatchObject({ phase: 'countdown', processKey: '4242:Tue Aug 25 06:00:00 2026', port: 9333 })
+    expect(events.at(-1)).toMatchObject({ phase: 'done', ok: true })
+    expect(restarts).toEqual([9333])
+  })
+
+  it('windows: stays silent when Cursor is not running', async () => {
+    const { keeper, events, restarts, setStopped } = fixture({ platform: 'win32' })
+    setStopped()
+    await keeper.checkNow()
+    await keeper.checkNow()
+    expect(events).toHaveLength(0)
+    expect(restarts).toHaveLength(0)
+  })
+
+  it('windows: does not nag the same process fingerprint twice', async () => {
+    const { keeper, events, restarts } = fixture({ platform: 'win32' })
+    await keeper.checkNow()
+    await keeper.checkNow()
+    await keeper.checkNow()
+    expect(events.filter((event) => event.phase === 'countdown')).toHaveLength(1)
+    expect(restarts).toHaveLength(1)
   })
 })

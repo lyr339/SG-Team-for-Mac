@@ -155,7 +155,7 @@ function roleRestoreContent(
     `Cursor 会话绑定标记：${cursorComposerBindingMarker({ bindingKey: takeover.bindingKey, channelId: takeover.replacementChannelId })}`
   ] : []
   return [
-    takeover ? `【群枢 ${takeover.mode === 'manual' ? '手动交接' : '自动接替'}胶囊】` : '【群枢恢复胶囊】',
+    takeover ? `【拾光 ${takeover.mode === 'manual' ? '手动交接' : '自动接替'}胶囊】` : '【拾光恢复胶囊】',
     ...takeoverLines,
     `检查点：${checkpoint.id}`,
     `稳定身份：${member.slot.id}；角色：${member.role.name}。`,

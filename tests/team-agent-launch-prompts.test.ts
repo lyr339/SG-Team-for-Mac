@@ -65,7 +65,7 @@ describe('team agent launch prompts', () => {
     // S4 底层注入：启动提示只保留一句话引导
     expect(prompt).toContain('CH-2')
     expect(prompt).toContain('team_check_in')
-    expect(prompt).toContain('qunshu')
+    expect(prompt).toContain('SG Team')
     expect(prompt).not.toContain('qtwx-mcp-2')
     expect(prompt).not.toContain('核心职责')
   })

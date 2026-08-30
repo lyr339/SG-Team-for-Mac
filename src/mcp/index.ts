@@ -11,28 +11,29 @@ import { SqliteChannelMessageRepository } from '../infrastructure/channel-messag
 import { ChannelMessageService } from '../application/channel-message-service'
 import { buildTeamRoleBriefing } from '../domain/team-control'
 import { TaskPoolError } from '../domain/task-pool'
+import { CHANNEL_PRESENCE_STALE_MS, CHANNEL_PROCESSING_STALE_MS, isProcessingPhase } from '../domain/channel-message'
 import { createUnifiedChannelServer } from './unified-channel-server'
 import type { TeamChannelRuntime } from './team-tools'
 
 function requiredEnvironment(name: string): string {
-  const value = process.env[name]?.trim() ?? ''
+  const value = process.env[name]?.trim() || ''
   if (!value) throw new Error(`缺少环境变量 ${name}`)
   return value
 }
 
 function databasePathOf(): string {
-  const databasePath = requiredEnvironment('QINGTIAN_TEAM_DB')
-  if (!isAbsolute(databasePath)) throw new Error('QINGTIAN_TEAM_DB 必须是绝对路径')
+  const databasePath = requiredEnvironment('SG_TEAM_DB')
+  if (!isAbsolute(databasePath)) throw new Error('SG_TEAM_DB 必须是绝对路径')
   return databasePath
 }
 
 /**
- * 群枢单一 MCP 服务器进程（S4）：
- * 一条「qunshu」条目承载团队工具 + 通信保活四工具，channel_id 区分通道；
+ * 拾光单一 MCP 服务器进程（S4）：
+ * 一条「SG Team」条目承载团队工具 + 通信保活工具，channel_id 区分通道；
  * 运行时按通道懒加载缓存，身份每次调用前实时解析（团队换届零配置重写）。
  */
 async function serveUnified(databasePath: string): Promise<void> {
-  const workspacePath = process.env.QINGTIAN_WORKSPACE_PATH?.trim() || undefined
+  const workspacePath = process.env.SG_TEAM_WORKSPACE_PATH?.trim() || undefined
   const repository = new SqliteTaskPoolRepository(databasePath)
   const teamRepository = new SqliteTeamControlRepository(databasePath)
   const collaborationRepository = new SqliteTeamCollaborationRepository(databasePath)
@@ -46,7 +47,7 @@ async function serveUnified(databasePath: string): Promise<void> {
     const cached = runtimes.get(channelId)
     if (cached) return cached
     const standbyIdentity = {
-      agentSessionId: `qunshu:ch-${channelId}:standby`,
+      agentSessionId: `sg-team:ch-${channelId}:standby`,
       runId: 'runtime-unassigned',
       slotId: `standby-slot:${channelId}`,
       capabilities: [] as string[]
@@ -62,7 +63,21 @@ async function serveUnified(databasePath: string): Promise<void> {
       collaborationRepository,
       collaboration.identity
     )
-    const runtime: TeamChannelRuntime = { service, collaboration, memory, controlRepository: teamRepository }
+    const runtime: TeamChannelRuntime = {
+      service,
+      collaboration,
+      memory,
+      controlRepository: teamRepository,
+      isChannelOnline: (targetChannelId) => {
+        const presence = channelRepository.getPresence(targetChannelId)
+        if (!presence || presence.connectionPhase === 'cursor_stopped') return false
+        const staleMs = isProcessingPhase(presence.connectionPhase)
+          ? CHANNEL_PROCESSING_STALE_MS
+          : CHANNEL_PRESENCE_STALE_MS
+        return Date.now() - presence.lastSeenAt <= staleMs
+      },
+      channelPresence: (targetChannelId) => channelRepository.getPresence(targetChannelId)
+    }
     runtimes.set(channelId, runtime)
     return runtime
   }
@@ -72,7 +87,7 @@ async function serveUnified(databasePath: string): Promise<void> {
     try {
       channelRepository.touchPresence(channelId, { lastSeenAt: Date.now() })
     } catch (error) {
-      process.stderr.write(`[qunshu-mcp] presence 刷新失败：${error instanceof Error ? error.message : String(error)}\n`)
+      process.stderr.write(`[sg-team-mcp] presence 刷新失败：${error instanceof Error ? error.message : String(error)}\n`)
     }
     const runtime = runtimeFor(channelId)
     const identity = teamRepository.resolveChannelAgentIdentity(channelId)
@@ -91,7 +106,21 @@ async function serveUnified(databasePath: string): Promise<void> {
       : undefined
     const binding = state.bindings.find((candidate) => candidate.runId === identity.runId && candidate.slotId === identity.slotId)
     if (!run || !slot || !role || !binding) return undefined
-    return buildTeamRoleBriefing({ run, role, slot, binding })
+    const originalLeadRole = state.roles.find((candidate) => (
+      candidate.runId === run.id && candidate.templateKey === 'lead'
+    ))
+    const originalLeadSlot = originalLeadRole
+      ? state.slots.find((candidate) => candidate.runId === run.id && candidate.roleId === originalLeadRole.id)
+      : undefined
+    const effectiveLeadSlotId = run.actingLeadSlotId ?? originalLeadSlot?.id
+    return buildTeamRoleBriefing({
+      run,
+      role,
+      slot,
+      binding,
+      effectiveLead: slot.id === effectiveLeadSlotId,
+      originalLeadDemoted: role.templateKey === 'lead' && Boolean(run.actingLeadSlotId) && slot.id !== effectiveLeadSlotId
+    })
   }
 
   const channelServiceFor = (channelId: string): ChannelMessageService => {
@@ -119,10 +148,10 @@ async function serveUnified(databasePath: string): Promise<void> {
     briefingFor,
     workspacePath
   }), {
-    onerror: (error) => process.stderr.write(`[qunshu-mcp] ${error.stack ?? error.message}\n`)
+    onerror: (error) => process.stderr.write(`[sg-team-mcp] ${error.stack ?? error.message}\n`)
   })
 
-  process.stderr.write('[qunshu-mcp] ready unified\n')
+  process.stderr.write('[sg-team-mcp] ready unified\n')
 
   let closing = false
   async function shutdown(): Promise<void> {
@@ -143,9 +172,9 @@ async function serveUnified(databasePath: string): Promise<void> {
 }
 
 // 遗留角色名（team/channel，双条目时代条目）收敛到统一服务器。
-const role = process.env.QINGTIAN_SERVER_ROLE?.trim() || 'unified'
+const role = process.env.SG_TEAM_SERVER_ROLE?.trim() || 'unified'
 if (role === 'unified' || role === 'team' || role === 'channel') {
   await serveUnified(databasePathOf())
 } else {
-  throw new Error(`QINGTIAN_SERVER_ROLE 无效：${role}`)
+  throw new Error(`SG_TEAM_SERVER_ROLE 无效：${role}`)
 }

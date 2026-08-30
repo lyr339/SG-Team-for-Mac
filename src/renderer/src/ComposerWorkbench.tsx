@@ -1,10 +1,8 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
 import type { MessageAttachment } from '../../domain/conversation-entry'
 import {
   badgeTone,
-  contextPercent,
-  contextTone,
   executionBadges,
   formatExecutionProfile,
   formatAgentSessionDuration,
@@ -13,6 +11,9 @@ import {
   statusLabel
 } from './format'
 import { planAttachmentIntake } from './attachment-rules'
+import { ContextUsagePopover } from './ContextUsagePopover'
+import { SessionUsageStat } from './SessionUsageStat'
+import { modelProviderClass, modelProviderLabel } from './model-provider'
 import { EraseIcon, ExportIcon, HandoffIcon, LinkIcon } from './UiIcons'
 
 interface ComposerWorkbenchProps {
@@ -107,11 +108,6 @@ function projectChipLabel(session: AgentSession, currentProjectName?: string): s
   return session.composerTitle?.trim() || session.displayName
 }
 
-function compactPercent(value?: number): string {
-  if (value === undefined) return '待读取'
-  return `${value.toFixed(1).replace(/\.0$/, '')}%`
-}
-
 function AttachmentIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -203,6 +199,7 @@ export function ComposerWorkbench({
   onQuickSend
 }: ComposerWorkbenchProps): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const attachmentsRef = useRef(attachments)
   const intakeQueueRef = useRef<Promise<void>>(Promise.resolve())
   const [attachmentError, setAttachmentError] = useState('')
@@ -215,11 +212,9 @@ export function ComposerWorkbench({
   useEffect(() => {
     try { localStorage.setItem(QUICK_PROMPTS_STORAGE_KEY, JSON.stringify(quickPrompts)) } catch { /* 存储不可用时静默 */ }
   }, [quickPrompts])
-  const percent = contextPercent(session.contextUsage)
-  const tone = contextTone(percent)
   const profile = session.executionProfile
   const profileName = modelDisplayName(profile, session.modelName)
-  const badges = executionBadges(profile, session.modelName)
+  const badges = executionBadges(profile)
   const profileKnown = Boolean(session.modelName || profile)
   const profileTitle = session.modelName
     ? 'Cursor 为该会话上报的模型'
@@ -240,7 +235,6 @@ export function ComposerWorkbench({
       ? `给「${session.displayName}」排队发送（Agent 尚未待命）…`
       : `给「${session.displayName}」发送消息…`
     : `Agent 当前离线，可先写下给「${session.displayName}」的消息…`
-  const ringStyle = { '--composer-context': `${percent ?? 0}%` } as CSSProperties
 
   const intakeFiles = (files: File[], source: '选择' | '粘贴' | '拖放'): Promise<void> => {
     if (!files.length) return Promise.resolve()
@@ -312,6 +306,11 @@ export function ComposerWorkbench({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingAttachment(false)
       }}
       onDrop={handleDrop}
+      onClick={(event) => {
+        const target = event.target as HTMLElement
+        if (target.closest('button, input, textarea, label, a')) return
+        textareaRef.current?.focus({ preventScroll: true })
+      }}
     >
       <div className="composer-topbar">
         <div className="composer-topbar__left">
@@ -366,6 +365,7 @@ export function ComposerWorkbench({
           />
         </div>
         <div className="composer-topbar__right">
+          <SessionUsageStat usage={session.usage} />
           <span className={bound ? 'composer-meta is-positive' : 'composer-meta'} title={session.telemetry?.detail}>
             <LinkIcon />
             {bound ? 'Cursor 已绑定' : '会话待绑定'}
@@ -448,6 +448,7 @@ export function ComposerWorkbench({
       )}
 
       <textarea
+        ref={textareaRef}
         value={draft}
         placeholder={placeholder}
         disabled={submitting}
@@ -465,20 +466,14 @@ export function ComposerWorkbench({
 
       <div className="composer-controls">
         <div
-          className={`composer-model ${profileKnown ? '' : 'is-unknown'}`}
-          title={profileTitle}
+          className={`composer-model ${profileKnown ? modelProviderClass(profile?.modelId ?? session.modelName, profileName) : 'is-unknown'}`}
+          title={`${profileTitle}${profileKnown ? ` · ${modelProviderLabel(profile?.modelId ?? session.modelName, profileName)}` : ''}`}
           aria-label={`运行配置：${formatExecutionProfile(profile, session.modelName)}`}
         >
           <b>{profileName}</b>
           {badges.map((badge) => <i key={badge} className={`is-${badgeTone(badge)}`}>{badge}</i>)}
         </div>
-        <div
-          className={`composer-context ${percent === undefined ? 'is-unknown' : ''} ${tone ? `is-${tone}` : ''}`}
-          title="Cursor 本机会话上下文占用"
-        >
-          <i style={ringStyle} aria-hidden="true" />
-          <span>上下文 {compactPercent(percent)}</span>
-        </div>
+        <ContextUsagePopover usage={session.contextUsage} />
         {sendError && <span className="composer-error" role="alert">{sendError}</span>}
         <div className="composer-submit">
           <kbd title="Enter 发送；Shift + Enter 换行">↵</kbd>

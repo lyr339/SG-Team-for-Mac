@@ -29,22 +29,22 @@ function inputOf(files: ReturnType<typeof fixture>, extra: Record<string, unknow
 }
 
 describe('global mcp registrar', () => {
-  it('creates native qunshu-ch entries and preserves unrelated servers', () => {
+  it('creates the native SG Team entry and preserves unrelated servers', () => {
     const files = fixture()
     writeFileSync(files.configPath, JSON.stringify({
       mcpServers: { 'zhimo-mcp': { command: 'zhimo' } }
     }))
     const result = reconcileGlobalChannelServers(inputOf(files))
     expect(result.changed).toBe(true)
-    expect(result.serverNames).toEqual(['qunshu'])
+    expect(result.serverNames).toEqual(['SG Team'])
     const config = JSON.parse(readFileSync(files.configPath, 'utf8'))
     expect(config.mcpServers['zhimo-mcp']).toEqual({ command: 'zhimo' })
-    expect(config.mcpServers['qunshu']).toMatchObject({
+    expect(config.mcpServers['SG Team']).toMatchObject({
       command: files.command,
       args: [files.server],
       env: {
         ELECTRON_RUN_AS_NODE: '1',
-        QINGTIAN_SERVER_ROLE: 'unified'
+        SG_TEAM_SERVER_ROLE: 'unified'
       }
     })
     // 幂等：二次调用无变更
@@ -58,12 +58,13 @@ describe('global mcp registrar', () => {
         'qt-ch-1': { command: 'old-team' },
         'qtwx-mcp-1': { command: 'old-channel' },
         'qingtian-team-ch-2': { command: 'ancient' },
+        'qunshu': { command: 'old-unified' },
         'qunshu-ch-9': { command: 'stale' }
       }
     }))
     reconcileGlobalChannelServers(inputOf(files))
     const config = JSON.parse(readFileSync(files.configPath, 'utf8'))
-    expect(Object.keys(config.mcpServers)).toEqual(['qunshu'])
+    expect(Object.keys(config.mcpServers)).toEqual(['SG Team'])
   })
 
   it('refuses malformed global config without touching it', () => {

@@ -9,9 +9,11 @@ import type { TaskDispatcher } from './task-dispatcher'
 const STALE_TASK_REMINDER_MS = 5 * 60_000
 
 function leadMember(team: TeamControlSnapshot): TeamMemberView | undefined {
-  return team.members
-    .filter((member) => member.role.templateKey === 'lead' && member.binding)
-    .sort((left, right) => left.role.order - right.role.order)[0]
+  const actingLeadSlotId = team.activeRun?.actingLeadSlotId
+  if (actingLeadSlotId) {
+    return team.members.find((member) => member.slot.id === actingLeadSlotId && member.binding)
+  }
+  return team.members.find((member) => member.role.templateKey === 'lead' && member.binding)
 }
 
 export class TeamOrchestrator {

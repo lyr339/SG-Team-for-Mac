@@ -38,7 +38,8 @@ function renderWorkspace(overrides: {
   session?: Partial<AgentSession>
   entries?: ConversationEntry[]
   currentProjectName?: string
-  liveProcess?: { turn: string; updatedAt: number; blocks: import('../src/domain/conversation-entry').ProcessBlock[] }
+  liveProcess?: { turn: string; startedAt: number; updatedAt: number; blocks: import('../src/domain/conversation-entry').ProcessBlock[] }
+  liveAgentResponse?: import('../src/shared/desktop-api').LiveAgentResponseState
 } = {}): string {
   return renderToStaticMarkup(
     <SessionWorkspace
@@ -52,11 +53,26 @@ function renderWorkspace(overrides: {
       attachments={[]}
       onAttachmentsChange={() => {}}
       liveProcess={overrides.liveProcess}
+      liveAgentResponse={overrides.liveAgentResponse}
     />
   )
 }
 
 describe('SessionWorkspace', () => {
+  it('renders a distinct Cursor-native live response row without writing a fake history entry', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({ id: 'u-live', role: 'user', source: 'desktop', text: '实时回答这个问题' })],
+      liveAgentResponse: {
+        id: 'bubble-live', channelId: '5', text: 'Cursor 正在逐字生成回答',
+        status: 'streaming', startedAt: 1_000_100, updatedAt: 1_000_200
+      }
+    })
+    expect(html).toContain('live-agent-response')
+    expect(html).toContain('Cursor 实时生成中')
+    expect(html).not.toContain('live-process-idle')
+  })
+
   it('Agent 运行中且无过程块时显示「正在处理」占位气泡', () => {
     const html = renderWorkspace({
       session: { status: 'running', waiting: false, connectionPhase: 'processing' },
@@ -82,6 +98,7 @@ describe('SessionWorkspace', () => {
       session: { status: 'running', waiting: false, connectionPhase: 'processing' },
       liveProcess: {
         turn: 'turn-x',
+        startedAt: 0,
         updatedAt: 1,
         blocks: [
           { kind: 'tool', id: 'b1', toolName: 'Read', toolKind: 'read', summary: 'App.tsx', status: 'done' },
@@ -89,7 +106,10 @@ describe('SessionWorkspace', () => {
         ]
       }
     })
-    expect(html).toContain('实时过程中 · 2 步')
+    expect(html).toContain('过程记录')
+    expect(html).toContain('cursor-native-process__live')
+    expect(html).toContain('Cursor 实时过程')
+    expect(html).toContain('cursor-native-process__flow')
     expect(html).toContain('App.tsx')
     expect(html).not.toContain('live-process-idle')
   })
@@ -100,6 +120,7 @@ describe('SessionWorkspace', () => {
       entries: [entry({ id: 'u1', role: 'user', source: 'desktop', text: '请继续实现', timestamp: 1_000_000 })],
       liveProcess: {
         turn: 'turn-live',
+        startedAt: 998_500,
         updatedAt: 999_000,
         blocks: [
           { kind: 'thinking', id: 'b1', text: '正在分析', status: 'running' }
@@ -107,33 +128,9 @@ describe('SessionWorkspace', () => {
       }
     })
 
-    expect(html.indexOf('请继续实现')).toBeLessThan(html.indexOf('实时过程中 · 1 步'))
+    expect(html.indexOf('请继续实现')).toBeLessThan(html.indexOf('过程记录'))
   })
 
-  it('未归档的运行中 Cursor 过程时间偏早时也跟随当前待回复消息', () => {
-    const html = renderWorkspace({
-      session: {
-        status: 'running',
-        waiting: false,
-        connectionPhase: 'processing',
-        workEntries: [
-          {
-            kind: 'tool',
-            text: 'Shell npm run test',
-            toolName: 'Shell',
-            toolKind: 'command',
-            status: 'running',
-            line: 88,
-            at: 999_000,
-            turn: 'implicit-live'
-          }
-        ]
-      },
-      entries: [entry({ id: 'u1', role: 'user', source: 'desktop', text: '请跑测试', timestamp: 1_000_000 })]
-    })
-
-    expect(html.indexOf('请跑测试')).toBeLessThan(html.indexOf('Cursor 实时过程'))
-  })
 
   it('Agent 待命时不显示过程占位', () => {
     const html = renderWorkspace()
@@ -155,6 +152,47 @@ describe('SessionWorkspace', () => {
     expect(html).toContain('Agent 当前离线')
     expect(html).toContain('Cursor Agent 已离线，消息会先进入队列')
     expect(html).not.toContain('待轮询')
+  })
+
+  it('只在工作台顶部渲染一次用量与费用；页头和底栏不重复', () => {
+    const html = renderWorkspace({
+      session: {
+        usage: {
+          composerId: 'comp-1',
+          turns: 4,
+          inputTokens: 12_168,
+          outputTokens: 42,
+          cacheReadTokens: 3_968,
+          cacheWriteTokens: 0,
+          estimatedCostUsd: 0.0421,
+          pricedModel: 'Claude Sonnet',
+          lastTurnAt: 1_000
+        }
+      }
+    })
+
+    expect(html).toContain('16.2K')
+    expect(html).toContain('≈$0.042')
+    expect(html.match(/class="session-usage-stat"/g)).toHaveLength(1)
+    expect(html.indexOf('session-usage-stat')).toBeLessThan(html.indexOf('composer-duration'))
+    expect(html).toContain('title="本运行期真实计费 token（Claude Sonnet，4 回合）')
+
+    const idle = renderWorkspace({
+      session: {
+        usage: {
+          composerId: 'comp-1',
+          turns: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          estimatedCostUsd: 0,
+          pricedModel: '默认（Sonnet 档）',
+          lastTurnAt: 0
+        }
+      }
+    })
+    expect(idle).not.toContain('session-usage-stat')
   })
 
   it('长文本消息包裹折叠结构（clamped-message）', () => {
@@ -217,79 +255,24 @@ describe('SessionWorkspace', () => {
         ]
       })]
     })
-    expect(html).toContain('process-block')
+    expect(html).toContain('process-turn')
     expect(html).toContain('读取文件')
     expect(html).toContain('src/App.tsx')
     expect(html).toContain('chat-row--process')
+    expect(html).not.toContain('process-turn__live-label')
   })
 
-  it('按 turn 把 Cursor 会话过程渲染进对应 Agent 回复，避免多轮过程串成总列表', () => {
-    const html = renderWorkspace({
-      session: {
-        workEntries: [
-          {
-            kind: 'tool',
-            text: 'Shell npm run build\\n--watch',
-            toolName: 'Shell',
-            toolKind: 'command',
-            details: [{ label: '命令', value: 'npm run build', kind: 'code' }],
-            status: 'running',
-            line: 88,
-            at: 1_000_500,
-            turn: 'turn-a'
-          }
-        ]
-      },
-      entries: [
-        entry({ id: 'u1', role: 'user', source: 'desktop', text: '请检查当前实现', timestamp: 1_000_000 }),
-        entry({ id: 'a1', role: 'assistant', source: 'cursor', text: '正在处理你的请求', timestamp: 1_001_000, turn: 'turn-a' })
-      ]
-    })
 
-    expect(html.indexOf('Cursor 过程')).toBeLessThan(html.indexOf('正在处理你的请求'))
-    expect(html.indexOf('运行命令')).toBeLessThan(html.indexOf('正在处理你的请求'))
-    expect(html).toContain('--watch')
-    expect(html).not.toContain('\\n')
-    expect(html).toContain('workspace-worklog--inline')
-    expect(html).not.toContain('workspace-worklog--primary')
-    expect(html).not.toContain('<span>会话消息</span>')
-  })
-
-  it('把未归档 Cursor 过程按时间插入会话附近，而不是统一堆到消息尾部', () => {
-    const html = renderWorkspace({
-      session: {
-        workEntries: [
-          {
-            kind: 'tool',
-            text: 'Shell npm run test',
-            toolName: 'Shell',
-            toolKind: 'command',
-            status: 'running',
-            line: 88,
-            at: 1_000_500,
-            turn: 'implicit-live'
-          }
-        ]
-      },
-      entries: [
-        entry({ id: 'u1', role: 'user', source: 'desktop', text: '请跑测试', timestamp: 1_000_000 }),
-        entry({ id: 'a1', role: 'assistant', source: 'cursor', text: '测试完成', timestamp: 1_002_000, turn: 'turn-other' })
-      ]
-    })
-
-    expect(html.indexOf('请跑测试')).toBeLessThan(html.indexOf('Cursor 实时过程'))
-    expect(html.indexOf('Cursor 实时过程')).toBeLessThan(html.indexOf('测试完成'))
-  })
 
   it('不渲染 silent 内部协作条目', () => {
     const html = renderWorkspace({
       entries: [
-        entry({ id: 's1', role: 'user', source: 'desktop', text: '【群枢内部协作通知】消息 ID：x', silent: true }),
+        entry({ id: 's1', role: 'user', source: 'desktop', text: '【拾光内部协作通知】消息 ID：x', silent: true }),
         entry({ id: 'u1', role: 'user', source: 'desktop', text: '用户真实消息' })
       ]
     })
 
-    expect(html).not.toContain('群枢内部协作通知')
+    expect(html).not.toContain('拾光内部协作通知')
     expect(html).toContain('用户真实消息')
   })
 

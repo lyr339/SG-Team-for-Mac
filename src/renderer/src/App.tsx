@@ -5,6 +5,7 @@ import type {
   TeamSetupDraft
 } from '../../shared/desktop-api'
 import { emptyTaskPoolSnapshot, newestTaskPoolSnapshot } from '../../domain/task-pool'
+import type { CursorUsageSnapshot } from '../../domain/cursor-usage'
 import { emptyTeamControlSnapshot, type TeamRunStatus } from '../../domain/team-control'
 import { emptyTeamCollaborationSnapshot } from '../../domain/team-collaboration'
 import { DesktopShell, type AppModule } from './DesktopShell'
@@ -15,29 +16,39 @@ import { LobbyPage } from './lobby/LobbyPage'
 import { TeamSetupPage } from './team/TeamSetupPage'
 import { ManualHandoffDialog } from './team/ManualHandoffDialog'
 import type { TeamHandoffOptions } from '../../domain/team-handoff'
-import type { CursorAccountMetadata } from '../../domain/cursor-account'
+import type { CursorAccountMetadata, CursorRuntimeAccountMatch } from '../../domain/cursor-account'
+import type { CursorMembershipStatus } from '../../domain/cursor-membership'
 import type { CursorUpdatePreferences } from '../../domain/cursor-update'
 import type { AozaiCardStatus, AozaiProgressEvent } from '../../domain/aozai-service'
-import type { AgentLaunchPlan } from '../../domain/agent-launch'
+import type { AgentLaunchPlan, AgentLaunchRequest } from '../../domain/agent-launch'
 import type { AccountAutomationRun, AccountAutomationSettings } from '../../domain/account-automation'
 import type { CdpAutoHealEvent } from '../../domain/cursor-cdp'
 import type { MessageAttachment } from '../../domain/conversation-entry'
 import { shareSnapshotStructure } from './snapshot-sharing'
 import { userFacingErrorMessage } from './error-message'
+import { resolveRuntimeLaunchGate } from './lobby/runtime-account-gate'
+import { RuntimeAccountGuardDialog } from './lobby/RuntimeAccountGuardDialog'
+import { resolveMembershipLaunchGate } from './lobby/membership-gate'
+import { MembershipGuardDialog } from './lobby/MembershipGuardDialog'
 import {
   shouldAutoFollowCursorWorkspace,
   type CursorWorkspaceDetection
 } from '../../domain/cursor-workspace'
 import {
   shouldShowCollaborationForRun,
-  summarizeTeamCollaborationForRun,
   visibleTeamCollaborationSnapshot
 } from './team/team-collaboration-view'
+import {
+  applyAppearancePreferences,
+  persistAppearancePreferences,
+  readAppearancePreferences,
+  type AppearancePreferences
+} from './appearance-preferences'
 
 const EMPTY_SNAPSHOT: DesktopSnapshot = {
   connection: {
     state: 'connected',
-    endpoint: 'qunshu://local-channel-runtime',
+    endpoint: 'shiguang://local-channel-runtime',
     attempt: 0,
     lastError: ''
   },
@@ -68,6 +79,8 @@ function cursorWorkspaceFingerprint(detection?: CursorWorkspaceDetection): strin
 export function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT)
   const [taskPool, setTaskPool] = useState(emptyTaskPoolSnapshot())
+  /** Cursor 会话用量（composerId → 累积 token/费用估算；主进程推送）。 */
+  const [cursorUsage, setCursorUsage] = useState<CursorUsageSnapshot>({})
   const [teamControl, setTeamControl] = useState(emptyTeamControlSnapshot())
   const [collaboration, setCollaboration] = useState(emptyTeamCollaborationSnapshot())
   const [teamSetup, setTeamSetup] = useState<TeamSetupDraft>()
@@ -80,6 +93,7 @@ export function App(): React.JSX.Element {
     const [module, channel] = window.location.hash.slice(1).split(':')
     return module === 'sessions' && channel ? channel : undefined
   })
+  const [sessionListRequested, setSessionListRequested] = useState(false)
   const [teamNotice, setTeamNotice] = useState('')
   const [teamMcpReloadRequired, setTeamMcpReloadRequired] = useState(false)
   const [handoffOptions, setHandoffOptions] = useState<TeamHandoffOptions>()
@@ -99,6 +113,12 @@ export function App(): React.JSX.Element {
   const [agentLaunchPlan, setAgentLaunchPlan] = useState<AgentLaunchPlan | undefined>(undefined)
   const [accountAutomationSettings, setAccountAutomationSettings] = useState<AccountAutomationSettings>({ enabled: false, delaySec: 30 })
   const [accountAutomationRun, setAccountAutomationRun] = useState<AccountAutomationRun | undefined>(undefined)
+  // 指纹浏览器窗口列表（账号自动化链的浏览器宿主；用户按当次网络选「代理/直连」窗口。
+  // 提供方恒 RoxyBrowser，与平台无关）
+  const [bitProfiles, setBitProfiles] = useState<Array<{ id: string; name: string; seq?: number }>>([])
+  const [bitProfilesMessage, setBitProfilesMessage] = useState('')
+  // Roxy API Key 状态（双平台展示掩码——提供方恒 Roxy）
+  const [roxyApiKeyStatus, setRoxyApiKeyStatus] = useState<{ saved: boolean; maskedKey?: string }>({ saved: false })
   const [cursorWorkspace, setCursorWorkspace] = useState<CursorWorkspaceDetection>()
   const [teamControlLoaded, setTeamControlLoaded] = useState(false)
   // 输入框草稿与附件按通道保存：切换 Agent 不丢失，回来可直接继续编辑/发送。
@@ -107,7 +127,11 @@ export function App(): React.JSX.Element {
   // CDP 自动保持（auto-heal）：开关状态 + 看门事件（倒计时提示）。
   const [cdpAutoHealEnabled, setCdpAutoHealEnabled] = useState(false)
   const [cdpAutoHealEvent, setCdpAutoHealEvent] = useState<CdpAutoHealEvent>()
+  const [appearance, setAppearance] = useState<AppearancePreferences>(() => readAppearancePreferences())
   const autoFollowedWorkspaceRef = useRef('')
+  // likely 级（recent 证据）自动跟随的会话级上限：多窗口 Cursor 切换焦点会让
+  // recent 列表重排，不设上限会在两个工程间来回弹组队页；certain 级不受限。
+  const likelyAutoFollowedRef = useRef(false)
   const mcpReconcileRunRef = useRef<string | undefined>(undefined)
   const activeRunRef = useRef<{ id?: string; status?: TeamRunStatus }>({})
   const activeWorkspace = teamControl.workspaces.find((workspace) => workspace.id === teamControl.activeWorkspaceId)
@@ -127,6 +151,27 @@ export function App(): React.JSX.Element {
       .join(',')
     return `${snapshot.activeRun.id}:${channels}`
   }
+
+  useEffect(() => {
+    applyAppearancePreferences(appearance)
+    persistAppearancePreferences(appearance)
+  }, [appearance])
+
+  // Windows 标题栏覆盖层是系统原生绘制，读不到 CSS 主题：每次主题生效时推送
+  // 实际深浅色；system 模式跟随系统切换实时更新（CSS 侧 light-dark() 自动，
+  // 覆盖层必须经 JS 同步）。macOS 无覆盖层，主进程侧静默忽略。
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const syncChromeColorMode = (): void => {
+      const dark = appearance.colorMode === 'dark'
+        || (appearance.colorMode === 'system' && media.matches)
+      void window.qingtianDesktop.setWindowChromeColorMode(dark ? 'dark' : 'light').catch(() => {})
+    }
+    syncChromeColorMode()
+    if (appearance.colorMode !== 'system') return
+    media.addEventListener('change', syncChromeColorMode)
+    return () => media.removeEventListener('change', syncChromeColorMode)
+  }, [appearance.colorMode])
 
   // 快照来自两个来源（主进程推送 + 操作后的手动拉取），到达顺序不保证；
   // 用 revision 单调守卫丢弃迟到的旧快照，作用域（runId/workspace）切换时无条件接受。
@@ -169,6 +214,7 @@ export function App(): React.JSX.Element {
     const unsubscribeTasks = window.qingtianDesktop.onTaskPoolSnapshot(acceptTaskPool)
     const unsubscribeTeamControl = window.qingtianDesktop.onTeamControlSnapshot(acceptTeamControl)
     const unsubscribeCollaboration = window.qingtianDesktop.onTeamCollaborationSnapshot(acceptCollaboration)
+    const unsubscribeUsage = window.qingtianDesktop.onCursorUsageSnapshot(setCursorUsage)
     void window.qingtianDesktop.getSnapshot().then(acceptSnapshot)
     void window.qingtianDesktop.getTaskPoolSnapshot().then(acceptTaskPool)
     void window.qingtianDesktop.getTeamControlSnapshot().then((incoming) => {
@@ -176,13 +222,40 @@ export function App(): React.JSX.Element {
       setTeamControlLoaded(true)
     })
     void window.qingtianDesktop.getTeamCollaborationSnapshot().then(acceptCollaboration)
+    void window.qingtianDesktop.getCursorUsageSnapshot().then(setCursorUsage)
     return () => {
       unsubscribe()
       unsubscribeTasks()
       unsubscribeTeamControl()
       unsubscribeCollaboration()
+      unsubscribeUsage()
     }
   }, [acceptCollaboration, acceptSnapshot, acceptTaskPool, acceptTeamControl])
+
+  // ── Cursor 运行态账号核对（发起闸门 + 被动状态行共用数据源） ──
+  const [runtimeMatch, setRuntimeMatch] = useState<CursorRuntimeAccountMatch | undefined>()
+  const refreshRuntimeMatch = useCallback(async (): Promise<CursorRuntimeAccountMatch | undefined> => {
+    try {
+      const match = await window.qingtianDesktop.verifyCursorRuntimeAccount()
+      setRuntimeMatch(match)
+      return match
+    } catch {
+      // vault 解密失败等主进程异常：指示行降级为不显示，不阻塞发起流程
+      return undefined
+    }
+  }, [])
+
+  // ── Cursor 会员档位（在线权威源；发起闸门 + 手动刷新 + 账号/奥仔变更后重查） ──
+  const [membershipStatus, setMembershipStatus] = useState<CursorMembershipStatus | undefined>()
+  const refreshMembership = useCallback(async (): Promise<CursorMembershipStatus> => {
+    // IPC 按契约不 throw（错误以 error 状态返回）；catch 为纵深防御。
+    const status = await window.qingtianDesktop.refreshCursorMembership().catch((reason: unknown): CursorMembershipStatus => ({
+      state: 'error',
+      detail: reason instanceof Error ? reason.message.slice(0, 120) : String(reason).slice(0, 120)
+    }))
+    setMembershipStatus(status)
+    return status
+  }, [])
 
   useEffect(() => {
     void window.qingtianDesktop.listCursorAccounts()
@@ -199,6 +272,19 @@ export function App(): React.JSX.Element {
       .catch(() => {})
     void window.qingtianDesktop.getAccountAutomationRun()
       .then((run) => { if (run.phase !== 'idle') setAccountAutomationRun(run) })
+      .catch(() => {})
+    void window.qingtianDesktop.listAccountAutomationBitProfiles()
+      .then((result) => {
+        if (result.ok) {
+          setBitProfiles(result.profiles ?? [])
+          setBitProfilesMessage('')
+        } else {
+          setBitProfilesMessage(result.message ?? '指纹浏览器不可达')
+        }
+      })
+      .catch(() => { setBitProfilesMessage('指纹浏览器窗口列表获取失败') })
+    void window.qingtianDesktop.getAccountAutomationRoxyApiKey()
+      .then(setRoxyApiKeyStatus)
       .catch(() => {})
     const unsubscribeAozai = window.qingtianDesktop.onAozaiProgress(setAozaiProgress)
     const unsubscribeAgentLaunch = window.qingtianDesktop.onAgentLaunchProgress(setAgentLaunchPlan)
@@ -228,6 +314,10 @@ export function App(): React.JSX.Element {
         void window.qingtianDesktop.listCursorAccounts().then(setCursorAccounts).catch(() => {})
         // 链内为提速跳过了余额刷新，这里链外异步补齐
         void window.qingtianDesktop.refreshAozaiBalance().then(setAozaiStatus).catch(() => {})
+        // 活跃账号可能已被移除/换发，一致性指示立即重算（不等 30s 轮询）
+        void refreshRuntimeMatch()
+        // 奥仔处理会改变账号档位，档位行同样立即重查
+        void refreshMembership()
       }
     })
     return () => {
@@ -236,18 +326,171 @@ export function App(): React.JSX.Element {
       unsubscribeCdpAutoHeal()
       unsubscribeAccountAutomation()
     }
-  }, [])
+  }, [refreshRuntimeMatch, refreshMembership])
 
   const selectSession = useCallback((channelId: string) => {
     setActiveModule('sessions')
+    setSessionListRequested(false)
     setSelectedChannelId(channelId)
   }, [])
 
-  const launchAgentSessions = useCallback(async (channelIds: string[]): Promise<AgentLaunchPlan> => {
-    const plan = await window.qingtianDesktop.launchAgentSessions(channelIds)
+  // ── Cursor 运行态账号闸门（发起会话前的双轨凭据核对） ──
+  const [runtimeGuard, setRuntimeGuard] = useState<{
+    verify: CursorRuntimeAccountMatch
+    allowProceed: boolean
+    pending: AgentLaunchRequest[]
+  } | undefined>()
+  const [runtimeGuardBusy, setRuntimeGuardBusy] = useState(false)
+  const [runtimeGuardError, setRuntimeGuardError] = useState('')
+
+  // ── Cursor 会员档位闸门状态（发起弹窗） ──
+  const [membershipGuard, setMembershipGuard] = useState<{
+    status: CursorMembershipStatus
+    message: string
+    pending: AgentLaunchRequest[]
+  } | undefined>()
+  const [membershipGuardBusy, setMembershipGuardBusy] = useState(false)
+  const [membershipGuardError, setMembershipGuardError] = useState('')
+
+  // 被动状态行：本地 SQLite 读毫秒级，30s 静默轮询让劈叉「随时可见」（后台标签暂停）。
+  useEffect(() => {
+    void refreshRuntimeMatch()
+    // 档位是网络调用，不做定时轮询（会限流/留痕）：挂载时抓一次，
+    // 其余时机 = 账号变更 / 奥仔处理后 / 发起闸门 / 手动刷新。
+    void refreshMembership()
+    const timer = setInterval(() => {
+      if (!document.hidden) void refreshRuntimeMatch()
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [refreshRuntimeMatch, refreshMembership])
+
+  const performAgentLaunch = useCallback(async (requests: AgentLaunchRequest[]): Promise<AgentLaunchPlan> => {
+    const plan = await window.qingtianDesktop.launchAgentSessions(requests)
     setAgentLaunchPlan(plan)
     return plan
   }, [])
+
+  const launchAgentSessions = useCallback(async (requests: AgentLaunchRequest[]): Promise<AgentLaunchPlan> => {
+    // 闸门一（身份）在真正创建会话之前：Cursor 登录 ≠ 活跃账号时拦截（防删错官网账号/僵尸会话）。
+    const verify = await window.qingtianDesktop.verifyCursorRuntimeAccount().catch(() => undefined)
+    const gate = resolveRuntimeLaunchGate({
+      verify,
+      automationEnabled: accountAutomationSettings.enabled,
+      hasActiveAccount: cursorAccounts.some((account) => account.active)
+    })
+    if (gate.action === 'proceed') {
+      // 闸门二（档位）：身份对齐后在线实查会员档位，free 硬阻断；fail-closed——
+      // 拿不到权威结果同样阻断（断网时批量会话本也跑不动）。
+      const membership = await refreshMembership()
+      const membershipGate = resolveMembershipLaunchGate(membership)
+      if (membershipGate.action === 'proceed') return performAgentLaunch(requests)
+      setMembershipGuard({ status: membership, message: membershipGate.message, pending: requests })
+      const membershipBlocked: AgentLaunchPlan = {
+        id: 'membership-guard',
+        state: 'failed' as const,
+        items: requests.map((request) => ({
+          channelId: request.channelId,
+          modelSelection: request.modelSelection,
+          stage: 'failed' as const,
+          message: membershipGate.message,
+          code: 'membership_blocked' as const
+        })),
+        startedAt: Date.now(),
+        finishedAt: Date.now()
+      }
+      setAgentLaunchPlan(membershipBlocked)
+      return membershipBlocked
+    }
+    setRuntimeGuard({ verify: verify!, allowProceed: gate.allowProceed, pending: requests })
+    // 调用方语义期望拿到 plan：合成 failed plan 进状态并返回——会话卡片的逐通道
+    // 列表立即展示拦截原因，修复动作在弹窗里完成后由真实 plan 覆盖。
+    const blocked: AgentLaunchPlan = {
+      id: 'runtime-account-guard',
+      state: 'failed' as const,
+      items: requests.map((request) => ({
+        channelId: request.channelId,
+        modelSelection: request.modelSelection,
+        stage: 'failed' as const,
+        message: gate.message,
+        code: 'runtime_account_mismatch' as const
+      })),
+      startedAt: Date.now(),
+      finishedAt: Date.now()
+    }
+    setAgentLaunchPlan(blocked)
+    return blocked
+  }, [accountAutomationSettings.enabled, cursorAccounts, performAgentLaunch, refreshMembership])
+
+  const continueGuardedLaunch = useCallback(async (): Promise<void> => {
+    const guard = runtimeGuard
+    if (!guard) return
+    setRuntimeGuardError('')
+    setRuntimeGuardBusy(true)
+    try {
+      const plan = await performAgentLaunch(guard.pending)
+      setRuntimeGuard(undefined)
+      if (plan.state === 'done') setTeamNotice('会话已全部就绪，可以启动团队。')
+    } catch (reason) {
+      setRuntimeGuardError(userFacingErrorMessage(reason))
+    } finally {
+      setRuntimeGuardBusy(false)
+    }
+  }, [runtimeGuard, performAgentLaunch])
+
+  const switchAndContinueLaunch = useCallback(async (): Promise<void> => {
+    const guard = runtimeGuard
+    const active = cursorAccounts.find((account) => account.active)
+    if (!guard || !active) return
+    setRuntimeGuardError('')
+    setRuntimeGuardBusy(true)
+    try {
+      const result = await window.qingtianDesktop.restartCursorWithAccount(active.id)
+      if (!result.switched) {
+        setRuntimeGuardError('切换未能完成，请重试。')
+        return
+      }
+      if (!result.runtimeVerified) {
+        setRuntimeGuardError('Cursor 已重启，但运行时登录态尚未完成确认；请稍后重试发起。')
+        return
+      }
+      if (result.tokenExpired) {
+        // 过期 token 切进去只会产出僵尸会话：停在弹窗让用户先重新获取 Token。
+        setRuntimeGuardError('该活跃账号的 Token 已过期，请重新获取后再发起会话。')
+        return
+      }
+      await refreshRuntimeMatch()
+      setRuntimeGuard(undefined)
+      const plan = await performAgentLaunch(guard.pending)
+      if (plan.state === 'done') setTeamNotice('账号已切换，会话已全部就绪。')
+    } catch (reason) {
+      setRuntimeGuardError(userFacingErrorMessage(reason))
+    } finally {
+      setRuntimeGuardBusy(false)
+    }
+  }, [runtimeGuard, cursorAccounts, performAgentLaunch, refreshRuntimeMatch])
+
+  // 弹窗内「刷新档位并继续」：重新在线抓取；非 free 即自动续跑暂存的发起请求。
+  const refreshMembershipAndContinue = useCallback(async (): Promise<void> => {
+    const guard = membershipGuard
+    if (!guard) return
+    setMembershipGuardError('')
+    setMembershipGuardBusy(true)
+    try {
+      const status = await refreshMembership()
+      const decision = resolveMembershipLaunchGate(status)
+      if (decision.action === 'proceed') {
+        setMembershipGuard(undefined)
+        const plan = await performAgentLaunch(guard.pending)
+        if (plan.state === 'done') setTeamNotice('账号档位已确认，会话已全部就绪。')
+        return
+      }
+      setMembershipGuard({ ...guard, status, message: decision.message })
+    } catch (reason) {
+      setMembershipGuardError(userFacingErrorMessage(reason))
+    } finally {
+      setMembershipGuardBusy(false)
+    }
+  }, [membershipGuard, performAgentLaunch, refreshMembership])
 
   const refreshAozaiBalance = useCallback(async (options: { silent?: boolean } = {}): Promise<void> => {
     if (!options.silent) {
@@ -302,13 +545,15 @@ export function App(): React.JSX.Element {
         ...previous,
         remaining: typeof result.remaining === 'number' ? result.remaining : previous.remaining
       }))
+      // 处理完成 = 档位大概率已变（free → 试用/付费），立即重查被动档位行。
+      if (result.ok) void refreshMembership()
     } catch (reason) {
       setAozaiFeedback({ ok: false, message: userFacingErrorMessage(reason) })
     } finally {
       setAozaiBusy(false)
       setAozaiProgress(null)
     }
-  }, [])
+  }, [refreshMembership])
 
   useEffect(() => {
     let disposed = false
@@ -333,10 +578,19 @@ export function App(): React.JSX.Element {
       }
     }
     void inspect()
-    const timer = setInterval(() => void inspect(), 2_000)
+    // 工程识别会在主进程执行一次进程枚举；2s 常驻轮询会无谓 spawn `ps`。
+    // 前台降到 5s，窗口重新可见时立即补一轮；后台完全暂停。
+    const timer = setInterval(() => {
+      if (!document.hidden) void inspect()
+    }, 5_000)
+    const onVisibilityChange = (): void => {
+      if (!document.hidden) void inspect()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       disposed = true
       clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])
 
@@ -386,6 +640,8 @@ export function App(): React.JSX.Element {
   }, [acceptCollaboration, teamControl.activeRun?.id, teamControl.activeRun?.status, teamControlLoaded])
 
   const visibleSnapshot = useMemo(() => {
+    const effectiveLeadSlotId = teamControl.activeRun?.actingLeadSlotId
+      ?? teamControl.members.find((member) => member.role.templateKey === 'lead')?.slot.id
     const memberByChannel = new Map(teamControl.members.flatMap((member) => {
       const channelId = member.binding?.channelId ?? member.slot.channelId
       return channelId ? [[channelId, member] as const] : []
@@ -393,23 +649,27 @@ export function App(): React.JSX.Element {
     return {
       ...snapshot,
       sessions: snapshot.sessions.map((session) => {
+        const usage = session.composerId ? cursorUsage[session.composerId] : undefined
+        const withUsage = usage && usage.turns > 0 ? { ...session, usage } : session
         const member = memberByChannel.get(session.channelId)
-        if (!member) return session
+        if (!member) return withUsage
         const task = taskPool.taskOrder
           .map((taskId) => taskPool.tasks[taskId])
           .find((candidate) => candidate?.assigneeSessionId === member.binding?.agentSessionId)
+        const isEffectiveLead = member.slot.id === effectiveLeadSlotId
         return {
-          ...session,
-          displayName: `${member.role.name} · CH-${session.channelId}`,
-          roleName: member.slot.name,
+          ...withUsage,
+          displayName: `${member.role.name}${isEffectiveLead && member.role.templateKey !== 'lead' ? '（临时主控）' : ''} · CH-${session.channelId}`,
+          roleName: `${member.slot.name}${isEffectiveLead && member.role.templateKey !== 'lead' ? ' · 临时主控' : ''}`,
           roleTemplateKey: member.role.templateKey,
+          isEffectiveLead,
           avatarId: member.slot.avatarId,
-          status: member.readiness === 'launching' ? 'reviving' as const : session.status,
+          status: member.readiness === 'launching' ? 'reviving' as const : withUsage.status,
           currentTask: task?.title ?? ''
         }
       })
     }
-  }, [snapshot, taskPool, teamControl.members])
+  }, [cursorUsage, snapshot, taskPool, teamControl.activeRun?.actingLeadSlotId, teamControl.members])
   const selectedSession = visibleSnapshot.sessions.find((session) => session.channelId === selectedChannelId)
   const selectedMember = teamControl.members.find((member) => (
     (member.binding?.channelId ?? member.slot.channelId) === selectedSession?.channelId
@@ -423,17 +683,16 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (activeModule !== 'sessions') return
     if (selectedChannelId && visibleSnapshot.sessions.some((session) => session.channelId === selectedChannelId)) return
+    if (sessionListRequested) return
     const fallback = visibleSnapshot.sessions.find((session) => session.online) ?? visibleSnapshot.sessions[0]
     if (fallback) setSelectedChannelId(fallback.channelId)
-  }, [activeModule, selectedChannelId, visibleSnapshot.sessions])
+  }, [activeModule, selectedChannelId, sessionListRequested, visibleSnapshot.sessions])
   const activeRunCollaboration = useMemo(() => (
     visibleTeamCollaborationSnapshot(collaboration, teamControl.activeRun)
   ), [collaboration, teamControl.activeRun])
-  const collaborationUnread = useMemo(() => (
-    summarizeTeamCollaborationForRun(collaboration, teamControl.activeRun).operatorUnread
-  ), [collaboration, teamControl.activeRun])
   const changeModule = useCallback((module: AppModule): void => {
     setActiveModule(module)
+    if (module === 'sessions') setSessionListRequested(false)
     if (module !== 'sessions') setSelectedChannelId(undefined)
   }, [])
 
@@ -514,6 +773,10 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (!teamControlLoaded || teamSetup || !cursorWorkspace?.workspace) return
+    // 全新装机时 likely 级证据也允许自动跟随（见 shouldAutoFollowCursorWorkspace），
+    // 但每次会话至多一次，避免多窗口焦点切换导致组队页来回弹。
+    const likelyFollow = cursorWorkspace.confidence !== 'certain'
+    if (likelyFollow && likelyAutoFollowedRef.current) return
     if (!shouldAutoFollowCursorWorkspace({
       detection: cursorWorkspace,
       activeWorkspaceId: teamControl.activeWorkspaceId,
@@ -521,6 +784,7 @@ export function App(): React.JSX.Element {
     })) return
     const key = `${cursorWorkspace.workspace.id}:${cursorWorkspace.workspace.cursorWorkspaceId ?? ''}`
     if (autoFollowedWorkspaceRef.current === key) return
+    if (likelyFollow) likelyAutoFollowedRef.current = true
     autoFollowedWorkspaceRef.current = key
     void followDetectedWorkspace().catch((reason: unknown) => {
       setTeamNotice(`已识别当前 Cursor 工程，但自动切换失败：${reason instanceof Error ? reason.message : String(reason)}`)
@@ -546,27 +810,15 @@ export function App(): React.JSX.Element {
           onSelectSession={selectSession}
         />
       ) : null}
-      collaborationUnread={collaborationUnread}
-      cursorAccountLabel={cursorAccounts.find((account) => account.active)?.label}
-      cursorAccountCount={cursorAccounts.length}
       cursorWorkspace={cursorWorkspace}
       displayedWorkspaceId={teamSetup?.workspaceId ?? teamControl.activeWorkspaceId}
       wideContent={activeModule === 'lobby'}
       teamChannelIds={memberChannelIds}
+      cardOpacity={appearance.cardOpacity}
+      colorMode={appearance.colorMode}
       onModuleChange={changeModule}
-      onOpenCursorAccounts={() => {
-        setCursorAccountError('')
-        setAozaiError('')
-        setAozaiFeedback(null)
-        setActiveModule('lobby')
-        setSelectedChannelId(undefined)
-        void window.qingtianDesktop.getAozaiCardStatus()
-          .then((status) => {
-            setAozaiStatus(status)
-            if (status.saved) void refreshAozaiBalance({ silent: true })
-          })
-          .catch(() => {})
-      }}
+      onCardOpacityChange={(cardOpacity) => setAppearance((current) => ({ ...current, cardOpacity }))}
+      onColorModeChange={(colorMode) => setAppearance((current) => ({ ...current, colorMode }))}
       onDetectedWorkspaceClick={() => {
         const action = cursorWorkspace?.state === 'ambiguous' ? chooseWorkspace : followDetectedWorkspace
         void action().catch((reason: unknown) => {
@@ -592,9 +844,9 @@ export function App(): React.JSX.Element {
               if (!installation.ok) {
                 setTeamNotice('团队已创建；团队 MCP 尚未安装。请安装后在 Cursor 手动启动 Agent 会话。')
               } else if (installation.restartRequired) {
-                setTeamNotice('团队已创建并安装 qt-ch 团队 MCP；请重载 Cursor，再手动启动 Agent 会话。')
+                setTeamNotice('团队已创建并安装 SG Team MCP；请重载 Cursor，再手动启动 Agent 会话。')
               } else {
-                setTeamNotice('团队与 qt-ch 团队 MCP 已就绪。请在 Cursor 手动启动 Agent 会话，群枢会自动接管。')
+                setTeamNotice('团队与 SG Team MCP 已就绪。请在 Cursor 手动启动 Agent 会话，拾光会自动接管。')
               }
             } catch (reason) {
               setTeamMcpReloadRequired(true)
@@ -642,7 +894,13 @@ export function App(): React.JSX.Element {
             return result
           }}
           agentLaunchPlan={agentLaunchPlan}
+          cursorModels={visibleSnapshot.cursorModels ?? []}
           onLaunchAgentSessions={launchAgentSessions}
+          onPersistModelSelection={async (channelId, selection) => {
+            const result = await window.qingtianDesktop.setSlotModelSelection(channelId, selection)
+            acceptTeamControl(result)
+            return result
+          }}
           onEnableCursorCdp={() => window.qingtianDesktop.enableCursorCdp()}
           cdpAutoHealEnabled={cdpAutoHealEnabled}
           cdpAutoHealEvent={cdpAutoHealEvent}
@@ -659,7 +917,13 @@ export function App(): React.JSX.Element {
             error: cursorAccountError,
             onSave: async (input) => {
               setCursorAccountBusy(true); setCursorAccountError('')
-              try { setCursorAccounts(await window.qingtianDesktop.saveCursorAccount(input)) }
+              try {
+                setCursorAccounts(await window.qingtianDesktop.saveCursorAccount(input))
+                // 新账号默认设为活跃（makeActive），一致性锚点变化 → 立即重算指示
+                void refreshRuntimeMatch()
+                // 新活跃账号档位未知，档位行同步重查
+                void refreshMembership()
+              }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)); throw reason }
               finally { setCursorAccountBusy(false) }
             },
@@ -668,61 +932,93 @@ export function App(): React.JSX.Element {
               try { setCursorAccounts(await window.qingtianDesktop.selectCursorAccount(accountId)) }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
+              // 换活跃账号会改变劈叉判定（Cursor 登录没变、锚点变了），立即刷新状态行
+              void refreshRuntimeMatch()
+              // 换活跃账号 = 档位锚点变化，同步重查
+              void refreshMembership()
             },
             onRemove: async (accountId) => {
               setCursorAccountBusy(true); setCursorAccountError('')
-              try { setCursorAccounts(await window.qingtianDesktop.removeCursorAccount(accountId)) }
+              try {
+                setCursorAccounts(await window.qingtianDesktop.removeCursorAccount(accountId))
+                // 删除活跃账号时 vault 会顺延活跃位，一致性锚点变化 → 立即重算指示
+                void refreshRuntimeMatch()
+                // 活跃位顺延后档位未知，同步重查
+                void refreshMembership()
+              }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
             },
             onImportFromLocal: async () => {
               setCursorAccountBusy(true); setCursorAccountError('')
-              try { setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromLocalCursor()) }
+              try {
+                setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromLocalCursor())
+                void refreshRuntimeMatch()
+                void refreshMembership()
+              }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
             },
             onImportFromBrowser: async () => {
               setCursorAccountBusy(true); setCursorAccountError('')
-              try { setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromBrowser()) }
+              try {
+                setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromBrowser())
+                void refreshRuntimeMatch()
+                void refreshMembership()
+              }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
             },
-            onInject: async (accountId) => {
+            onImportFromFingerprint: async () => {
               setCursorAccountBusy(true); setCursorAccountError('')
               try {
-                const result = await window.qingtianDesktop.injectCursorAccount(accountId)
-                if (!result.injected) return
+                setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromFingerprint())
+                void refreshRuntimeMatch()
+                void refreshMembership()
+              }
+              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+              finally { setCursorAccountBusy(false) }
+            },
+            // 提前登录：开窗导航 cursor.com（不关窗；失败提示走账号区错误条）
+            onOpenFingerprintLogin: async () => {
+              setCursorAccountBusy(true); setCursorAccountError('')
+              try { await window.qingtianDesktop.openFingerprintLoginPage() }
+              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+              finally { setCursorAccountBusy(false) }
+            },
+            onRestartWithAccount: async (accountId) => {
+              setCursorAccountBusy(true); setCursorAccountError('')
+              try {
+                const result = await window.qingtianDesktop.restartCursorWithAccount(accountId)
+                if (!result.switched) return
+                if (!result.runtimeVerified) {
+                  setCursorAccountError('⚠️ Cursor 已重启，但运行时登录态尚未完成确认。')
+                  return
+                }
                 if (result.tokenExpired) {
-                  setCursorAccountError('⚠️ 注入的 Token 已过期，请重新获取后再注入。')
+                  setCursorAccountError('⚠️ 该账号的 Token 已过期，请重新获取后再切换。')
                   return
                 }
-                if (result.hotSwapped) {
-                  setCursorAccountError('✅ 注入并热切换成功，Cursor 登录态已即时生效。')
-                  return
-                }
-                if (!result.cursorPid) {
-                  setCursorAccountError('✅ 注入成功。Cursor 当前未在运行，登录态将在下次启动时生效。')
-                  return
-                }
-                // 默认不重启：重启 Cursor 会关闭所有窗口并断开全部群枢通道，必须用户显式确认
-                const restartNow = window.confirm(
-                  '注入成功（登录态已写入 Cursor）。\n\n' +
-                  '立即生效需要重启 Cursor：将关闭所有 Cursor 窗口，并断开窗口中承载的全部群枢通道（群枢界面会短暂无响应）。\n\n' +
-                  '点「确定」立即重启 Cursor；点「取消」保留注入结果，稍后你自行重启 Cursor 同样生效。'
-                )
-                if (!restartNow) {
-                  setCursorAccountError('✅ 注入成功，未重启 Cursor。下次你手动重启 Cursor 后登录态生效。')
-                  return
-                }
-                const restarted = await window.qingtianDesktop.injectCursorAccount(accountId, { restart: true })
+                const relaunchNote = result.relaunchMode === 'cdp'
+                  ? result.cdpPortReady
+                    ? '调试端口已就绪，会话创建能力立即可用。'
+                    : '已带调试端口拉起，端口仍在启动中，稍候即可创建会话。'
+                  : result.relaunchMode === 'failed'
+                    ? '拉起 Cursor 失败，请手动启动 Cursor。'
+                    : '已重新拉起 Cursor。'
                 setCursorAccountError(
-                  restarted.restartPerformed
-                    ? '✅ 已注入并重启 Cursor，请等待 Cursor 重新拉起后检查登录态。'
-                    : '✅ 注入成功。Cursor 未在运行或热切换已成功，无需重启。'
+                  `✅ Cursor 运行时已确认目标账号，登录态与机器码均已落库（${result.killedCursor ? '已重启' : 'Cursor 原先未运行'}；${relaunchNote}）`
                 )
+                // 切换成功 = 运行态与活跃账号重新对齐，立即刷新被动状态行
+                void refreshRuntimeMatch()
+                // 切换后运行账号变了，档位行同步重查
+                void refreshMembership()
               } catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
             },
+            runtimeMatch,
+            membership: membershipStatus,
+            onRefreshMembership: () => { void refreshMembership() },
             aozaiStatus,
             aozaiBusy,
             aozaiError,
@@ -734,6 +1030,34 @@ export function App(): React.JSX.Element {
             onProcessAozaiAccount: processAozaiAccount,
             automationSettings: accountAutomationSettings,
             automationRun: accountAutomationRun,
+            bitProfiles,
+            bitProfilesMessage,
+            roxyApiKeyStatus,
+            onSaveRoxyApiKey: async (key) => {
+              const status = await window.qingtianDesktop.saveAccountAutomationRoxyApiKey(key)
+              setRoxyApiKeyStatus(status)
+              // Key 就绪后 Roxy 窗口列表立即可拉（此前缺 Key 时列表必失败）
+              void window.qingtianDesktop.listAccountAutomationBitProfiles()
+                .then((result) => {
+                  if (result.ok) {
+                    setBitProfiles(result.profiles ?? [])
+                    setBitProfilesMessage('')
+                  }
+                })
+                .catch(() => {})
+            },
+            onRefreshBitProfiles: () => {
+              void window.qingtianDesktop.listAccountAutomationBitProfiles()
+                .then((result) => {
+                  if (result.ok) {
+                    setBitProfiles(result.profiles ?? [])
+                    setBitProfilesMessage('')
+                  } else {
+                    setBitProfilesMessage(result.message ?? '指纹浏览器不可达')
+                  }
+                })
+                .catch((reason: unknown) => setBitProfilesMessage(userFacingErrorMessage(reason)))
+            },
             cursorUpdatePreferences,
             cursorUpdateBusy,
             cursorUpdateError,
@@ -750,7 +1074,7 @@ export function App(): React.JSX.Element {
             },
             onSaveAutomationSettings: (settings) => {
               void window.qingtianDesktop.saveAccountAutomationSettings(settings)
-                .then(setAccountAutomationSettings)
+                .then((saved) => setAccountAutomationSettings(saved))
                 .catch((reason: unknown) => setAozaiError(userFacingErrorMessage(reason)))
             },
             onCancelAutomation: () => {
@@ -800,13 +1124,14 @@ export function App(): React.JSX.Element {
           session={selectedSession}
           entries={snapshot.conversations[selectedSession.channelId] ?? []}
           currentProjectName={activeProjectName}
-          onBack={() => setSelectedChannelId(undefined)}
+          onBack={() => { setSessionListRequested(true); setSelectedChannelId(undefined) }}
           onHandoff={selectedHandoffSlotId ? () => void openManualHandoff(selectedHandoffSlotId) : undefined}
           draft={composerDrafts[selectedSession.channelId] ?? ''}
           onDraftChange={(value) => setComposerDrafts((current) => ({ ...current, [selectedSession.channelId]: value }))}
           attachments={composerAttachments[selectedSession.channelId] ?? []}
           onAttachmentsChange={(attachments) => setComposerAttachments((current) => ({ ...current, [selectedSession.channelId]: attachments }))}
           liveProcess={snapshot.liveProcess?.[selectedSession.channelId]}
+          liveAgentResponse={snapshot.liveAgentResponses?.[selectedSession.channelId]}
           onSend={async (text, attachments) => {
             await window.qingtianDesktop.sendMessage({ channelId: selectedSession.channelId, text, attachments })
           }}
@@ -825,6 +1150,28 @@ export function App(): React.JSX.Element {
         error={handoffError}
         onClose={() => { if (!handoffBusy) setHandoffOptions(undefined) }}
         onConfirm={confirmManualHandoff}
+      />
+    ) : null}
+    {runtimeGuard ? (
+      <RuntimeAccountGuardDialog
+        verify={runtimeGuard.verify}
+        allowProceed={runtimeGuard.allowProceed}
+        canSwitch={cursorAccounts.some((account) => account.active)}
+        busy={runtimeGuardBusy}
+        error={runtimeGuardError}
+        onClose={() => { if (!runtimeGuardBusy) setRuntimeGuard(undefined) }}
+        onProceed={() => void continueGuardedLaunch()}
+        onSwitchAndRestart={() => void switchAndContinueLaunch()}
+      />
+    ) : null}
+    {membershipGuard ? (
+      <MembershipGuardDialog
+        status={membershipGuard.status}
+        message={membershipGuard.message}
+        busy={membershipGuardBusy}
+        error={membershipGuardError}
+        onClose={() => { if (!membershipGuardBusy) setMembershipGuard(undefined) }}
+        onRefresh={() => void refreshMembershipAndContinue()}
       />
     ) : null}
     </>

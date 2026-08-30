@@ -9,10 +9,26 @@ export type AgentSessionStatus =
   | 'offline'
   | 'stopped'
 
+export interface ContextUsageCategory {
+  /** Cursor 原生 promptTokenBreakdown 分类 id。 */
+  id: string
+  /** Cursor 原生英文分类名。 */
+  label: string
+  estimatedTokens: number
+}
+
+export interface ContextUsageBreakdown {
+  totalUsedTokens: number
+  maxTokens: number
+  categories: ContextUsageCategory[]
+}
+
 export interface ContextUsage {
   used?: number
   limit?: number
   ratio: number
+  /** Cursor `composerData.promptTokenBreakdown` 原生统计，不由拾光估算。 */
+  breakdown?: ContextUsageBreakdown
 }
 
 export interface ChangeSummary {
@@ -22,6 +38,7 @@ export interface ChangeSummary {
 }
 
 export type AgentTelemetryState = 'bound' | 'unbound' | 'unavailable' | 'stale' | 'error'
+export type AgentRuntimeEvidence = 'active' | 'suspected' | 'stopped'
 
 export interface AgentTelemetryStatus {
   state: AgentTelemetryState
@@ -54,6 +71,8 @@ export interface AgentSession {
   displayName: string
   roleName: string
   roleTemplateKey?: string
+  /** 当前 TeamRun 唯一有效主控（含临时主控）。 */
+  isEffectiveLead?: boolean
   avatarId?: string
   modelName?: string
   executionProfile?: AgentExecutionProfile
@@ -68,13 +87,15 @@ export interface AgentSession {
   connectionPhase: string
   online: boolean
   connected: boolean
+  /** active=正面存活；suspected=仅租约陈旧；stopped=Cursor/运行时正面终止证据。 */
+  runtimeEvidence?: AgentRuntimeEvidence
   /** 消息投递方式：queued 表示可离线入队，由 Cursor Agent 下次轮询取走。 */
   deliveryMode?: 'live' | 'queued'
   waiting: boolean
   contextUsage?: ContextUsage
   changes?: ChangeSummary
-  /** Cursor 内的工作过程条目（叙述/工具调用），来自转录增量解析，会话视图回显用。 */
-  workEntries?: import('./cursor-telemetry').CursorWorkEntry[]
+  /** 本轮应用运行期该 composer 的累积 token 用量与费用估算（主进程内存态，重启清零）。 */
+  usage?: import('./cursor-usage').CursorSessionUsage
   workingFiles: string[]
   healthEvidence: string[]
   telemetry?: AgentTelemetryStatus

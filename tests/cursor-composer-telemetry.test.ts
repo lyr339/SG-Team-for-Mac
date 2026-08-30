@@ -32,10 +32,15 @@ function header(input: {
   title?: string
   lastUpdatedAt?: number
   contextUsagePercent?: number
+  contextTokensUsed?: number
+  contextTokenLimit?: number
   additions?: number
   deletions?: number
   files?: number
   workspaceStorageId?: string
+  status?: string
+  abortReason?: string
+  generatingBubbleIds?: string[]
 }) {
   return {
     composerId: input.composerId,
@@ -43,9 +48,14 @@ function header(input: {
     createdAt: 1_000,
     lastUpdatedAt: input.lastUpdatedAt ?? 2_000,
     contextUsagePercent: input.contextUsagePercent,
+    contextTokensUsed: input.contextTokensUsed,
+    contextTokenLimit: input.contextTokenLimit,
     totalLinesAdded: input.additions,
     totalLinesRemoved: input.deletions,
     filesChangedCount: input.files,
+    status: input.status,
+    abortReason: input.abortReason,
+    generatingBubbleIds: input.generatingBubbleIds,
     workspaceIdentifier: {
       id: input.workspaceStorageId,
       uri: { fsPath: input.workspace }
@@ -84,7 +94,10 @@ function composerApplicationUser(): unknown {
       name: 'composer-2.5',
       clientDisplayName: 'Composer 2.5',
       inputboxShortModelName: 'Composer 2.5',
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
       contextTokenLimit: 200_000,
+      contextTokenLimitForMaxMode: 200_000,
       parameterDefinitions: [{
         id: 'fast',
         name: 'Fast',
@@ -117,9 +130,12 @@ function parameterizedComposerApplicationUser(): unknown {
   return {
     availableDefaultModels2: [{
       name: 'claude-fable-5',
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
+      contextTokenLimit: 300_000,
+      contextTokenLimitForMaxMode: 1_000_000,
       clientDisplayName: 'Claude Fable 5',
       inputboxShortModelName: 'Claude Fable 5',
-      contextTokenLimit: 300_000,
       parameterDefinitions: [
         {
           id: 'thinking',
@@ -156,12 +172,13 @@ function parameterizedComposerApplicationUser(): unknown {
           { id: 'context', value: '1m' },
           { id: 'effort', value: 'max' }
         ],
-        isMaxMode: true
+        isMaxMode: false
       }]
     }],
     aiSettings: {
       modelConfig: {
         composer: {
+          maxMode: true,
           selectedModels: [{
             modelId: 'claude-fable-5',
             parameters: [
@@ -169,6 +186,37 @@ function parameterizedComposerApplicationUser(): unknown {
               { id: 'context', value: '1m' },
               { id: 'effort', value: 'max' }
             ]
+          }]
+        }
+      }
+    }
+  }
+}
+
+function kimiApplicationUser(maxMode: boolean): unknown {
+  return {
+    availableDefaultModels2: [{
+      name: 'kimi-k3',
+      clientDisplayName: 'Kimi K3',
+      inputboxShortModelName: 'Kimi K3',
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
+      contextTokenLimit: 1_048_576,
+      contextTokenLimitForMaxMode: 1_048_576,
+      parameterDefinitions: [{
+        id: 'reasoning', name: 'Reasoning',
+        parameterType: { enumParameter: { values: [{ value: 'max', displayName: 'Max' }] } }
+      }],
+      variants: [{ parameterValues: [{ id: 'reasoning', value: 'max' }], isMaxMode: false }]
+    }],
+    aiSettings: {
+      modelConfig: {
+        composer: {
+          modelName: 'kimi-k3',
+          maxMode,
+          selectedModels: [{
+            modelId: 'kimi-k3',
+            parameters: [{ id: 'reasoning', value: 'max' }]
           }]
         }
       }
@@ -310,6 +358,41 @@ function binding(channelId: string, generation = 'generation123', installedAt = 
 }
 
 describe('CursorComposerTelemetryReader', () => {
+  it('uses persisted aborted status as immediate offline evidence when CDP is unavailable', () => {
+    const data = fixture()
+    const composerId = 'composer-persisted-abort-123'
+    writeHeaders(data.globalStateDatabase, [header({
+      composerId,
+      workspace: data.workspace,
+      status: 'aborted',
+      abortReason: 'error'
+    })])
+    const runtime = { ...binding('1'), composerId }
+
+    const snapshot = data.reader.readWorkspace(data.workspace, [runtime])
+
+    expect(snapshot.composers[0]?.activity).toMatchObject({
+      state: 'stopped',
+      channelId: '1'
+    })
+    expect(snapshot.composers[0]?.activity?.detail).toContain('持久状态')
+  })
+
+  it('uses persisted generating bubbles as positive activity evidence', () => {
+    const data = fixture()
+    const composerId = 'composer-persisted-running-123'
+    writeHeaders(data.globalStateDatabase, [header({
+      composerId,
+      workspace: data.workspace,
+      generatingBubbleIds: ['bubble-running']
+    })])
+    const runtime = { ...binding('1'), composerId }
+
+    const snapshot = data.reader.readWorkspace(data.workspace, [runtime])
+
+    expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'active', channelId: '1' })
+  })
+
   it('reads Cursor current Composer profile without pretending it belongs to a historical session', () => {
     const data = fixture()
     writeHeaders(data.globalStateDatabase, [header({
@@ -343,7 +426,10 @@ describe('CursorComposerTelemetryReader', () => {
           { value: 'true', displayName: 'Fast', increasesCost: true }
         ]
       }],
-      contextTokenLimit: 200_000
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
+      contextTokenLimit: 200_000,
+      contextTokenLimitForMaxMode: 200_000
     })
     expect(snapshot.composers[0]?.modelName).toBeUndefined()
   })
@@ -362,7 +448,7 @@ describe('CursorComposerTelemetryReader', () => {
       scope: 'cursor-composer-current',
       modelId: 'claude-fable-5',
       displayName: 'Claude Fable 5',
-      options: ['Thinking', '1M', 'Max'],
+      options: ['Think', '1M', 'Max'],
       maxMode: true,
       contextTokenLimit: 1_000_000
     })
@@ -374,11 +460,109 @@ describe('CursorComposerTelemetryReader', () => {
         { id: 'context', value: '1m' },
         { id: 'effort', value: 'max' }
       ],
-      optionLabels: ['Thinking', '1M', 'Max']
+      optionLabels: ['Think', '1M', 'Max'],
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
+      contextTokenLimitForMaxMode: 1_000_000
     })
     expect(snapshot.cursorModels?.[0]?.parameterDefinitions.map((definition) => definition.id)).toEqual([
       'thinking', 'context', 'effort'
     ])
+    expect(snapshot.cursorModels?.[0]?.variants).toEqual([{
+      parameters: [
+        { id: 'thinking', value: 'true' },
+        { id: 'context', value: '1m' },
+        { id: 'effort', value: 'max' }
+      ],
+      maxMode: false,
+      isDefaultMaxConfig: undefined,
+      isDefaultNonMaxConfig: undefined
+    }])
+    expect(snapshot.cursorModels?.[0]?.parameterDefinitions).toMatchObject([
+      {
+        displayName: 'Thinking',
+        values: [
+          { value: 'false', displayName: 'Off' },
+          { value: 'true', displayName: 'On' }
+        ]
+      },
+      {
+        displayName: 'Context',
+        values: [
+          { value: '300k', displayName: '300K' },
+          { value: '1m', displayName: '1M' }
+        ]
+      },
+      {
+        displayName: 'Effort',
+        values: [{ value: 'max', displayName: 'Max' }]
+      }
+    ])
+  })
+
+  it('treats Kimi reasoning=max and MAX Mode as independent controls', () => {
+    const standard = fixture()
+    writeHeaders(standard.globalStateDatabase, [header({
+      composerId: 'composer-kimi-standard', workspace: standard.workspace
+    })])
+    writeApplicationUser(standard.globalStateDatabase, kimiApplicationUser(false))
+    const standardSnapshot = standard.reader.readWorkspace(standard.workspace, [])
+    expect(standardSnapshot.composerProfile).toMatchObject({
+      modelId: 'kimi-k3',
+      options: ['Think', 'Max'],
+      maxMode: false,
+      contextTokenLimit: 200_000
+    })
+    expect(standardSnapshot.cursorModels?.[0]).toMatchObject({
+      supportsMaxMode: true,
+      contextTokenLimit: 1_048_576,
+      contextTokenLimitForMaxMode: 1_048_576
+    })
+
+    const max = fixture()
+    writeHeaders(max.globalStateDatabase, [header({
+      composerId: 'composer-kimi-max', workspace: max.workspace
+    })])
+    writeApplicationUser(max.globalStateDatabase, kimiApplicationUser(true))
+    expect(max.reader.readWorkspace(max.workspace, []).composerProfile).toMatchObject({
+      modelId: 'kimi-k3',
+      maxMode: true,
+      contextTokenLimit: 1_048_576
+    })
+  })
+
+  it('reads per-composer modelConfig from composerData so each session shows its own profile', () => {
+    const data = fixture()
+    const composerId = 'composer-per-session-1'
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    writeApplicationUser(data.globalStateDatabase, kimiApplicationUser(false))
+    const database = new DatabaseSync(data.globalStateDatabase)
+    try {
+      database.exec('CREATE TABLE IF NOT EXISTS cursorDiskKV (key TEXT PRIMARY KEY, value BLOB)')
+      database.prepare('INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?, ?)').run(
+        `composerData:${composerId}`,
+        JSON.stringify({
+          _v: 16,
+          composerId,
+          modelConfig: {
+            modelName: 'kimi-k3',
+            maxMode: true,
+            selectedModels: [{ modelId: 'kimi-k3', parameters: [{ id: 'reasoning', value: 'max' }] }]
+          }
+        })
+      )
+    } finally {
+      database.close()
+    }
+
+    const snapshot = data.reader.readWorkspace(data.workspace, [])
+    expect(snapshot.composers[0]?.modelProfile).toMatchObject({
+      modelId: 'kimi-k3',
+      displayName: 'Kimi K3',
+      options: ['Think', 'Max'],
+      maxMode: true,
+      contextTokenLimit: 1_048_576
+    })
   })
 
   it('keeps session telemetry available when Cursor current profile is malformed', () => {
@@ -464,480 +648,60 @@ describe('CursorComposerTelemetryReader', () => {
     expect('tokenUsage' in second).toBe(false)
   })
 
-  it('parses assistant work entries from the transcript, filters keepalive noise and grows incrementally', () => {
+  it('reads Cursor native promptTokenBreakdown for the context hover panel', () => {
     const data = fixture()
-    const composerId = 'composer-work-entries-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    writeApplicationUser(data.globalStateDatabase, composerApplicationUser())
-    const userLine = JSON.stringify({ role: 'user', message: { content: [{ type: 'text', text: '实现一个测试' }] } })
-    const assistantLine = JSON.stringify({
-      role: 'assistant',
-      message: {
-        content: [
-          { type: 'text', text: '好的，我先看一下代码结构。' },
-          { type: 'tool_use', name: 'Glob', input: { glob_pattern: '**/*.ts', target_directory: '/repo' } },
-          { type: 'tool_use', name: 'CallMcpTool', input: { server: 'qtwx-mcp-1', toolName: 'check_messages', arguments: {} } },
-          { type: 'tool_use', name: 'CallMcpTool', input: { server: 'qtwx-mcp-1', toolName: 'record_reply', arguments: { content: '完成' } } }
-        ]
-      }
-    })
-    writeTranscript(data.projectsRoot, data.workspace, composerId, `${userLine}\n${assistantLine}\n`)
-
-    // user 行不产生条目；qtwx/team 内部同步噪音被过滤；真实工具调用生成摘要
-    const first = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
-    expect(first.map((entry) => entry.kind)).toEqual(['text', 'tool'])
-    expect(first[0]).toMatchObject({ kind: 'text', text: '好的，我先看一下代码结构。', line: 2 })
-    expect(first[1]).toMatchObject({ kind: 'tool', toolName: 'Glob', toolKind: 'search', line: 2 })
-    expect(first[1]!.text).toContain('**/*.ts')
-    expect(first[1]!.details).toEqual([
-      { label: '目录', value: '/repo', kind: 'path' },
-      { label: '模式', value: '**/*.ts', kind: 'text' }
-    ])
-    expect(first.every((entry) => entry.at > 0)).toBe(true)
-    // 同一行已经 record_reply 收尾，真实工具不应继续显示 running
-    expect(first[1]!.status).toBe('done')
-    expect(first[0]!.status).toBeUndefined()
-
-    // 增量：追加新行后旧条目保留、新条目以物理行号追加；
-    // 新条目出现即推断此前工具已完成（Cursor 顺序执行）
-    const path = transcriptPath(data.projectsRoot, data.workspace, composerId)
-    appendFileSync(path, `${JSON.stringify({ role: 'assistant', message: { content: [{ type: 'text', text: '继续补充说明' }] } })}\n`)
-    const second = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
-    expect(second).toHaveLength(3)
-    expect(second.at(-1)).toMatchObject({ kind: 'text', text: '继续补充说明', line: 3 })
-    expect(second[0]).toMatchObject({ text: '好的，我先看一下代码结构。' })
-    expect(second[1]!.status).toBe('done')
-  })
-
-  it('assigns transcript work entries to separate turns and filters internal polling narration', () => {
-    const data = fixture()
-    const composerId = 'composer-work-turns-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    const firstTurn = 'turn-one'
-    const secondTurn = 'turn-two'
-    writeTranscript(data.projectsRoot, data.workspace, composerId, [
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '开始第一轮。' },
-            {
-              type: 'tool_use',
-              name: 'CallDynamicTool',
-              input: {
-                namespace: 'user-qunshu',
-                toolName: 'record_process',
-                arguments: { channel_id: '1', turn: firstTurn, block: { id: 'a', kind: 'thinking', status: 'running' } }
-              }
-            }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '读取第一轮文件。' },
-            { type: 'tool_use', name: 'Read', input: { path: '/repo/src/a.ts' } }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '同步第一轮回复。' },
-            {
-              type: 'tool_use',
-              name: 'CallDynamicTool',
-              input: {
-                namespace: 'user-qunshu',
-                toolName: 'record_reply',
-                arguments: { channel_id: '1', turn: firstTurn, content: '第一轮完成' }
-              }
-            }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '继续 keepalive，等待新消息。' },
-            {
-              type: 'tool_use',
-              name: 'CallDynamicTool',
-              input: { namespace: 'user-qunshu', toolName: 'check_messages', arguments: { channel_id: '1' } }
-            }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '开始第二轮。' },
-            {
-              type: 'tool_use',
-              name: 'CallDynamicTool',
-              input: {
-                namespace: 'user-qunshu',
-                toolName: 'record_process',
-                arguments: { channel_id: '1', turn: secondTurn, block: { id: 'b', kind: 'thinking', status: 'running' } }
-              }
-            }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'tool_use', name: 'Shell', input: { command: 'npm test' } }
-          ]
-        }
-      })
-    ].join('\n') + '\n')
-
-    const entries = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
-    expect(entries.map((entry) => entry.text)).toEqual([
-      '开始第一轮。',
-      '读取第一轮文件。',
-      'Read /repo/src/a.ts',
-      '开始第二轮。',
-      'Shell npm test'
-    ])
-    expect(entries.filter((entry) => entry.turn === firstTurn)).toHaveLength(3)
-    expect(entries.filter((entry) => entry.turn === secondTurn)).toHaveLength(2)
-    expect(entries.some((entry) => entry.text.includes('keepalive'))).toBe(false)
-    expect(entries.some((entry) => entry.text.includes('record_process'))).toBe(false)
-    expect(entries.find((entry) => entry.text === 'Read /repo/src/a.ts')?.status).toBe('done')
-    expect(entries.at(-1)?.status).toBe('running')
-  })
-
-  it('starts a new implicit turn after returning to check_messages', () => {
-    const data = fixture()
-    const composerId = 'composer-implicit-turn-boundary-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, [
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '第一轮开始。' },
-            { type: 'tool_use', name: 'Shell', input: { command: 'npm test' } }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '这条消息我已经读过了。继续轮询。' },
-            {
-              type: 'tool_use',
-              name: 'CallDynamicTool',
-              input: { namespace: 'user-qunshu', toolName: 'check_messages', arguments: { channel_id: '1' } }
-            }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '第二轮开始。' },
-            { type: 'tool_use', name: 'Read', input: { path: '/repo/src/b.ts' } }
-          ]
-        }
-      })
-    ].join('\n') + '\n')
-
-    const entries = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
-    expect(entries.map((entry) => entry.text)).toEqual([
-      '第一轮开始。',
-      'Shell npm test',
-      '第二轮开始。',
-      'Read /repo/src/b.ts'
-    ])
-    expect(entries.some((entry) => entry.text.includes('继续轮询'))).toBe(false)
-    expect(new Set(entries.map((entry) => entry.turn)).size).toBe(2)
-    expect(entries[1]!.status).toBe('done')
-    expect(entries[0]!.turn).not.toBe(entries[2]!.turn)
-  })
-
-  it('does not create visible work entries for repeated empty polling', () => {
-    const data = fixture()
-    const composerId = 'composer-empty-polling-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, [
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '继续等待用户回复。' },
-            {
-              type: 'tool_use',
-              name: 'CallDynamicTool',
-              input: { namespace: 'user-qunshu', toolName: 'check_messages', arguments: { channel_id: '1' } }
-            }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: '这条消息我已经读过了。让我继续轮询等待用户的回复。' },
-            {
-              type: 'tool_use',
-              name: 'CallDynamicTool',
-              input: { namespace: 'user-qunshu', toolName: 'record_reply', arguments: { channel_id: '1', content: 'noop' } }
-            }
-          ]
-        }
-      }),
-      JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [
-            {
-              type: 'tool_use',
-              name: 'CallDynamicTool',
-              input: { namespace: 'user-qunshu', toolName: 'check_messages', arguments: { channel_id: '1' } }
-            }
-          ]
-        }
-      })
-    ].join('\n') + '\n')
-
-    const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]
-    expect(composer?.workEntries).toBeUndefined()
-  })
-
-  it('hides qingtian/team MCP calls from Cursor work entries while keeping external MCP calls', () => {
-    const data = fixture()
-    const composerId = 'composer-filter-internal-mcp-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, `${JSON.stringify({
-      role: 'assistant',
-      message: {
-        content: [
-          { type: 'tool_use', name: 'CallDynamicTool', input: { namespace: 'qingtian', toolName: 'team_list_available', arguments: {} } },
-          { type: 'tool_use', name: 'CallDynamicTool', input: { namespace: 'github', toolName: 'create_pull_request', arguments: {} } },
-          { type: 'tool_use', name: 'CallMcpTool', input: { server: 'project-alpha-qtwx-mcp-1', toolName: 'qingtian', arguments: {} } },
-          { type: 'tool_use', name: 'CallMcpTool', input: { server: 'qtwx-mcp-1', toolName: 'record_reply', arguments: {} } }
-        ]
-      }
-    })}\n`)
-
-    const entries = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
-    expect(entries).toHaveLength(1)
-    expect(entries[0]).toMatchObject({
-      kind: 'tool',
-      toolKind: 'mcp',
-      toolName: 'create_pull_request',
-      text: '调用 create_pull_request',
-      details: [
-        { label: '命名空间', value: 'github', kind: 'text' },
-        { label: '参数', value: '{}', kind: 'code' }
+    const composerId = 'composer-native-context-breakdown'
+    const breakdown = {
+      totalUsedTokens: 18_900,
+      maxTokens: 200_000,
+      categories: [
+        { id: 'system_prompt', label: 'System prompt', estimatedTokens: 488 },
+        { id: 'tools', label: 'Tool definitions', estimatedTokens: 7_700 },
+        { id: 'rules', label: 'Rules', estimatedTokens: 3_800 },
+        { id: 'conversation', label: 'Conversation', estimatedTokens: 217 }
       ]
-    })
-  })
-
-  it('keeps expandable tool input details for command and edit process cards', () => {
-    const data = fixture()
-    const composerId = 'composer-process-details-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, `${JSON.stringify({
-      role: 'assistant',
-      message: {
-        content: [
-          {
-            type: 'tool_use',
-            name: 'Shell',
-            input: {
-              command: 'npm test',
-              working_directory: '/repo',
-              description: 'Run unit tests',
-              block_until_ms: 120000
-            }
-          },
-          {
-            type: 'tool_use',
-            name: 'StrReplace',
-            input: {
-              path: '/repo/src/index.ts',
-              old_string: 'const a = 1\nconst b = 2',
-              new_string: 'const a = 1\nconst b = 3'
-            }
-          },
-          {
-            type: 'tool_use',
-            name: 'ApplyPatch',
-            input: '*** Begin Patch\n*** Update File: /repo/src/App.tsx\n@@\n-old\n+new\n*** End Patch\n'
-          }
-        ]
-      }
-    })}\n`)
-
-    const entries = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
-    expect(entries).toHaveLength(3)
-    expect(entries[0]).toMatchObject({
-      toolName: 'Shell',
-      toolKind: 'command',
-      details: [
-        { label: '命令', value: 'npm test', kind: 'code' },
-        { label: '工作目录', value: '/repo', kind: 'path' },
-        { label: '说明', value: 'Run unit tests', kind: 'text' }
-      ]
-    })
-    expect(entries[1]).toMatchObject({
-      toolName: 'StrReplace',
-      toolKind: 'edit',
-      details: [
-        { label: '文件', value: '/repo/src/index.ts', kind: 'path' },
-        { label: '变更规模', value: '+2 / -2' },
-        { label: '替换前', value: 'const a = 1\nconst b = 2', kind: 'code' },
-        { label: '替换后', value: 'const a = 1\nconst b = 3', kind: 'code' }
-      ]
-    })
-    expect(entries[2]).toMatchObject({
-      toolName: 'ApplyPatch',
-      toolKind: 'edit',
-      details: [
-        { label: '文件', value: '/repo/src/App.tsx', kind: 'path' },
-        { label: 'Patch', kind: 'code' }
-      ]
-    })
-    expect(entries[2]!.details?.[1]?.value).toContain('*** Update File: /repo/src/App.tsx')
-  })
-
-  it('drops redacted-only transcript text while keeping useful redacted context', () => {
-    const data = fixture()
-    const composerId = 'composer-redacted-noise-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, `${JSON.stringify({
-      role: 'assistant',
-      message: {
-        content: [
-          { type: 'text', text: '[REDACTED]' },
-          { type: 'text', text: '[REDACTED]\n\n[REDACTED]' },
-          {
-            type: 'tool_use',
-            name: 'Shell',
-            input: {
-              command: 'npm test',
-              working_directory: '/repo',
-              description: '[REDACTED]'
-            }
-          },
-          { type: 'text', text: '验证完成；敏感片段为 [REDACTED]。' }
-        ]
-      }
-    })}\n`)
-
-    const entries = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
-    expect(entries).toHaveLength(2)
-    expect(entries[0]).toMatchObject({
-      kind: 'tool',
-      toolName: 'Shell',
-      details: [
-        { label: '命令', value: 'npm test', kind: 'code' },
-        { label: '工作目录', value: '/repo', kind: 'path' }
-      ]
-    })
-    expect(entries[0]!.details?.some((detail) => detail.value === '[REDACTED]')).toBe(false)
-    expect(entries[1]).toMatchObject({
-      kind: 'text',
-      text: '验证完成；敏感片段为 [REDACTED]。'
-    })
-  })
-
-  it('parses TodoWrite into a structured task card and classifies rg as search', () => {
-    const data = fixture()
-    const composerId = 'composer-todo-card-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, `${JSON.stringify({
-      role: 'assistant',
-      message: {
-        content: [
-          {
-            type: 'tool_use',
-            name: 'TodoWrite',
-            input: {
-              merge: false,
-              todos: [
-                { id: 'a', content: '核对需求基线', status: 'completed' },
-                { id: 'b', content: '实现过程回显', status: 'in_progress' },
-                { id: 'c', content: '跑全量测试', status: 'pending' }
-              ]
-            }
-          },
-          { type: 'tool_use', name: 'rg', input: { pattern: 'workEntries', path: 'src/' } }
-        ]
-      }
-    })}\n`)
-
-    const entries = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!.workEntries!
-    expect(entries).toHaveLength(2)
-    expect(entries[0]).toMatchObject({ kind: 'tool', toolKind: 'todo', toolName: 'TodoWrite' })
-    expect(entries[0]!.todos).toEqual([
-      { content: '核对需求基线', status: 'completed' },
-      { content: '实现过程回显', status: 'in_progress' },
-      { content: '跑全量测试', status: 'pending' }
-    ])
-    expect(entries[1]).toMatchObject({ kind: 'tool', toolKind: 'search', toolName: 'rg' })
-    expect(entries[1]!.text).toContain('workEntries')
-  })
-
-  it('omits work entries for composers without a binding or channel evidence', () => {
-    const data = fixture()
-    const composerId = 'composer-no-binding-123'
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    writeTranscript(
-      data.projectsRoot,
-      data.workspace,
+    }
+    writeHeaders(data.globalStateDatabase, [header({
       composerId,
-      `${JSON.stringify({ role: 'assistant', message: { content: [{ type: 'text', text: '干活' }] } })}\n`
-    )
+      workspace: data.workspace,
+      contextUsagePercent: 9.45
+    })])
+    const database = new DatabaseSync(data.globalStateDatabase)
+    try {
+      database.exec('CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB)')
+      database.prepare('INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)').run(
+        `composerData:${composerId}`,
+        JSON.stringify({
+          composerId,
+          contextUsagePercent: 9.45,
+          contextTokensUsed: 18_900,
+          contextTokenLimit: 200_000,
+          promptTokenBreakdown: breakdown
+        })
+      )
+    } finally {
+      database.close()
+    }
 
     const composer = data.reader.readWorkspace(data.workspace, []).composers[0]
-    expect(composer?.workEntries).toBeUndefined()
+    expect(composer?.contextUsage).toMatchObject({
+      used: 18_900,
+      limit: 200_000,
+      breakdown
+    })
+    expect(composer?.contextUsage?.ratio).toBeCloseTo(0.0945)
   })
 
-  it('resolves work entries for channel-located composers in numeric project dirs', () => {
-    const data = fixture()
-    const composerId = 'composer-channel-work-123'
-    // composer 头部属于另一个工作区，会被工作区过滤——靠通道转录水合
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: join(data.root, 'other-workspace') })])
-    const directory = join(data.projectsRoot, '1779762671039', 'agent-transcripts', composerId)
-    mkdirSync(directory, { recursive: true })
-    writeFileSync(join(directory, `${composerId}.jsonl`), `${JSON.stringify({
-      role: 'assistant',
-      message: {
-        content: [
-          { type: 'tool_use', name: 'CallMcpTool', input: { server: 'qtwx-mcp-1', toolName: 'check_messages', arguments: {} } }
-        ]
-      }
-    })}\n${JSON.stringify({
-      role: 'assistant',
-      message: { content: [{ type: 'text', text: '在跨工作区窗口里工作' }] }
-    })}\n`)
 
-    const composer = data.reader.readWorkspace(data.workspace, [binding('1')]).composers[0]
-    expect(composer?.composerId).toBe(composerId)
-    expect(composer?.workEntries).toHaveLength(1)
-    expect(composer?.workEntries?.[0]).toMatchObject({ kind: 'text', text: '在跨工作区窗口里工作' })
-  })
+
+
+
+
+
+
+
+
+
 
   it('keeps context usage without fabricating a token estimate before Cursor creates a transcript file', () => {
     const data = fixture()
@@ -1373,7 +1137,7 @@ describe('CursorComposerTelemetryReader', () => {
     expect(snapshot.composers[0]?.activity?.workInProgress).toBeUndefined()
   })
 
-  it('still stops an idle agent whose waiting lease ended and transcript went stale', () => {
+  it('does not call an Agent stopped merely because check_messages ended and the next work is quiet', () => {
     const data = fixture()
     const now = Date.now()
     const storageId = '8'.repeat(32)
@@ -1399,8 +1163,8 @@ describe('CursorComposerTelemetryReader', () => {
       isProcessAlive: () => true
     })
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
-    expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'stopped' })
-    expect(snapshot.composers[0]?.activity?.detail).toContain('等待租约已经结束')
+    expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'unknown', workInProgress: true })
+    expect(snapshot.composers[0]?.activity?.detail).toContain('可能正在执行长任务')
   })
 
   it('reports a missing Cursor database without throwing or fabricating data', () => {
@@ -1579,6 +1343,30 @@ describe('global composer hydration for context and binding', () => {
     ])
   })
 
+  it('still binds transcripts carrying the legacy QINGTIAN_TEAM_BIND marker after rebrand', () => {
+    const data = fixture()
+    const composerId = 'composer-legacy-marker-1'
+    writeHeaders(data.globalStateDatabase, [header({
+      composerId,
+      workspace: '/tmp/qingtian-temp-workspace'
+    })])
+    const runtime = binding('1')
+    const legacyMarker = `[[QINGTIAN_TEAM_BIND:${runtime.generation}:CH-1]]`
+    const directory = join(data.projectsRoot, 'Users-example-Projects-BlockChainVecSim', 'agent-transcripts', composerId)
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, `${composerId}.jsonl`), `${transcriptEntry(legacyMarker, 'check_messages')}\n`)
+
+    const snapshot = data.reader.readWorkspace(data.workspace, [runtime])
+    expect(snapshot.bindingCandidates).toEqual([
+      expect.objectContaining({
+        channelId: '1',
+        composerId,
+        generation: runtime.generation,
+        method: 'launch_marker'
+      })
+    ])
+  })
+
   it('hydrates an explicitly bound composer even when its header is filtered by workspace', () => {
     const data = fixture()
     const composerId = 'composer-bound-elsewhere-1'
@@ -1591,5 +1379,91 @@ describe('global composer hydration for context and binding', () => {
     const snapshot = data.reader.readWorkspace(data.workspace, [runtime])
     const composer = snapshot.composers.find((entry) => entry.composerId === composerId)
     expect(composer?.contextUsage?.ratio).toBeCloseTo(0.689, 3)
+  })
+
+  describe('快照指纹缓存（vscdb+wal mtime 前置，P0 性能修复）', () => {
+    it('全局转录目录索引在 TTL 内复用，过期后发现新 Composer', () => {
+      const data = fixture()
+      let now = 10_000
+      writeHeaders(data.globalStateDatabase, [])
+      const reader = new CursorComposerTelemetryReader({
+        globalStateDatabase: data.globalStateDatabase,
+        projectsRoot: data.projectsRoot,
+        workspaceStorageRoot: data.workspaceStorageRoot,
+        now: () => now,
+        channelActivityPollMs: 0,
+        transcriptIndexTtlMs: 2_000
+      })
+      expect(reader.readWorkspace(data.workspace, [binding('7')]).channelActivities?.['7']).toBeUndefined()
+
+      const composerId = 'composer-index-cache-7'
+      const directory = join(data.projectsRoot, '1780659222896', 'agent-transcripts', composerId)
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, `${composerId}.jsonl`), `${transcriptEntry('qtwx-mcp-7', 'check_messages')}\n`)
+
+      expect(reader.readWorkspace(data.workspace, [binding('7')]).channelActivities?.['7']).toBeUndefined()
+      now += 2_001
+      expect(reader.readWorkspace(data.workspace, [binding('7')]).channelActivities?.['7']).toMatchObject({
+        channelId: '7',
+        composerId
+      })
+    })
+
+    it('指纹未变时整轮复用缓存（同一对象引用，不重读库）', () => {
+      const data = fixture()
+      const composerId = 'composer-cache-hit-1'
+      writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+      const runtime = { ...binding('1'), composerId }
+      const first = data.reader.readWorkspace(data.workspace, [runtime])
+      expect(first.availability).toBe('available')
+      const second = data.reader.readWorkspace(data.workspace, [runtime])
+      expect(second).toBe(first)
+    })
+
+    it('vscdb 内容变化（mtime 推进）使缓存失效并反映新值', () => {
+      const data = fixture()
+      writeHeaders(data.globalStateDatabase, [header({ composerId: 'c-cache-a', workspace: data.workspace })])
+      const first = data.reader.readWorkspace(data.workspace, [binding('1')])
+      expect(first.composers).toHaveLength(1)
+      // 二次写库走 INSERT OR REPLACE（writeHeaders 的 CREATE TABLE 仅用于初始化）
+      const database = new DatabaseSync(data.globalStateDatabase)
+      try {
+        database.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)').run(
+          'composer.composerHeaders',
+          JSON.stringify({
+            allComposers: [
+              header({ composerId: 'c-cache-a', workspace: data.workspace }),
+              header({ composerId: 'c-cache-b', workspace: data.workspace })
+            ]
+          })
+        )
+      } finally {
+        database.close()
+      }
+      // mtime 精度兜底：显式推进，避免同毫秒写入被判未变
+      const bumped = new Date(Date.now() + 2_000)
+      utimesSync(data.globalStateDatabase, bumped, bumped)
+      const second = data.reader.readWorkspace(data.workspace, [binding('1')])
+      expect(second).not.toBe(first)
+      expect(second.composers).toHaveLength(2)
+    })
+
+    it('wal 文件出现/变化触发缓存失效', () => {
+      const data = fixture()
+      writeHeaders(data.globalStateDatabase, [header({ composerId: 'c-cache-wal', workspace: data.workspace })])
+      const first = data.reader.readWorkspace(data.workspace, [binding('1')])
+      expect(data.reader.readWorkspace(data.workspace, [binding('1')])).toBe(first)
+      writeFileSync(`${data.globalStateDatabase}-wal`, 'wal-growth')
+      expect(data.reader.readWorkspace(data.workspace, [binding('1')])).not.toBe(first)
+    })
+
+    it('bindings 关键字段变化触发缓存失效', () => {
+      const data = fixture()
+      writeHeaders(data.globalStateDatabase, [header({ composerId: 'c-cache-bind', workspace: data.workspace })])
+      const first = data.reader.readWorkspace(data.workspace, [binding('1')])
+      const rebound = data.reader.readWorkspace(data.workspace, [{ ...binding('1'), composerId: 'c-cache-bind' }])
+      expect(rebound).not.toBe(first)
+    })
+
   })
 })

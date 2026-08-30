@@ -54,26 +54,38 @@ const inheritedEnvironment = Object.fromEntries(
   Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
 )
 const readyLogs: boolean[] = []
-const packaged = process.env.QINGTIAN_MCP_SMOKE_PACKAGED === '1'
+// --packaged 旗标跨平台（npm script 里 VAR=1 前缀语法在 Windows cmd/PowerShell 下不可用）；
+// 环境变量保留向后兼容（老调用方式 / 手动执行）。
+const packaged = process.argv.includes('--packaged')
+  || process.env.QINGTIAN_MCP_SMOKE_PACKAGED === '1'
 const explicitPackagedAppDirectory = process.env.QINGTIAN_PACKAGED_APP_DIRECTORY?.trim()
+// 平台分离：mac 找 .app bundle；win 找 win-unpacked 目录（exe 与 resources 平铺）
+const windowsPackagedCandidates = [
+  resolve('release/win-unpacked')
+]
+const macPackagedCandidates = [
+  resolve('release/mac-arm64/拾光.app'),
+  resolve('release/mac/拾光.app')
+]
 const packagedAppDirectory = explicitPackagedAppDirectory
   ? resolve(explicitPackagedAppDirectory)
-    : [
-      resolve('release/mac-arm64/群枢.app'),
-      resolve('release/mac/群枢.app'),
-      resolve('release/mac-arm64/QingTian Team.app'),
-      resolve('release/mac/QingTian Team.app')
-    ].find(existsSync)
+    : (process.platform === 'win32' ? windowsPackagedCandidates : macPackagedCandidates).find(existsSync)
 
 if (packaged && !packagedAppDirectory) {
-  throw new Error('找不到已打包的群枢.app')
+  throw new Error(process.platform === 'win32'
+    ? '找不到已打包的拾光（release/win-unpacked）'
+    : '找不到已打包的拾光.app')
 }
 
 const mcpCommand = packaged
-  ? join(packagedAppDirectory!, 'Contents', 'MacOS', basename(packagedAppDirectory!, '.app'))
+  ? (process.platform === 'win32'
+    ? join(packagedAppDirectory!, '拾光.exe')
+    : join(packagedAppDirectory!, 'Contents', 'MacOS', basename(packagedAppDirectory!, '.app')))
   : process.execPath
 const mcpServerPath = packaged
-  ? join(packagedAppDirectory!, 'Contents', 'Resources', 'mcp', 'index.mjs')
+  ? (process.platform === 'win32'
+    ? join(packagedAppDirectory!, 'resources', 'mcp', 'index.mjs')
+    : join(packagedAppDirectory!, 'Contents', 'Resources', 'mcp', 'index.mjs'))
   : resolve('out/mcp/index.mjs')
 
 if (!existsSync(mcpCommand)) throw new Error(`MCP command 不存在：${mcpCommand}`)
@@ -92,10 +104,7 @@ async function openClient(input: {
     env: {
       ...inheritedEnvironment,
       ...(packaged ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
-      QINGTIAN_TEAM_DB: databasePath,
-      QINGTIAN_RUNTIME_ID: input.runtimeId,
-      QINGTIAN_CHANNEL_ID: input.channelId,
-      QINGTIAN_COMMUNICATION_SERVER: `qtwx-mcp-${input.channelId}`
+      SG_TEAM_DB: databasePath
     },
     stderr: 'pipe'
   })
@@ -116,7 +125,7 @@ async function openClient(input: {
     async close() {
       await client.close()
       await transport.close().catch(() => undefined)
-      readyLogs.push(stderr.includes('[qunshu-mcp] ready'))
+      readyLogs.push(stderr.includes('[sg-team-mcp] ready'))
     }
   }
 }
@@ -154,7 +163,7 @@ const resumedProcess = await openClient(runtime('builder', ownerId))
 await resumedProcess.call('team_start_task', { taskId: task!.id })
 await resumedProcess.call('team_report_progress', { taskId: task!.id, progress: 80, summary: 'stdio 跨进程恢复正常' })
 const submitted = await resumedProcess.call('team_submit_for_review', { taskId: task!.id, output: '真实 StdioClientTransport + 进程重启 + SQLite 证据' })
-if (submitted.structuredContent?.nextAction?.communicationServer !== 'qunshu') {
+if (submitted.structuredContent?.nextAction?.communicationServer !== 'SG Team') {
   throw new Error(`missing paired wait action: ${JSON.stringify(submitted)}`)
 }
 await resumedProcess.close()

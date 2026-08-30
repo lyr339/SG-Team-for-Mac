@@ -14,6 +14,6 @@ describe('AgentAvatar', () => {
   })
 
   it('uses the same packaged-safe brand asset inside the application', () => {
-    expect(renderToStaticMarkup(<BrandMark />)).toContain('src="./brand-team.png"')
+    expect(renderToStaticMarkup(<BrandMark />)).toContain('src="./brand-shiguang.png"')
   })
 })

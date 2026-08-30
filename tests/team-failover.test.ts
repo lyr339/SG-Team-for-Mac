@@ -44,9 +44,53 @@ class MutableBridge implements TeamControlBridge {
             status: online ? 'waiting' : 'offline',
             online,
             connected: online,
+            runtimeEvidence: online ? 'active' : 'stopped',
             waiting: online,
+            connectionPhase: online ? 'waiting' : 'cursor_stopped',
             lastSeenAt: online ? Date.now() : session.lastSeenAt,
             healthEvidence: online ? ['check_messages 正在待命'] : ['Cursor Agent 已停止监听']
+          }
+        : session),
+      updatedAt: this.snapshot.updatedAt + 1
+    }
+    for (const listener of this.listeners) listener(this.getSnapshot())
+  }
+
+  setChannelProcessing(channelId: string, online = false): void {
+    this.snapshot = {
+      ...this.snapshot,
+      sessions: this.snapshot.sessions.map((session) => session.channelId === channelId
+        ? {
+            ...session,
+            status: 'running',
+            online,
+            connected: online,
+            runtimeEvidence: online ? 'active' : 'suspected',
+            waiting: false,
+            connectionPhase: 'processing',
+            lastSeenAt: 1,
+            healthEvidence: ['已领取消息，正在执行长任务']
+          }
+        : session),
+      updatedAt: this.snapshot.updatedAt + 1
+    }
+    for (const listener of this.listeners) listener(this.getSnapshot())
+  }
+
+  setChannelSuspectedOffline(channelId: string): void {
+    this.snapshot = {
+      ...this.snapshot,
+      sessions: this.snapshot.sessions.map((session) => session.channelId === channelId
+        ? {
+            ...session,
+            status: 'offline',
+            online: false,
+            connected: false,
+            runtimeEvidence: 'suspected',
+            waiting: false,
+            connectionPhase: 'waiting',
+            lastSeenAt: 1,
+            healthEvidence: ['MCP 租约陈旧，缺少明确终止证据']
           }
         : session),
       updatedAt: this.snapshot.updatedAt + 1
@@ -57,7 +101,7 @@ class MutableBridge implements TeamControlBridge {
 
 function desktopSnapshot(channelIds: string[]): DesktopSnapshot {
   return {
-    connection: { state: 'connected', endpoint: 'qunshu://local-channel-runtime', attempt: 0, lastError: '' },
+    connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: channelIds.map((channelId) => ({
       id: `qingtian-channel:${channelId}`,
       channelId,
@@ -70,6 +114,7 @@ function desktopSnapshot(channelIds: string[]): DesktopSnapshot {
       connectionPhase: 'waiting',
       online: true,
       connected: true,
+      runtimeEvidence: 'active' as const,
       waiting: true,
       workingFiles: channelId === '2' ? ['src/service.ts', 'tests/service.test.ts'] : [],
       healthEvidence: ['check_messages 正在待命']
@@ -236,7 +281,7 @@ describe('TeamFailoverService', () => {
 
       const messageId = team.failovers[0]!.messageId!
       const message = data.collaborationRepository.loadRun(data.runId).messages[messageId]!
-      expect(message.content).toContain('群枢 自动接替胶囊')
+      expect(message.content).toContain('拾光 自动接替胶囊')
       expect(message.content).toContain('src/service.ts')
       expect(message.content).toContain('接口主体完成，正在补测试')
 
@@ -259,20 +304,10 @@ describe('TeamFailoverService', () => {
     }
   })
 
-  it('manually promotes an idle online member into an offline lead role without dual binding', () => {
+  it('manually hands effective lead authority to an online busy member without moving its role binding', () => {
     const data = fixture(false)
     try {
       data.bridge.setChannelOnline('1', false)
-      let options = data.failover.manualHandoffOptions(data.lead.slot.id)
-      expect(options.candidates).toEqual([
-        expect.objectContaining({
-          slotId: data.builder.slot.id,
-          eligible: false,
-          blocker: expect.stringMatching(/持有执行任务/)
-        })
-      ])
-
-      data.tasks.cancelTask(data.task.id, '为手动交接释放候选 Agent')
       const [leadTask] = transactTaskPool(data.taskRepository, (pool) => {
         const [planned] = pool.plan(data.runId, [{
           key: 'lead-coordination', title: '继续主控协调', targetSlotId: data.lead.slot.id,
@@ -287,45 +322,63 @@ describe('TeamFailoverService', () => {
         pool.startAttempt(lease.attempt.id, lease.leaseToken)
         return [planned]
       })
-      options = data.failover.manualHandoffOptions(data.lead.slot.id)
+      const pendingLeadMessage = data.collaborationRepository.createMessage({
+        runId: data.runId,
+        sender: { type: 'operator' },
+        recipient: { type: 'agent', slotId: data.lead.slot.id },
+        kind: 'directive',
+        content: '原主控尚未处理的用户决策请求',
+        clientMessageId: 'manual-handoff-pending-lead-message'
+      })
+      const options = data.failover.manualHandoffOptions(data.lead.slot.id)
       const candidate = options.candidates.find((item) => item.slotId === data.builder.slot.id)!
-      expect(candidate).toMatchObject({ eligible: true, kind: 'member', channelId: '2' })
+      expect(candidate).toMatchObject({
+        eligible: true,
+        kind: 'member',
+        mode: 'lead_authority',
+        channelId: '2'
+      })
+      expect(candidate.impact).toContain('保留')
 
       const result = data.failover.manualHandoff({
         sourceSlotId: data.lead.slot.id,
         replacementAgentSessionId: candidate.agentSessionId
       })
       const team = data.control.getSnapshot()
-      const promotedLead = team.members.find((member) => member.slot.id === data.lead.slot.id)!
-      const vacatedBuilder = team.members.find((member) => member.slot.id === data.builder.slot.id)!
-      expect(promotedLead.binding).toMatchObject({
-        channelId: '2',
-        agentSessionId: data.builder.binding!.agentSessionId,
-        launchStatus: 'sending'
+      expect(result).toMatchObject({
+        mode: 'lead_authority',
+        actingLeadSlotId: data.builder.slot.id,
+        recoveredTaskIds: [leadTask!.id]
       })
-      expect(promotedLead.slot.avatarId).toBe(data.builder.slot.avatarId)
-      expect(vacatedBuilder.binding).toMatchObject({
-        channelId: '1',
-        agentSessionId: data.lead.binding!.agentSessionId,
-        launchStatus: 'failed'
-      })
-      expect(result.vacatedSlotId).toBe(data.builder.slot.id)
-      expect(data.controlRepository.resolveAgentRuntimeIdentity(
+      expect(team.activeRun?.actingLeadSlotId).toBe(data.builder.slot.id)
+      expect(team.members.find((member) => member.slot.id === data.builder.slot.id)?.binding)
+        .toMatchObject({ channelId: '2', agentSessionId: data.builder.binding!.agentSessionId })
+      expect(team.members.find((member) => member.slot.id === data.lead.slot.id)?.binding)
+        .toMatchObject({ channelId: '1', agentSessionId: data.lead.binding!.agentSessionId })
+      const promotedIdentity = data.controlRepository.resolveAgentRuntimeIdentity(
         data.builder.binding!.agentSessionId,
         data.runId
-      )).toMatchObject({ slotId: data.lead.slot.id, capabilities: data.lead.role.capabilities })
-      expect(() => data.controlRepository.resolveAgentRuntimeIdentity(
+      )
+      expect(promotedIdentity).toMatchObject({ slotId: data.builder.slot.id })
+      expect(promotedIdentity.capabilities).toEqual(expect.arrayContaining(['coordination', 'planning']))
+      const demotedIdentity = data.controlRepository.resolveAgentRuntimeIdentity(
         data.lead.binding!.agentSessionId,
         data.runId
-      )).toThrow(/撤销/)
+      )
+      expect(demotedIdentity.capabilities).not.toContain('coordination')
       expect(data.taskRepository.load().tasks[leadTask!.id]).toMatchObject({
-        status: 'running',
-        assigneeSessionId: data.builder.binding!.agentSessionId,
-        targetSlotId: data.lead.slot.id
+        status: 'queued',
+        assigneeSessionId: undefined,
+        targetSlotId: data.builder.slot.id
+      })
+      expect(data.taskRepository.load().tasks[data.task.id]).toMatchObject({
+        status: 'running', assigneeSessionId: data.builder.binding!.agentSessionId
       })
       const handoffMessage = data.collaborationRepository.loadRun(data.runId).messages[result.messageId]!
-      expect(handoffMessage.content).toContain('群枢 手动交接胶囊')
+      expect(handoffMessage.content).toContain('拾光真实主控交接')
       expect(handoffMessage.content).toContain('team_check_in')
+      expect(handoffMessage.content).toContain(pendingLeadMessage.id)
+      expect(handoffMessage.content).toContain('原主控尚未处理的用户决策请求')
       expect(new Set(team.bindings.map((binding) => binding.agentSessionId)).size).toBe(team.bindings.length)
     } finally {
       data.close()
@@ -457,6 +510,11 @@ describe('TeamFailoverService', () => {
         new TaskAgentService(data.taskRepository, leadIdentity, data.taskRepository, data.controlRepository)
       )
       expect(leadAgent.isCoordinator()).toBe(true)
+      const preTransferBuilderIdentity = data.controlRepository.resolveAgentRuntimeIdentity(
+        data.builder.binding!.agentSessionId,
+        data.runId
+      )
+      expect(preTransferBuilderIdentity.capabilities).not.toContain('coordination')
 
       data.control.transferLead({ targetSlotId: builder.slot.id, reason: '主控暂时离线' })
       const team = data.control.getSnapshot()
@@ -466,6 +524,7 @@ describe('TeamFailoverService', () => {
         builder.binding!.agentSessionId,
         data.runId
       )
+      expect(builderIdentity.capabilities).toEqual(expect.arrayContaining(['coordination', 'planning']))
       const builderAgent = new TeamCollaborationAgentService(
         data.collaborationRepository,
         { ...builderIdentity, slotId: builderIdentity.slotId! },
@@ -473,6 +532,27 @@ describe('TeamFailoverService', () => {
       )
       expect(builderAgent.isCoordinator()).toBe(true)
       expect(() => builderAgent.broadcast({ kind: 'notice', content: '测试广播' })).not.toThrow()
+      expect(() => builderAgent.listTaskBoard()).not.toThrow()
+
+      const demotedLeadIdentity = data.controlRepository.resolveAgentRuntimeIdentity(
+        lead.binding!.agentSessionId,
+        data.runId
+      )
+      expect(demotedLeadIdentity.capabilities).not.toContain('coordination')
+      const demotedLead = new TeamCollaborationAgentService(
+        data.collaborationRepository,
+        { ...demotedLeadIdentity, slotId: demotedLeadIdentity.slotId! },
+        new TaskAgentService(data.taskRepository, demotedLeadIdentity, data.taskRepository, data.controlRepository)
+      )
+      expect(demotedLead.isCoordinator()).toBe(false)
+      expect(() => demotedLead.listTaskBoard()).toThrowError(/只有主控协调/)
+      const statusMessage = demotedLead.reportTaskStatus({
+        taskId: data.task.id,
+        subject: '交接后状态上报',
+        content: '状态应发给当前临时主控',
+        eventKey: 'effective-lead-routing'
+      })
+      expect(statusMessage?.recipient).toMatchObject({ type: 'agent', slotId: builder.slot.id })
     } finally {
       data.close()
     }
@@ -481,6 +561,20 @@ describe('TeamFailoverService', () => {
   it('automatically promotes the most senior online member when lead goes offline without standby', () => {
     const data = fixture(false)
     try {
+      const [leadTask] = transactTaskPool(data.taskRepository, (pool) => {
+        const planned = pool.plan(data.runId, [{
+          key: 'auto-lead-work', title: '自动接管前的主控任务',
+          targetSlotId: data.lead.slot.id, requiredCapabilities: ['coordination']
+        }])[0]!
+        const lease = pool.leaseTask(planned.id, {
+          runId: data.runId,
+          slotId: data.lead.slot.id,
+          agentSessionId: data.lead.binding!.agentSessionId,
+          capabilities: data.lead.role.capabilities
+        })
+        pool.startAttempt(lease.attempt.id, lease.leaseToken)
+        return [planned]
+      })
       data.bridge.setChannelOnline('1', false)
       data.failover.reconcile()
 
@@ -497,6 +591,76 @@ describe('TeamFailoverService', () => {
         new TaskAgentService(data.taskRepository, builderIdentity, data.taskRepository, data.controlRepository)
       )
       expect(builderAgent.isCoordinator()).toBe(true)
+      expect(data.taskRepository.load().tasks[leadTask!.id]).toMatchObject({
+        status: 'queued', targetSlotId: data.builder.slot.id, assigneeSessionId: undefined
+      })
+      const takeoverNotice = Object.values(data.collaborationRepository.loadRun(data.runId).messages)
+        .find((message) => message.content.includes('自动指定为临时主控'))!
+      expect(takeoverNotice.content).toContain(leadTask!.id)
+    } finally {
+      data.close()
+    }
+  })
+
+  it('does not promote or notify another lead while the original lead owns an in-flight execution', () => {
+    const data = fixture(false)
+    try {
+      data.bridge.setChannelProcessing('1', false)
+      data.failover.reconcile()
+      data.advance(60 * 60_000)
+      data.failover.reconcile()
+
+      const team = data.control.getSnapshot()
+      expect(team.activeRun?.actingLeadSlotId).toBeUndefined()
+      expect(team.members.find((member) => member.slot.id === data.lead.slot.id)?.runtime)
+        .toMatchObject({ online: false, status: 'running', connectionPhase: 'processing' })
+      expect(Object.values(data.collaborationRepository.loadRun(data.runId).messages)
+        .filter((message) => message.content.includes('自动指定为临时主控'))).toHaveLength(0)
+    } finally {
+      data.close()
+    }
+  })
+
+  it('does not promote a lead from a passive waiting timeout without confirmed stop evidence', () => {
+    const data = fixture(false)
+    try {
+      data.bridge.setChannelSuspectedOffline('1')
+      data.failover.reconcile()
+      data.advance(60 * 60_000)
+      data.failover.reconcile()
+      expect(data.control.getSnapshot().activeRun?.actingLeadSlotId).toBeUndefined()
+      expect(Object.values(data.collaborationRepository.loadRun(data.runId).messages)
+        .filter((message) => message.content.includes('自动指定为临时主控'))).toHaveLength(0)
+    } finally {
+      data.close()
+    }
+  })
+
+  it('does not complete the run when every registered Agent is executing with stale MCP timestamps', () => {
+    const data = fixture(false)
+    try {
+      data.bridge.setChannelProcessing('1', false)
+      data.bridge.setChannelProcessing('2', false)
+      data.failover.reconcile()
+      data.advance(60 * 60_000)
+      data.failover.reconcile()
+      expect(data.control.getSnapshot().activeRun?.status).toBe('running')
+      expect(data.controlRepository.listAgentRegistrations(data.runId)).toHaveLength(2)
+    } finally {
+      data.close()
+    }
+  })
+
+  it('completes the one-shot run when every channel is offline and no work is in flight', () => {
+    const data = fixture(false)
+    try {
+      data.bridge.setChannelSuspectedOffline('1')
+      data.bridge.setChannelSuspectedOffline('2')
+      data.failover.reconcile()
+      data.advance(60 * 60_000)
+      data.failover.reconcile()
+      expect(data.control.getSnapshot().activeRun?.status).toBe('completed')
+      expect(data.controlRepository.listAgentRegistrations(data.runId)).toHaveLength(0)
     } finally {
       data.close()
     }
@@ -542,6 +706,11 @@ describe('TeamFailoverService', () => {
         new TaskAgentService(data.taskRepository, leadIdentity, data.taskRepository, data.controlRepository)
       )
       expect(leadAgent.isCoordinator()).toBe(true)
+      const restoredBuilderIdentity = data.controlRepository.resolveAgentRuntimeIdentity(
+        data.builder.binding!.agentSessionId,
+        data.runId
+      )
+      expect(restoredBuilderIdentity.capabilities).not.toContain('coordination')
     } finally {
       data.close()
     }

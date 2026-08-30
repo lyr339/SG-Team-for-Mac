@@ -6,12 +6,17 @@ import type {
   WorkspaceTeamBundle
 } from '../domain/team-control'
 import type { ComposerBindingMethod } from '../domain/cursor-telemetry'
+import type { CursorModelSelection } from '../domain/cursor-model'
 import type { AgentAuthorizationIdentity, AgentRegistration } from './agent-authorization'
 import type { TeamFailoverRebindResult, TeamFailoverRecord, TeamFailoverStatus } from '../domain/team-failover'
 
 export interface TeamControlRepository extends AgentPresenceStore {
+  /** 轻量读取当前修订号；用于避免每个轮询消费者都全量装配团队状态。 */
+  revision?(): number
   loadTeamControl(): TeamControlState
   upsertWorkspaceTeam(bundle: WorkspaceTeamBundle): void
+  /** 单槽模型选定持久化（lobby 逐会话配置保存出口）。 */
+  setSlotModelSelection(slotId: string, selection: CursorModelSelection, updatedAt?: number): void
   setActiveWorkspace(workspaceId: string): void
   updateRunGoal(runId: string, goal: string): void
   recordInstallation(batch: AgentRegistrationBatch): void

@@ -10,10 +10,13 @@ export type { CdpAutoHealEvent }
  * CDP 调试端口自动保持（auto-heal）看门。
  *
  * 用户痛点：Cursor 每次启动都要手动带 --remote-debugging-port。
- * 看门每 5s 做一次低成本探测（pgrep + 带超时的 /json/version fetch）：
+ * 看门每 5s 做一次低成本探测（进程枚举 + 带超时的 /json/version fetch）：
  * - Cursor 未运行 / 端口已就绪 → 静默；
  * - 运行但端口未就绪 → 进入「待重启」：通知渲染层显示可取消倒计时（10s），
  *   用户未取消才复用 restartCursorWithCdp 优雅退出并带参拉起。
+ *
+ * 平台分离：mac 用 pgrep + ps（启动时间指纹）；win 用 PowerShell Get-Process
+ * （一次调用同时拿 pid + StartTime，语义等价）。仅支持 darwin/win32，其他平台静默。
  *
  * 防循环：进程启动指纹（pid + 启动时间）记忆——同一轮 Cursor 进程只触发一次；
  * 用户取消后该指纹不再打扰；自动重启产生的新进程若端口仍不就绪也不再重启。
@@ -23,6 +26,12 @@ export type { CdpAutoHealEvent }
 const execFileAsync = promisify(execFile)
 
 const CURSOR_PROCESS_PATTERN = 'Cursor.app/Contents/MacOS/Cursor'
+/** Windows 进程探测（PowerShell 一次拿 pid + StartTime，输出压缩 JSON）。 */
+const WINDOWS_CURSOR_PROCESS_ARGS = [
+  '-NoProfile',
+  '-Command',
+  'Get-Process -Name Cursor -ErrorAction SilentlyContinue | Select-Object -First 1 -Property Id,StartTime | ConvertTo-Json -Compress'
+]
 const DEFAULT_INTERVAL_MS = 5_000
 const DEFAULT_COUNTDOWN_MS = 10_000
 const COUNTDOWN_POLL_SLICE_MS = 200
@@ -62,6 +71,8 @@ export class CursorCdpKeeper {
   /** 已处理过的进程启动指纹（触发过倒计时 / 用户取消 / 自动重启后的新进程）。 */
   private readonly handledProcessKeys = new Set<string>()
   private countdown?: { processKey: string; cancelled: boolean }
+  /** 抑制期截止时间：账号切换等「已知会带端口重启 Cursor」的流程使用，避免看门把启动窗口误判为端口丢失。 */
+  private suppressedUntil = 0
 
   constructor(options: CursorCdpKeeperOptions) {
     this.options = options
@@ -92,13 +103,23 @@ export class CursorCdpKeeper {
     this.timer = undefined
   }
 
+  /**
+   * 抑制看门一段时间：供「切换账号」等必然重启 Cursor 的流程调用。
+   * 启动窗口内端口未就绪是预期状态而非丢失；抑制避免误弹重启倒计时/二次重启。
+   */
+  suppress(ms: number): void {
+    this.suppressedUntil = Math.max(this.suppressedUntil, this.now() + Math.max(0, ms))
+  }
+
   /** 立即执行一轮探测（看门周期之外的手动入口；测试用它驱动假时钟）。 */
   async checkNow(): Promise<void> {
     if (this.ticking) return
     this.ticking = true
     try {
       if (!this.options.isEnabled()) return
-      if ((this.options.platform ?? process.platform) !== 'darwin') return
+      const platform = this.options.platform ?? process.platform
+      if (platform !== 'darwin' && platform !== 'win32') return
+      if (this.now() < this.suppressedUntil) return
       const processes = await this.cursorProcesses()
       if (!processes.length) {
         // 进程退出后指纹失效：清理不再运行的指纹，下次启动按新进程对待
@@ -180,6 +201,21 @@ export class CursorCdpKeeper {
   }
 
   private async cursorProcesses(): Promise<CursorProcess[]> {
+    if ((this.options.platform ?? process.platform) === 'win32') {
+      try {
+        const { stdout } = await this.execFileFn('powershell.exe', WINDOWS_CURSOR_PROCESS_ARGS)
+        const trimmed = stdout.trim()
+        if (!trimmed) return []
+        const parsed = JSON.parse(trimmed) as { Id?: unknown; StartTime?: unknown }
+        const pid = Number(parsed.Id)
+        if (!Number.isInteger(pid) || pid <= 0) return []
+        // StartTime 可能因权限为 null——指纹退化为纯 pid，仍能区分进程实例
+        return [{ pid, startedAt: String(parsed.StartTime ?? '') }]
+      } catch {
+        // PowerShell 不可达/输出异常 → 按 Cursor 未运行处理（看门静默）
+        return []
+      }
+    }
     try {
       const { stdout } = await this.execFileFn('pgrep', ['-f', CURSOR_PROCESS_PATTERN])
       const pids = stdout.split('\n').map((line) => Number(line.trim())).filter((pid) => Number.isInteger(pid) && pid > 0)

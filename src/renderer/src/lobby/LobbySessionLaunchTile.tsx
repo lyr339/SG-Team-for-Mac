@@ -1,15 +1,25 @@
 import { useEffect, useState } from 'react'
 import type { AgentLaunchPlan } from '../../../domain/agent-launch'
 import type { CdpAutoHealEvent } from '../../../domain/cursor-cdp'
+import type { CursorModelOption, CursorModelSelection } from '../../../domain/cursor-model'
+import {
+  cursorModelSelectionFromOption,
+  cursorModelSelectionSummary
+} from '../cursor-model-selection'
+import { CursorModelConfigDialog } from './CursorModelConfigDialog'
+import { ToggleSwitch } from './ToggleSwitch'
 
 interface LobbySessionLaunchTileProps {
   pendingChannels: string[]
+  cursorModels: CursorModelOption[]
+  selections: Record<string, CursorModelSelection>
   isPrelaunch: boolean
   plan?: AgentLaunchPlan
   busy: boolean
   cdpAutoHealEnabled: boolean
   cdpAutoHealEvent?: CdpAutoHealEvent
   onLaunch: () => void
+  onModelSave: (channelId: string, selection: CursorModelSelection) => Promise<void> | void
   onEnableCdp?: () => void
   onToggleAutoHeal?: (enabled: boolean) => void
   onCancelCountdown?: () => void
@@ -17,12 +27,15 @@ interface LobbySessionLaunchTileProps {
 
 export function LobbySessionLaunchTile({
   pendingChannels,
+  cursorModels,
+  selections,
   isPrelaunch,
   plan,
   busy,
   cdpAutoHealEnabled,
   cdpAutoHealEvent,
   onLaunch,
+  onModelSave,
   onEnableCdp,
   onToggleAutoHeal,
   onCancelCountdown
@@ -31,6 +44,7 @@ export function LobbySessionLaunchTile({
   const needsCdp = !launching && Boolean(plan?.items.some((item) => item.code === 'cdp_unavailable'))
 
   const [countdownLeft, setCountdownLeft] = useState(0)
+  const [editingChannel, setEditingChannel] = useState<string>()
   useEffect(() => {
     if (cdpAutoHealEvent?.phase !== 'countdown') {
       setCountdownLeft(0)
@@ -50,17 +64,42 @@ export function LobbySessionLaunchTile({
       </header>
       <div className="lobby-launch__body">
         <span className="lobby-launch__desc">{isPrelaunch
-          ? '为未待命通道并发创建全新会话并验证进入待命；无需在 Cursor 手动操作，会话模型沿用 Cursor 当前选择。'
+          ? '为每个通道按下方独立模型配置并发创建全新会话，再验证进入待命。'
           : '团队已启动但仍有成员未待命：一键补齐会话，或等待手动发起的会话进入待命后自动接管。'}</span>
+        {pendingChannels.length ? (
+          <div className="lobby-launch__models" aria-label="逐会话模型配置">
+            {pendingChannels.map((channelId) => {
+              const selection = selections[channelId]
+              const option = cursorModels.find((model) => model.modelId === selection?.modelId)
+              return (
+                <button
+                  aria-label={`配置 CH-${channelId} 会话`}
+                  className="lobby-launch__model-row"
+                  disabled={launching || !cursorModels.length}
+                  key={channelId}
+                  onClick={() => setEditingChannel(channelId)}
+                >
+                  <b>CH-{channelId}</b>
+                  <span><strong>{selection?.displayName ?? 'Cursor 当前模型'}</strong><small>{cursorModelSelectionSummary(selection, option)}</small></span>
+                  <i aria-hidden="true">›</i>
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
         {plan && plan.items.length > 0 ? (
           <ul className="v2-session-launch__list">
             {plan.items.map((item) => (
-              <li key={item.channelId} className={`is-${item.stage}`}><i /><b>CH-{item.channelId}</b><span>{item.message}</span></li>
+              <li key={item.channelId} className={`is-${item.stage}`}>
+                <i /><b>CH-{item.channelId}</b>
+                {item.modelSelection ? <em>{item.modelSelection.displayName}</em> : null}
+                <span>{item.message}</span>
+              </li>
             ))}
           </ul>
         ) : null}
         {plan?.state === 'failed' && !needsCdp ? (
-          <span className="lobby-launch__hint">可重试失败的通道；也可以在 Cursor 中手动发起，群枢检测到待命后会自动接管。</span>
+          <span className="lobby-launch__hint">可重试失败的通道；也可以在 Cursor 中手动发起，拾光检测到待命后会自动接管。</span>
         ) : null}
         {needsCdp && onEnableCdp ? (
           <span className="lobby-launch__hint">
@@ -73,15 +112,13 @@ export function LobbySessionLaunchTile({
           </span>
         ) : null}
         {onToggleAutoHeal ? (
-          <label className="cdp-autoheal-toggle" title="开启后：检测到 Cursor 运行但未启用会话创建端口时，会先显示 10 秒可取消倒计时，再自动重启 Cursor、打开当前团队工作区并启用端口。">
-            <input
-              type="checkbox"
-              checked={cdpAutoHealEnabled}
-              disabled={busy}
-              onChange={(event) => onToggleAutoHeal(event.target.checked)}
-            />
-            <span>自动保持会话创建端口</span>
-          </label>
+          <ToggleSwitch
+            checked={cdpAutoHealEnabled}
+            disabled={busy}
+            onChange={(enabled) => void onToggleAutoHeal(enabled)}
+          >
+            <span title="开启后：检测到 Cursor 运行但未启用会话创建端口时，会先显示 10 秒可取消倒计时，再自动重启 Cursor、打开当前团队工作区并启用端口。">自动保持会话创建端口</span>
+          </ToggleSwitch>
         ) : null}
         {cdpAutoHealEvent?.phase === 'countdown' ? (
           <div className="cdp-autoheal-countdown" role="alert">
@@ -100,6 +137,18 @@ export function LobbySessionLaunchTile({
           onClick={onLaunch}
         >{launching ? '创建中…' : `一键创建会话（${pendingChannels.length}）`}</button>
       </div>
+      {editingChannel ? (
+        <CursorModelConfigDialog
+          channelId={editingChannel}
+          disabled={launching}
+          models={cursorModels}
+          selection={selections[editingChannel] ?? cursorModelSelectionFromOption(
+            cursorModels.find((model) => model.selected) ?? cursorModels[0]
+          )}
+          onSave={(selection) => onModelSave(editingChannel, selection)}
+          onClose={() => setEditingChannel(undefined)}
+        />
+      ) : null}
     </section>
   )
 }

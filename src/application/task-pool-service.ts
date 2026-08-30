@@ -150,6 +150,17 @@ export class TaskPoolService {
     return transferred
   }
 
+  recoverAgentWork(input: {
+    fromAgentSessionId: string
+    toAgentSessionId: string
+    targetSlotId: string
+    ttlMs?: number
+  }): string[] {
+    const recovered = transactTaskPool(this.repository, (pool) => pool.recoverAgentWork(input))
+    if (recovered.length) this.emit()
+    return recovered
+  }
+
   pollExternalChanges(): boolean {
     const revision = this.repository.load().revision
     if (revision === this.lastEmittedRevision) return false

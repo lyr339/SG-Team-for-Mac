@@ -5,7 +5,6 @@ interface PageState {
   h: string
   p: string
   s: string
-  t: string
 }
 
 interface HarnessOptions {
@@ -20,9 +19,8 @@ interface HarnessOptions {
   tabGone?: boolean
 }
 
-const DASHBOARD: PageState = { h: 'cursor.com', p: '/dashboard', s: 'complete', t: 'Dashboard' }
-const AUTH_CHAIN: PageState = { h: 'authenticator.cursor.sh', p: '/authorize', s: 'loading', t: '' }
-const CHALLENGE: PageState = { h: 'cursor.com', p: '/dashboard', s: 'complete', t: 'Just a moment...' }
+const DASHBOARD: PageState = { h: 'cursor.com', p: '/dashboard', s: 'complete' }
+const AUTH_CHAIN: PageState = { h: 'authenticator.cursor.sh', p: '/authorize', s: 'loading' }
 
 function createHarness(options: HarnessOptions = {}) {
   const calls: string[] = []
@@ -93,14 +91,6 @@ describe('CursorInBrowserAccountDeleter', () => {
     expect(result).toMatchObject({ message: expect.stringContaining('退出登录') })
   })
 
-  it('Cloudflare 挑战页不就绪 → 等待至超时后回退慢速通道', async () => {
-    const { deleter } = createHarness({ readiness: [CHALLENGE] })
-    await deleter.prepareRefresh()
-    const result = await deleter.deleteWhenReady()
-    expect(result.kind).toBe('retry_legacy')
-    expect(result).toMatchObject({ message: expect.stringContaining('超时') })
-  })
-
   it('JS 权限未开启 → retry_legacy 且给出一次性开启指引', async () => {
     const { deleter } = createHarness({ jsDisabled: true })
     await deleter.prepareRefresh()
@@ -148,7 +138,7 @@ describe('CursorInBrowserAccountDeleter', () => {
 
   it('放宽就绪条件：readyState 为 loading 但已在 cursor.com 域名下即视为就绪', async () => {
     const { deleter } = createHarness({
-      readiness: [{ h: 'cursor.com', p: '/dashboard', s: 'loading', t: 'Dashboard' }]
+      readiness: [{ h: 'cursor.com', p: '/dashboard', s: 'loading' }]
     })
     await deleter.prepareRefresh()
     const result = await deleter.deleteWhenReady()

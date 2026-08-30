@@ -116,7 +116,7 @@ function settingsSnapshot(path: string, settings: JsonObject | undefined): Curso
 
 function backupName(path: string, now: () => number): string {
   const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-')
-  return `${path}.qunshu-backup-${stamp}`
+  return `${path}.shiguang-backup-${stamp}`
 }
 
 export class CursorUpdatePreferencesStore {

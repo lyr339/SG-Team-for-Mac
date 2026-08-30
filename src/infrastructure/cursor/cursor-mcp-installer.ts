@@ -12,13 +12,13 @@ import {
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { AgentRegistrationBatch } from '../../application/agent-authorization'
-import { QUNSHU_MCP_SERVER_NAME } from '../../domain/channel-message'
+import { SG_TEAM_MCP_SERVER_ID } from '../../domain/channel-message'
 import { workspaceIdentityOf } from './workspace-identity'
 
 const ENTRY_PREFIX = 'qt-ch-'
 const LEGACY_ENTRY_PREFIX = 'qingtian-team-ch-'
 const CHANNEL_ENTRY_PREFIX = 'qtwx-mcp-'
-/** S3-1 统一条目：每通道一个 qunshu-ch-N，团队+通信工具同服。 */
+/** S3-1 旧统一条目前缀，仅用于清理。 */
 const UNIFIED_ENTRY_PREFIX = 'qunshu-ch-' // 双条目时代遗留前缀，仅用于清理
 
 export interface CursorMcpChannel {
@@ -97,7 +97,7 @@ function prepareReplacement(path: string, content: string): JsonReplacement {
   let backupPath: string | undefined
   if (existsSync(path)) {
     mode = statSync(path).mode & 0o777
-    backupPath = join(directory, `${basename(path)}.qingtian-team-backup-${Date.now()}-${randomUUID().slice(0, 8)}`)
+    backupPath = join(directory, `${basename(path)}.shiguang-backup-${Date.now()}-${randomUUID().slice(0, 8)}`)
     copyFileSync(path, backupPath)
   }
   return {
@@ -171,7 +171,7 @@ export class CursorMcpInstaller {
       if (!Array.isArray(channel.capabilities)) throw new Error(`CH-${channel.channelId} 能力配置无效`)
     }
     const channels = [...new Map(input.channels.map((channel) => [String(channel.channelId).trim(), channel])).values()]
-    if (!channels.length) throw new Error('当前没有可安装的晴天通道')
+    if (!channels.length) throw new Error('当前没有可安装的拾光通道')
 
     const workspacePath = realpathSync(input.workspacePath)
     const workspaceId = workspaceIdentityOf(workspacePath).id
@@ -186,7 +186,7 @@ export class CursorMcpInstaller {
       : {}
     for (const name of Object.keys(existingServers)) {
       // 双条目时代（qt-ch-N + qtwx-mcp-N）及更早的遗留条目一律清除：
-      // 统一服务器 qunshu-ch-N 取代它们，迁移期不允许同名/异名僵尸 server 并存。
+      // SG Team 取代它们，迁移期不允许同名/异名僵尸 server 并存。
       if (
         name.startsWith(LEGACY_ENTRY_PREFIX)
         || name.startsWith(CHANNEL_ENTRY_PREFIX)
@@ -218,9 +218,9 @@ export class CursorMcpInstaller {
         capabilities
       })
     }
-    if (!agents.length) throw new Error('当前没有可接入的晴天通道')
-    // S4：Cursor 全局只有一条「qunshu」原生条目（启动时注册器写入）。
-    serverNames.push(QUNSHU_MCP_SERVER_NAME)
+    if (!agents.length) throw new Error('当前没有可接入的拾光通道')
+    // S4：Cursor 全局只有一条「SG Team」原生条目（启动时注册器写入）。
+    serverNames.push(SG_TEAM_MCP_SERVER_ID)
     const registrations: AgentRegistrationBatch = {
       workspaceId,
       generation,

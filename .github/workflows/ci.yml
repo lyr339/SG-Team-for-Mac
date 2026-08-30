@@ -8,7 +8,15 @@ on:
 
 jobs:
   verify:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # GitHub Actions 的 Windows runner 拉 Electron 二进制偶发超时；
+      # 统一走 npmmirror，mac runner 同样可用且更快。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@v4
 

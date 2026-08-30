@@ -72,8 +72,42 @@ function workspacePathFromMetadata(entry: UnknownRecord): string | undefined {
   return undefined
 }
 
+/**
+ * PowerShell 枚举 Cursor 进程命令行（Windows 侧等价 /bin/ps ax -o command=）。
+ * WMI 服务端 Name 过滤：全量枚举在进程多的机器上要 1-2s，而工程识别每 5s
+ * 轮询一次且 execFileSync 同步阻塞主进程，全量会让 UI 周期性卡顿。
+ */
+const WINDOWS_PROCESS_LIST_ARGS = [
+  '-NoProfile',
+  '-Command',
+  "Get-CimInstance Win32_Process -Filter \"Name='Cursor.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine } | Select-Object -ExpandProperty CommandLine"
+]
+
+/** powershell.exe 解析：PATH 优先；System32 缺失的异常会话（部分 npm shim 环境）回退绝对路径。 */
+function windowsPowerShellCandidates(): string[] {
+  const systemRoot = process.env.SystemRoot?.trim() || 'C:\\Windows'
+  return [
+    'powershell.exe',
+    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  ]
+}
+
 function defaultProcessList(): string {
-  if (process.platform === 'win32') return ''
+  if (process.platform === 'win32') {
+    for (const powershell of windowsPowerShellCandidates()) {
+      try {
+        return execFileSync(powershell, WINDOWS_PROCESS_LIST_ARGS, {
+          encoding: 'utf8',
+          timeout: 5_000,
+          maxBuffer: 8 * 1024 * 1024
+        })
+      } catch (error) {
+        // ENOENT = 当前候选不可达 → 试下一个；其余失败（超时等）按无进程处理
+        if ((error as { code?: unknown } | null)?.code !== 'ENOENT') return ''
+      }
+    }
+    return ''
+  }
   try {
     return execFileSync('/bin/ps', ['ax', '-o', 'command='], {
       encoding: 'utf8',
@@ -96,7 +130,9 @@ function liveWorkspaceIds(processes: string): string[] {
 
 function cursorIsRunning(processes: string): boolean {
   return /[\\/]Cursor\.app[\\/]Contents[\\/]MacOS[\\/]Cursor(?:\s|$)/.test(processes)
-    || /(?:^|[\\/])Cursor\.exe(?:\s|$)/im.test(processes)
+    // Win32_Process 的 CommandLine 含引号（"C:\...\Cursor.exe" --flag）：
+    // .exe 前允许引号/斜杠、后允许可选闭合引号，否则带引号命令行全部漏匹配。
+    || /(?:^|["\\/])Cursor\.exe"?(?:\s|$)/im.test(processes)
 }
 
 function qingtianChannelIds(workspacePath: string): string[] {
@@ -135,7 +171,10 @@ export class CursorWorkspaceDetector {
   private readonly now: () => number
 
   constructor(options: CursorWorkspaceDetectorOptions = {}) {
-    const supportRoot = join(homedir(), 'Library', 'Application Support', 'Cursor')
+    // 平台分离：mac = ~/Library/Application Support/Cursor；win = %APPDATA%\Cursor
+    const supportRoot = process.platform === 'win32'
+      ? join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'Cursor')
+      : join(homedir(), 'Library', 'Application Support', 'Cursor')
     this.globalStateDatabase = options.globalStateDatabase
       ?? join(supportRoot, 'User', 'globalStorage', 'state.vscdb')
     this.workspaceStorageRoot = options.workspaceStorageRoot
@@ -167,7 +206,7 @@ export class CursorWorkspaceDetector {
         confidence: 'certain',
         workspace: liveCandidates[0],
         candidates: liveCandidates,
-        detail: '由当前运行中的晴天 MCP 通道确认',
+        detail: '由当前运行中的 SG Team MCP 通道确认',
         observedAt
       }
     }
@@ -203,7 +242,7 @@ export class CursorWorkspaceDetector {
       confidence: 'none',
       candidates: [],
       detail: liveIds.length === 1
-        ? '发现晴天 MCP 进程，但无法映射到本地 Cursor 工程'
+        ? '发现 SG Team MCP 进程，但无法映射到本地 Cursor 工程'
         : '尚未发现正在运行的本地 Cursor 工程',
       observedAt
     }

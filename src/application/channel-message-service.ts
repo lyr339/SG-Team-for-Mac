@@ -7,6 +7,7 @@ import {
   type ChannelOutboundMessage
 } from '../domain/channel-message'
 import { buildReplySyncRequiredMessage } from '../domain/channel-delivery-policy'
+import { sanitizeModelGeneratedText } from '../domain/model-output-sanitizer'
 import type { SqliteChannelMessageRepository } from '../infrastructure/channel-messages/sqlite-channel-message-repository'
 
 export interface ChannelCheckInput {
@@ -148,8 +149,10 @@ export class ChannelMessageService {
 
       if (Date.now() - startedAt >= keepaliveTimeoutMs) {
         keepaliveRound += 1
+        // keepalive 只是长轮询的周期间隔，Agent 随即会再次进入 check_messages——
+        // 保持 waiting=true，避免推理间隙被大厅/launcher 误判为未待命。
         this.repository.touchPresence(channelId, {
-          waiting: false,
+          waiting: true,
           connectionPhase: 'keepalive',
           keepaliveRound
         })
@@ -169,13 +172,7 @@ export class ChannelMessageService {
     return Boolean(origin && (origin.silent || isInternalCollaborationNotificationText(origin.text)))
   }
 
-  /**
-   * record_reply：归档 Agent 完整可见回复（可携带过程区块），并清除回复同步守门。
-   * 返回归档记录（含 messageId，对齐插件返回结构）。
-   * 流式守门：turn 存在且直带 process，但该 turn 从未 record_process 流式上报时，
-   * 附 streamingWarning——直带只是兜底归档，过程中未流式上报的回合界面只能整批
-   * 展示（用户视角即断流），提示 Agent 下轮先流式上报再归档。
-   */
+  /** 归档 Agent 完整可见回复；过程流只来自 Cursor 原生事件。 */
   recordReply(input: {
     channelId: string
     content: string
@@ -183,17 +180,16 @@ export class ChannelMessageService {
     groupId?: string
     taskId?: string
     files?: string[]
-    process?: import('../domain/conversation-entry').ProcessBlock[]
-    turn?: string
   }) {
-    const streamed = input.turn
-      ? this.repository.listProcessEventsForTurn(input.channelId, input.turn).length > 0
-      : true
+    // 模型工具调用标记可能泄漏进 content（生成缺陷）；截断到泄漏点，
+    // 不让标记残片进入时间线。泄漏本身由遥测侧的 interrupted 标记承载。
+    const sanitized = sanitizeModelGeneratedText(input.content)
+    const content = sanitized.leaked ? sanitized.text : input.content
     const presence = this.repository.getPresence(input.channelId)
     // 只有确实由 check_messages 投递过“用户可见消息”的回合，record_reply 才进入用户时间线。
     // 启动回执、team_* 收件箱处理、keepalive 误回复等后台同步会保留落库/消费语义，但不污染会话页。
     const visible = presence?.pendingReplySyncSince !== undefined
-    const reply = this.repository.recordReply({ ...input, visible })
+    const reply = this.repository.recordReply({ ...input, content, visible })
     this.repository.touchPresence(input.channelId, {
       lastSeenAt: Date.now(),
       waiting: false,
@@ -203,31 +199,11 @@ export class ChannelMessageService {
       pendingGroupId: null,
       turnCount: presence?.turnCount
     })
-    if (!streamed && input.process?.length) {
-      return {
-        ...reply,
-        streamingWarning: '本轮过程块仅随 record_reply 整批归档，界面无法实时流式展示。下轮开始：每个工具调用/关键思考完成后立即 record_process（同 turn 上报，running→done 翻转），收尾 record_reply 只需带同 turn。'
-      }
-    }
-    return reply
+    const contentWarning = sanitized.leaked
+      ? '检测到工具调用标记泄漏，回复内容已截断到泄漏点之前。'
+      : undefined
+
+    return contentWarning ? { ...reply, contentWarning } : reply
   }
 
-  /**
-   * record_process：流式上报过程区块（按 block.id upsert，running→done 翻转）。
-   * 调用即活性证据——上报过程说明 Agent 正在干活，presence 刷新为 processing 相
-   *（长任务活性由此与 record_reply 解耦，不再依赖回复落地才刷活性）。
-   */
-  recordProcess(input: {
-    channelId: string
-    turn: string
-    block: import('../domain/conversation-entry').ProcessBlock
-  }) {
-    const event = this.repository.recordProcessEvent(input)
-    this.repository.touchPresence(input.channelId, {
-      lastSeenAt: Date.now(),
-      waiting: false,
-      connectionPhase: 'processing'
-    })
-    return event
-  }
 }

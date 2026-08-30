@@ -1,10 +1,10 @@
 {
-  "name": "qingtian-team",
+  "name": "shiguang-team",
   "version": "0.2.0",
   "private": true,
-  "author": "群枢",
+  "author": "拾光",
   "type": "module",
-  "description": "群枢：面向 Cursor 多 Agent 的外置协作中枢",
+  "description": "拾光：面向 Cursor 多 Agent 的协作工作台",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -14,8 +14,10 @@
     "smoke:mcp": "tsx scripts/verify-built-mcp.ts",
     "smoke:channel": "tsx scripts/verify-channel-mcp.ts",
     "pack:mac": "npm run build && electron-builder --dir --mac --arm64 --config.electronDist=node_modules/electron/dist",
-    "smoke:mcp:packaged": "QINGTIAN_MCP_SMOKE_PACKAGED=1 tsx scripts/verify-built-mcp.ts",
+    "pack:win": "npm run build && electron-builder --dir --win --x64",
+    "smoke:mcp:packaged": "tsx scripts/verify-built-mcp.ts --packaged",
     "verify:mac": "npm run pack:mac && npm run smoke:mcp:packaged",
+    "verify:win": "npm run pack:win && npm run smoke:mcp:packaged",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -44,8 +46,8 @@
     "vitest": "^4.1.11"
   },
   "build": {
-    "appId": "shop.qingtian.team",
-    "productName": "群枢",
+    "appId": "app.shiguang.team",
+    "productName": "拾光",
     "asar": true,
     "directories": {
       "output": "release",
@@ -63,15 +65,24 @@
         "to": "mcp/index.mjs"
       },
       {
-        "from": "build/icon-team-1024.png",
+        "from": "build/icon-shiguang-1024.png",
         "to": "dock-icon.png"
       }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": "dir",
-      "icon": "build/icon-team.icns",
+      "icon": "build/icon-shiguang.icns",
       "identity": null
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon-shiguang-1024.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "拾光-Setup-${version}.${ext}"
     }
   }
 }

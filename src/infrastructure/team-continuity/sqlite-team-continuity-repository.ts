@@ -1,3 +1,4 @@
+import { numberOf, type SqliteRow } from '../sqlite/rows'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -14,14 +15,6 @@ import type {
 const SCHEMA_VERSION = 1
 const MAX_CAPSULE_BYTES = 512 * 1024
 const CHECKPOINT_LIMIT_PER_RUN = 100
-
-type SqliteRow = Record<string, string | number | bigint | null>
-
-function numberOf(value: unknown): number {
-  if (typeof value === 'bigint') return Number(value)
-  const number = Number(value)
-  return Number.isFinite(number) ? number : 0
-}
 
 function checkpointFromRow(row: SqliteRow): TeamCheckpoint {
   const capsule = JSON.parse(String(row.capsule_json)) as TeamCheckpointCapsule

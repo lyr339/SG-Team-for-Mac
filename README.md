@@ -1,7 +1,7 @@
-# 群枢
+# 拾光
 
 Independent Electron control plane for Cursor multi-Agent teamwork. 通道消息与活性
-经群枢内嵌 MCP（qtwx-mcp-N / qt-ch-N）+ SQLite 队列直达 Cursor，不依赖晴天插件进程；
+经拾光内嵌 MCP（SG Team 单条目）+ SQLite 队列直达 Cursor，不依赖晴天插件进程；
 本应用拥有会话投影、持久任务调度、带回执的 Agent 间协作、自动检查点、
 一键恢复与进程绑定的 Agent MCP 接入。
 

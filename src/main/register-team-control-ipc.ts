@@ -7,6 +7,7 @@ import type { CursorWorkspaceDetector } from '../infrastructure/cursor/cursor-wo
 import { workspaceIdentityOf } from '../infrastructure/cursor/workspace-identity'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES } from '../domain/team-control'
 import { IPC, type CreateTeamInput, type TeamSetupDraft } from '../shared/desktop-api'
+import type { CursorModelSelection } from '../domain/cursor-model'
 import { resolveTeamSetupMembers } from '../application/team-setup'
 import { assertTrustedSender } from './ipc-security'
 
@@ -55,7 +56,7 @@ export function registerTeamControlIpc(
       if (!channelMap.has(channelId)) {
         channelMap.set(channelId, {
           channelId,
-          displayName: `QingTian CH-${channelId}`,
+          displayName: `SG Team CH-${channelId}`,
           status: 'offline',
           online: false,
           waiting: false,
@@ -67,7 +68,7 @@ export function registerTeamControlIpc(
       if (!channelMap.has(member.channelId)) {
         channelMap.set(member.channelId, {
           channelId: member.channelId,
-          displayName: `QingTian CH-${member.channelId}`,
+          displayName: `SG Team CH-${member.channelId}`,
           status: 'offline',
           online: false,
           waiting: false,
@@ -79,7 +80,7 @@ export function registerTeamControlIpc(
       for (const channelId of DEFAULT_LOCAL_CHANNEL_IDS) {
         channelMap.set(channelId, {
           channelId,
-          displayName: `Qunshu CH-${channelId}`,
+          displayName: `SG Team CH-${channelId}`,
           status: 'offline',
           online: false,
           waiting: false,
@@ -96,6 +97,7 @@ export function registerTeamControlIpc(
       roleTemplates: structuredClone(TEAM_ROLE_TEMPLATES),
       avatarIds: [...AGENT_AVATAR_IDS],
       skills: skillCatalog.scan(workspace.path).entries,
+      cursorModels: structuredClone(bridgeSnapshot.cursorModels ?? []),
       initialMembers
     }
     pendingDrafts.set(draft.draftId, { draft, expiresAt: Date.now() + 30 * 60 * 1_000 })
@@ -134,7 +136,7 @@ export function registerTeamControlIpc(
     const window = getWindow()
     if (!window) throw new Error('主窗口不可用')
     const selection = await dialog.showOpenDialog(window, {
-      title: '选择群枢要管理的 Cursor 工作区',
+      title: '选择拾光要管理的 Cursor 工作区',
       properties: ['openDirectory', 'createDirectory']
     })
     if (selection.canceled || !selection.filePaths[0]) return { cancelled: true } as const
@@ -159,7 +161,10 @@ export function registerTeamControlIpc(
       channelId: member.slot.channelId,
       roleTemplateKey: member.role.templateKey,
       avatarId: member.slot.avatarId,
-      skillIds: member.role.skills.map((skill) => skill.id)
+      skillIds: member.role.skills.map((skill) => skill.id),
+      modelSelection: member.slot.modelSelection
+        ? structuredClone(member.slot.modelSelection)
+        : undefined
     }] : [])
     return prepareDraft(workspace, initialMembers)
   })
@@ -187,10 +192,6 @@ export function registerTeamControlIpc(
     assertTrustedSender(event, getWindow)
     return service.createNextRun()
   })
-  ipcMain.handle(IPC.teamControlSetWorkspace, (event, workspaceId: unknown) => {
-    assertTrustedSender(event, getWindow)
-    return service.setActiveWorkspace(requiredString(workspaceId, 'workspaceId', 200))
-  })
   ipcMain.handle(IPC.teamControlUpdateGoal, (event, goal: unknown) => {
     assertTrustedSender(event, getWindow)
     return service.updateGoal(requiredString(goal, '团队目标', 8_000))
@@ -198,6 +199,10 @@ export function registerTeamControlIpc(
   ipcMain.handle(IPC.teamControlLaunch, (event) => {
     assertTrustedSender(event, getWindow)
     return service.launch()
+  })
+  ipcMain.handle(IPC.teamControlSetSlotModelSelection, (event, channelId: unknown, selection: unknown) => {
+    assertTrustedSender(event, getWindow)
+    return service.setSlotModelSelection(requiredString(channelId, '通道号', 12), selection as CursorModelSelection)
   })
 
   const unsubscribe = service.subscribe((snapshot) => {
@@ -214,8 +219,8 @@ export function registerTeamControlIpc(
     ipcMain.removeHandler(IPC.teamControlCreateTeam)
     ipcMain.removeHandler(IPC.teamControlNextRun)
     ipcMain.removeHandler(IPC.teamControlPrepareActiveSetup)
-    ipcMain.removeHandler(IPC.teamControlSetWorkspace)
     ipcMain.removeHandler(IPC.teamControlUpdateGoal)
     ipcMain.removeHandler(IPC.teamControlLaunch)
+    ipcMain.removeHandler(IPC.teamControlSetSlotModelSelection)
   }
 }

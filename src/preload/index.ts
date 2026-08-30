@@ -21,15 +21,18 @@ const api: QingtianDesktopApi = {
   selectCursorAccount: (accountId) => ipcRenderer.invoke(IPC.cursorAccountsSelect, accountId),
   removeCursorAccount: (accountId) => ipcRenderer.invoke(IPC.cursorAccountsRemove, accountId),
   importCursorAccountFromLocalCursor: () => ipcRenderer.invoke(IPC.cursorAccountsImportFromLocal),
-  webLoginCursorAccount: () => ipcRenderer.invoke(IPC.cursorAccountsWebLogin),
   importCursorAccountFromBrowser: () => ipcRenderer.invoke(IPC.cursorAccountsImportFromBrowser),
-  injectCursorAccount: (accountId, options) => ipcRenderer.invoke(IPC.cursorAccountsInject, accountId, options),
+  importCursorAccountFromFingerprint: () => ipcRenderer.invoke(IPC.cursorAccountsImportFromFingerprint),
+  openFingerprintLoginPage: () => ipcRenderer.invoke(IPC.cursorAccountsOpenFingerprintLogin),
+  restartCursorWithAccount: (accountId) => ipcRenderer.invoke(IPC.cursorAccountsRestartWith, accountId),
+  verifyCursorRuntimeAccount: () => ipcRenderer.invoke(IPC.cursorAccountsVerifyRuntime),
+  refreshCursorMembership: () => ipcRenderer.invoke(IPC.cursorAccountsRefreshMembership),
   getAozaiCardStatus: () => ipcRenderer.invoke(IPC.aozaiGetCardStatus),
   saveAozaiCard: (cardCode) => ipcRenderer.invoke(IPC.aozaiSaveCard, cardCode),
   clearAozaiCard: () => ipcRenderer.invoke(IPC.aozaiClearCard),
   refreshAozaiBalance: () => ipcRenderer.invoke(IPC.aozaiRefreshBalance),
   processAozaiAccount: (input) => ipcRenderer.invoke(IPC.aozaiProcessAccount, input),
-  launchAgentSessions: (channelIds) => ipcRenderer.invoke(IPC.agentLaunchStart, channelIds),
+  launchAgentSessions: (requests) => ipcRenderer.invoke(IPC.agentLaunchStart, requests),
   getAgentLaunchPlan: () => ipcRenderer.invoke(IPC.agentLaunchGet),
   enableCursorCdp: () => ipcRenderer.invoke(IPC.agentLaunchEnableCdp),
   getCursorCdpSettings: () => ipcRenderer.invoke(IPC.cursorCdpGetSettings),
@@ -46,6 +49,9 @@ const api: QingtianDesktopApi = {
   saveAccountAutomationSettings: (settings) => ipcRenderer.invoke(IPC.accountAutomationSaveSettings, settings),
   getAccountAutomationRun: () => ipcRenderer.invoke(IPC.accountAutomationGetRun),
   cancelAccountAutomation: () => ipcRenderer.invoke(IPC.accountAutomationCancel),
+  listAccountAutomationBitProfiles: () => ipcRenderer.invoke(IPC.accountAutomationListBitProfiles),
+  getAccountAutomationRoxyApiKey: () => ipcRenderer.invoke(IPC.accountAutomationGetRoxyApiKey),
+  saveAccountAutomationRoxyApiKey: (key) => ipcRenderer.invoke(IPC.accountAutomationSaveRoxyApiKey, key),
   onAccountAutomationProgress: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, run: Parameters<typeof listener>[0]): void => listener(run)
     ipcRenderer.on(IPC.accountAutomationProgress, wrapped)
@@ -54,10 +60,6 @@ const api: QingtianDesktopApi = {
   getSnapshot: () => ipcRenderer.invoke(IPC.getSnapshot),
   sendMessage: (input) => ipcRenderer.invoke(IPC.sendMessage, input),
   getTaskPoolSnapshot: () => ipcRenderer.invoke(IPC.taskPoolGet),
-  createTask: (input) => ipcRenderer.invoke(IPC.taskPoolCreate, input),
-  cancelTask: (taskId, reason) => ipcRenderer.invoke(IPC.taskPoolCancel, taskId, reason),
-  approveTask: (taskId) => ipcRenderer.invoke(IPC.taskPoolApprove, taskId),
-  rejectTask: (taskId, reason) => ipcRenderer.invoke(IPC.taskPoolReject, taskId, reason),
   installTaskMcp: () => ipcRenderer.invoke(IPC.taskMcpInstall),
   getTeamControlSnapshot: () => ipcRenderer.invoke(IPC.teamControlGet),
   detectCursorWorkspace: () => ipcRenderer.invoke(IPC.teamControlDetectWorkspace),
@@ -66,25 +68,27 @@ const api: QingtianDesktopApi = {
   createTeam: (input) => ipcRenderer.invoke(IPC.teamControlCreateTeam, input),
   createNextTeamRun: () => ipcRenderer.invoke(IPC.teamControlNextRun),
   prepareActiveTeamSetup: () => ipcRenderer.invoke(IPC.teamControlPrepareActiveSetup),
-  setActiveTeamWorkspace: (workspaceId) => ipcRenderer.invoke(IPC.teamControlSetWorkspace, workspaceId),
   updateTeamGoal: (goal) => ipcRenderer.invoke(IPC.teamControlUpdateGoal, goal),
   launchTeam: () => ipcRenderer.invoke(IPC.teamControlLaunch),
-  getTeamCollaborationSnapshot: () => ipcRenderer.invoke(IPC.teamCollaborationGet),
-  sendTeamMessage: (input) => ipcRenderer.invoke(IPC.teamCollaborationSend, input),
-  replyTeamMessage: (messageId, content) => ipcRenderer.invoke(
-    IPC.teamCollaborationReply,
-    messageId,
-    content
+  setSlotModelSelection: (channelId, selection) => ipcRenderer.invoke(
+    IPC.teamControlSetSlotModelSelection,
+    channelId,
+    selection
   ),
-  markTeamMessageRead: (messageId) => ipcRenderer.invoke(IPC.teamCollaborationRead, messageId),
-  getTeamContinuitySnapshot: () => ipcRenderer.invoke(IPC.teamContinuityGet),
+  getTeamCollaborationSnapshot: () => ipcRenderer.invoke(IPC.teamCollaborationGet),
+  setWindowChromeColorMode: (mode) => ipcRenderer.invoke(IPC.windowSetChromeColorMode, mode),
   getManualHandoffOptions: (slotId) => ipcRenderer.invoke(IPC.teamContinuityHandoffOptions, slotId),
   manualHandoff: (input) => ipcRenderer.invoke(IPC.teamContinuityHandoff, input),
-  getTeamMemorySnapshot: () => ipcRenderer.invoke(IPC.teamMemoryGet),
   onSnapshot: (listener: (snapshot: DesktopSnapshot) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: DesktopSnapshot): void => listener(snapshot)
     ipcRenderer.on(IPC.snapshot, handler)
     return () => ipcRenderer.removeListener(IPC.snapshot, handler)
+  },
+  getCursorUsageSnapshot: () => ipcRenderer.invoke(IPC.cursorUsageGet),
+  onCursorUsageSnapshot: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => listener(snapshot)
+    ipcRenderer.on(IPC.cursorUsageSnapshot, handler)
+    return () => ipcRenderer.removeListener(IPC.cursorUsageSnapshot, handler)
   },
   onTaskPoolSnapshot: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => listener(snapshot)
@@ -100,16 +104,6 @@ const api: QingtianDesktopApi = {
     const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]): void => listener(state)
     ipcRenderer.on(IPC.teamCollaborationSnapshot, handler)
     return () => ipcRenderer.removeListener(IPC.teamCollaborationSnapshot, handler)
-  },
-  onTeamContinuitySnapshot: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]): void => listener(state)
-    ipcRenderer.on(IPC.teamContinuitySnapshot, handler)
-    return () => ipcRenderer.removeListener(IPC.teamContinuitySnapshot, handler)
-  },
-  onTeamMemorySnapshot: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]): void => listener(state)
-    ipcRenderer.on(IPC.teamMemorySnapshot, handler)
-    return () => ipcRenderer.removeListener(IPC.teamMemorySnapshot, handler)
   },
   onAozaiProgress: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: Parameters<typeof listener>[0]): void => listener(payload)

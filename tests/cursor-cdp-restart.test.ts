@@ -26,12 +26,17 @@ function createHarness(options: { cursorProcesses?: number; portReadyAfter?: num
       }
       return { stdout: Array.from({ length: exec.cursorProcesses }, (_, index) => `${1000 + index}`).join('\n'), stderr: '' }
     }
-    if (file === 'osascript') {
+    if (file === 'tasklist') {
+      // Windows：按进程数回显 Cursor.exe 行；无匹配时 tasklist 输出 INFO 行（不含 Cursor.exe）
+      const lines = Array.from({ length: exec.cursorProcesses }, () => '"Cursor.exe","1234","Console","1","45,678 K"')
+      return { stdout: lines.length ? lines.join('\r\n') : 'INFO: No tasks are running which match the specified criteria.', stderr: '' }
+    }
+    if (file === 'osascript' || file === 'taskkill') {
       exec.cursorProcesses = 0
       return { stdout: '', stderr: '' }
     }
-    if (file === 'open') {
-      if (exec.failOpen) throw new Error('open failed')
+    if (file === 'open' || file === 'cmd.exe') {
+      if (exec.failOpen) throw new Error('launch failed')
       exec.openCalled = true
       return { stdout: '', stderr: '' }
     }
@@ -49,7 +54,7 @@ function createHarness(options: { cursorProcesses?: number; portReadyAfter?: num
 }
 
 describe('restartCursorWithCdp', () => {
-  it('非 macOS 直接拒绝', async () => {
+  it('非 macOS/Windows 平台直接拒绝', async () => {
     const harness = createHarness()
     const result = await restartCursorWithCdp({
       port: 9333,
@@ -60,7 +65,7 @@ describe('restartCursorWithCdp', () => {
       now: harness.now
     })
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('macOS')
+    expect(result.message).toContain('不支持')
   })
 
   it('Cursor 未运行：跳过退出直接启动并等端口就绪', async () => {
@@ -156,5 +161,96 @@ describe('restartCursorWithCdp', () => {
     expect(result.message).toContain('团队工作区路径不可用')
     expect(harness.exec.calls.some((call) => call.startsWith('osascript'))).toBe(false)
     expect(harness.exec.calls.some((call) => call.startsWith('open -a Cursor'))).toBe(false)
+  })
+
+  it('Windows：Cursor 未运行 → tasklist 探测后 cmd start 带端口启动', async () => {
+    const harness = createHarness({ cursorProcesses: 0, portReadyAfter: 1 })
+    const result = await restartCursorWithCdp({
+      port: 9333,
+      platform: 'win32',
+      execFileFn: harness.execFileFn as never,
+      fetchFn: harness.fetchFn,
+      sleep: harness.sleep,
+      now: harness.now
+    })
+    expect(result.ok).toBe(true)
+    expect(harness.exec.calls.some((call) => call.startsWith('tasklist'))).toBe(true)
+    // 不走 mac 链路
+    expect(harness.exec.calls.some((call) => call.includes('osascript'))).toBe(false)
+    expect(harness.exec.calls.some((call) => call.startsWith('open '))).toBe(false)
+    // cmd start 带调试端口
+    const startCall = harness.exec.calls.find((call) => call.startsWith('cmd.exe'))
+    expect(startCall).toBeDefined()
+    expect(startCall).toContain('--remote-debugging-port=9333')
+    expect(startCall).toContain('start ""')
+  })
+
+  it('Windows：Cursor 运行中 → taskkill 优雅退出（无 /F 强杀）再带参启动', async () => {
+    const harness = createHarness({ cursorProcesses: 2, portReadyAfter: 1 })
+    const result = await restartCursorWithCdp({
+      port: 9333,
+      platform: 'win32',
+      execFileFn: harness.execFileFn as never,
+      fetchFn: harness.fetchFn,
+      sleep: harness.sleep,
+      now: harness.now
+    })
+    expect(result.ok).toBe(true)
+    const killIndex = harness.exec.calls.findIndex((call) => call.startsWith('taskkill /IM Cursor.exe'))
+    const startIndex = harness.exec.calls.findIndex((call) => call.startsWith('cmd.exe'))
+    expect(killIndex).toBeGreaterThanOrEqual(0)
+    // 优雅退出不带 /F（保留用户未保存内容——与 mac osascript quit 语义对齐）
+    expect(harness.exec.calls.some((call) => call.startsWith('taskkill /F'))).toBe(false)
+    expect(startIndex).toBeGreaterThan(killIndex)
+  })
+
+  it('Windows：tasklist 探测真实失败 → fail-closed 拒绝重启，绝不双开 Cursor', async () => {
+    const harness = createHarness({ cursorProcesses: 1 })
+    const originalExec = harness.execFileFn
+    const failingTasklist = async (file: string, args?: readonly string[]) => {
+      if (file === 'tasklist') {
+        // 真实探测失败（超时，非退出码 1 的无匹配语义）
+        const error = new Error('spawn ETIMEDOUT') as Error & { code?: unknown }
+        error.code = 'ETIMEDOUT'
+        throw error
+      }
+      return originalExec(file, args)
+    }
+    const result = await restartCursorWithCdp({
+      port: 9333,
+      platform: 'win32',
+      execFileFn: failingTasklist as never,
+      fetchFn: harness.fetchFn,
+      sleep: harness.sleep,
+      now: harness.now
+    })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('重启 Cursor 失败')
+    // 未杀进程、未 start 第二个实例——探测不确定时宁可不动
+    expect(harness.exec.calls.some((call) => call.startsWith('taskkill'))).toBe(false)
+    expect(harness.exec.calls.some((call) => call.startsWith('cmd.exe'))).toBe(false)
+  })
+
+  it('Windows：tasklist 退出码 1（无匹配语义）→ 视为未运行照常启动', async () => {
+    const harness = createHarness({ cursorProcesses: 0 })
+    const originalExec = harness.execFileFn
+    const exitCodeOne = async (file: string, args?: readonly string[]) => {
+      if (file === 'tasklist') {
+        const error = new Error('no tasks match the filter') as Error & { code?: unknown }
+        error.code = 1
+        throw error
+      }
+      return originalExec(file, args)
+    }
+    const result = await restartCursorWithCdp({
+      port: 9333,
+      platform: 'win32',
+      execFileFn: exitCodeOne as never,
+      fetchFn: harness.fetchFn,
+      sleep: harness.sleep,
+      now: harness.now
+    })
+    expect(result.ok).toBe(true)
+    expect(harness.exec.calls.some((call) => call.startsWith('cmd.exe'))).toBe(true)
   })
 })

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { CursorAccountMetadata } from '../domain/cursor-account'
+import { isCursorMachineIdentity, type CursorMachineIdentity } from '../infrastructure/cursor/cursor-machine-identity'
 
 export interface CursorAccountVaultCrypto {
   available(): boolean
@@ -16,6 +17,8 @@ interface StoredCursorAccount {
   tokenSuffix: string
   createdAt: number
   updatedAt: number
+  /** 账号绑定的 Cursor 机器码身份（首次切换账号时生成，之后回放同一套）。 */
+  machineIdentity?: CursorMachineIdentity
 }
 
 interface CursorAccountVaultFile {
@@ -25,6 +28,7 @@ interface CursorAccountVaultFile {
 }
 
 const EMPTY_VAULT: CursorAccountVaultFile = { version: 1, accounts: [] }
+export const CURSOR_CREDENTIAL_UNREADABLE_MESSAGE = '已保存的 Cursor Token 读取失败；应用升级期间系统加密钥匙发生变化，请重新导入 Token'
 
 export class CursorAccountVault {
   constructor(
@@ -109,7 +113,33 @@ export class CursorAccountVault {
     const id = accountId?.trim() || vault.activeId
     const account = vault.accounts.find((candidate) => candidate.id === id)
     if (!account) throw new Error('尚未选择 Cursor 账号')
-    return this.crypto.decrypt(Buffer.from(account.encryptedToken, 'base64'))
+    try {
+      return this.crypto.decrypt(Buffer.from(account.encryptedToken, 'base64'))
+    } catch {
+      throw new Error(CURSOR_CREDENTIAL_UNREADABLE_MESSAGE)
+    }
+  }
+
+  /** 读取账号绑定的机器码身份；未绑定或格式漂移返回 undefined。 */
+  machineIdentity(accountId: string): CursorMachineIdentity | undefined {
+    const id = accountId.trim()
+    const account = this.load().accounts.find((candidate) => candidate.id === id)
+    return account?.machineIdentity && isCursorMachineIdentity(account.machineIdentity)
+      ? account.machineIdentity
+      : undefined
+  }
+
+  /** 绑定机器码身份（首次切换时生成后调用）；账号不存在时抛错。 */
+  attachMachineIdentity(accountId: string, identity: CursorMachineIdentity): void {
+    if (!isCursorMachineIdentity(identity)) throw new Error('机器码身份格式无效')
+    const id = accountId.trim()
+    const vault = this.load()
+    const account = vault.accounts.find((candidate) => candidate.id === id)
+    if (!account) throw new Error('Cursor 账号不存在')
+    if (account.machineIdentity && isCursorMachineIdentity(account.machineIdentity)) return
+    account.machineIdentity = identity
+    account.updatedAt = this.now()
+    this.store(vault)
   }
 
   private assertEncryption(): void {
@@ -127,6 +157,10 @@ export class CursorAccountVault {
           account && typeof account.id === 'string' && typeof account.label === 'string'
           && typeof account.encryptedToken === 'string' && typeof account.tokenSuffix === 'string'
           && typeof account.createdAt === 'number' && typeof account.updatedAt === 'number'
+        )).map((account) => (
+          isCursorMachineIdentity(account.machineIdentity)
+            ? { ...account, machineIdentity: account.machineIdentity }
+            : { ...account, machineIdentity: undefined }
         ))
       }
     } catch {

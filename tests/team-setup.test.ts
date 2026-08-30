@@ -18,6 +18,30 @@ const draft: TeamSetupDraft = {
   })),
   roleTemplates: TEAM_ROLE_TEMPLATES,
   avatarIds: [...AGENT_AVATAR_IDS],
+  cursorModels: [{
+    modelId: 'kimi-k3', displayName: 'Kimi K3', selected: true,
+    parameters: [{ id: 'reasoning', value: 'high' }], optionLabels: ['High'],
+    maxMode: false, supportsMaxMode: true, supportsNonMaxMode: true,
+    contextTokenLimit: 1_048_576, contextTokenLimitForMaxMode: 1_048_576,
+    parameterDefinitions: [{
+      id: 'reasoning', displayName: 'Reasoning', kind: 'enum',
+      values: [
+        { value: 'low', displayName: 'Low', increasesCost: false },
+        { value: 'high', displayName: 'High', increasesCost: true }
+      ]
+    }]
+  }, {
+    modelId: 'gpt-5.3-codex', displayName: 'Codex 5.3', selected: false,
+    parameters: [{ id: 'reasoning', value: 'medium' }], optionLabels: [],
+    maxMode: false,
+    parameterDefinitions: [{
+      id: 'reasoning', displayName: 'Reasoning', kind: 'enum',
+      values: [
+        { value: 'medium', displayName: 'Medium', increasesCost: false },
+        { value: 'high', displayName: 'High', increasesCost: true }
+      ]
+    }]
+  }],
   skills: [
     {
       id: 'project:tdd', name: 'tdd', description: 'TDD', scope: 'project', installed: true,
@@ -36,15 +60,68 @@ describe('resolveTeamSetupMembers', () => {
       draftId: draft.draftId,
       members: [
         { channelId: '2', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [] },
-        { channelId: '5', roleTemplateKey: 'builder', avatarId: 'architect', skillIds: ['project:tdd'] }
+        {
+          channelId: '5', roleTemplateKey: 'builder', avatarId: 'architect', skillIds: ['project:tdd'],
+          modelSelection: {
+            modelId: 'gpt-5.3-codex', displayName: '伪造名称', maxMode: false,
+            parameters: [{ id: 'reasoning', value: 'high' }]
+          }
+        }
       ]
     })).toEqual([
       expect.objectContaining({ channelId: '2', roleTemplateKey: 'lead' }),
       expect.objectContaining({
         channelId: '5',
-        skills: [{ id: 'project:tdd', name: 'tdd', description: 'TDD', scope: 'project' }]
+        skills: [{ id: 'project:tdd', name: 'tdd', description: 'TDD', scope: 'project' }],
+        modelSelection: {
+          modelId: 'gpt-5.3-codex', displayName: 'Codex 5.3', maxMode: false,
+          parameters: [{ id: 'reasoning', value: 'high' }]
+        }
       })
     ])
+  })
+
+  it('defaults every seat to Cursor current model and rejects stale or invalid parameters', () => {
+    const [member] = resolveTeamSetupMembers(draft, {
+      draftId: draft.draftId,
+      members: [{ channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [] }]
+    })
+    expect(member?.modelSelection).toMatchObject({ modelId: 'kimi-k3', displayName: 'Kimi K3' })
+    expect(() => resolveTeamSetupMembers(draft, {
+      draftId: draft.draftId,
+      members: [{
+        channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [],
+        modelSelection: { modelId: 'retired-model', displayName: 'Old', parameters: [] }
+      }]
+    })).toThrowError(/不可用或已失效/)
+    expect(() => resolveTeamSetupMembers(draft, {
+      draftId: draft.draftId,
+      members: [{
+        channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [],
+        modelSelection: {
+          modelId: 'kimi-k3', displayName: 'Kimi K3',
+          parameters: [{ id: 'reasoning', value: 'ultra' }]
+        }
+      }]
+    })).toThrowError(/参数不可用/)
+  })
+
+  it('persists MAX Mode independently from reasoning parameters', () => {
+    const [member] = resolveTeamSetupMembers(draft, {
+      draftId: draft.draftId,
+      members: [{
+        channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [],
+        modelSelection: {
+          modelId: 'kimi-k3', displayName: 'Kimi K3', maxMode: true,
+          parameters: [{ id: 'reasoning', value: 'high' }]
+        }
+      }]
+    })
+    expect(member?.modelSelection).toMatchObject({
+      modelId: 'kimi-k3',
+      maxMode: true,
+      parameters: [{ id: 'reasoning', value: 'high' }]
+    })
   })
 
   it('rejects unavailable channels, duplicates and uninstalled recommendations', () => {

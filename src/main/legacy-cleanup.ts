@@ -8,10 +8,15 @@ const execFileAsync = promisify(execFile)
 const RETIRED_BRIDGE_EXTENSION_ID = 'qt.team-bridge'
 
 function cursorCliCandidates(): string[] {
+  // 平台分离：mac 的 CLI 是 shell 脚本；win 是安装目录下的 cursor.cmd
+  const windowsCli = process.env.LOCALAPPDATA
+    ? `${process.env.LOCALAPPDATA}\\Programs\\Cursor\\resources\\app\\bin\\cursor.cmd`
+    : ''
   return [
     process.env.QINGTIAN_CURSOR_CLI?.trim() ?? '',
     '/usr/local/bin/cursor',
-    '/Applications/Cursor.app/Contents/Resources/app/bin/cursor'
+    '/Applications/Cursor.app/Contents/Resources/app/bin/cursor',
+    windowsCli
   ].filter(Boolean)
 }
 
@@ -36,8 +41,8 @@ export async function uninstallRetiredBridgeExtension(
       timeout: 30_000,
       encoding: 'utf8'
     })
-    log('[qunshu-legacy] retired bridge extension uninstalled')
+    log('[sg-team-legacy] retired bridge extension uninstalled')
   } catch (error) {
-    log(`[qunshu-legacy] bridge extension uninstall skipped: ${error instanceof Error ? error.message : String(error)}`)
+    log(`[sg-team-legacy] bridge extension uninstall skipped: ${error instanceof Error ? error.message : String(error)}`)
   }
 }

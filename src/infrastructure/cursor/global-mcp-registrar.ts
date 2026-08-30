@@ -2,12 +2,13 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
-import { QUNSHU_MCP_SERVER_NAME } from '../../domain/channel-message'
+import { SG_TEAM_MCP_SERVER_ID } from '../../domain/channel-message'
 
-/** 全局注册的通道上限默认值；S4 统一服务器实际只注册单一 qunshu 条目。 */
+/** 全局注册的通道上限默认值；S4 统一服务器实际只注册单一 SG Team 条目。 */
 export const GLOBAL_CHANNEL_COUNT = 4
 
 const LEGACY_PREFIXES = ['qingtian-team-ch-', 'qt-ch-', 'qtwx-mcp-', 'qunshu-ch-']
+const LEGACY_SERVER_NAMES = new Set(['qunshu'])
 
 export interface GlobalChannelRegistrationInput {
   command: string
@@ -54,7 +55,7 @@ function readConfig(configPath: string): McpConfig {
 
 /**
  * 全局 ~/.cursor/mcp.json 原生条目注册（S3-2，zhimo 同款载体）：
- * 启动时幂等 upsert qunshu-ch-1..N 统一服务器条目，Cursor 面板原生渲染
+ * 启动时幂等 upsert「SG Team」统一服务器条目，Cursor 面板原生渲染
  * （无 extension- 前缀）；同时清理双条目时代的遗留静态条目。
  * 用户自有服务器（如 zhimo-mcp）原样保留；仅在变更时备份并原子写入。
  */
@@ -73,22 +74,22 @@ export function reconcileGlobalChannelServers(input: GlobalChannelRegistrationIn
     ? { ...config.mcpServers }
     : {}
 
-  // S4：单一原生条目「qunshu」，通道由工具参数 channel_id 区分。
+  // S4：单一原生条目「SG Team」，通道由工具参数 channel_id 区分。
   const desired = new Map<string, unknown>()
-  desired.set(QUNSHU_MCP_SERVER_NAME, {
+  desired.set(SG_TEAM_MCP_SERVER_ID, {
     command: input.command,
     args: [input.serverPath],
     env: {
       ELECTRON_RUN_AS_NODE: '1',
-      QINGTIAN_TEAM_DB: input.databasePath,
-      QINGTIAN_SERVER_ROLE: 'unified'
+      SG_TEAM_DB: input.databasePath,
+      SG_TEAM_SERVER_ROLE: 'unified'
     }
   })
-  const serverNames = [QUNSHU_MCP_SERVER_NAME]
+  const serverNames = [SG_TEAM_MCP_SERVER_ID]
 
   let changed = false
   for (const name of Object.keys(servers)) {
-    const legacy = LEGACY_PREFIXES.some((prefix) => name.startsWith(prefix))
+    const legacy = LEGACY_SERVER_NAMES.has(name) || LEGACY_PREFIXES.some((prefix) => name.startsWith(prefix))
     const staleUnified = name.startsWith('qunshu-ch-') && !desired.has(name)
     if (legacy || staleUnified) {
       delete servers[name]
@@ -109,7 +110,7 @@ export function reconcileGlobalChannelServers(input: GlobalChannelRegistrationIn
   let mode = 0o600
   if (existsSync(configPath)) {
     mode = statSync(configPath).mode & 0o777
-    backupPath = join(dirname(configPath), `${basename(configPath)}.qunshu-backup-${Date.now()}-${randomUUID().slice(0, 8)}`)
+    backupPath = join(dirname(configPath), `${basename(configPath)}.sg-team-backup-${Date.now()}-${randomUUID().slice(0, 8)}`)
     copyFileSync(configPath, backupPath)
   }
   const temporaryPath = join(dirname(configPath), `.${basename(configPath)}.${randomUUID()}.tmp`)

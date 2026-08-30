@@ -9,10 +9,11 @@ import { emptyCursorTelemetrySnapshot, type CursorTelemetrySnapshot } from '../s
 import { emptyTeamControlSnapshot, type TeamControlSnapshot } from '../src/domain/team-control'
 import type { DesktopSnapshot } from '../src/shared/desktop-api'
 import type { CursorComposerTelemetrySource } from '../src/infrastructure/cursor/cursor-composer-telemetry'
+import type { ChannelMessageRelay } from '../src/application/channel-message-relay'
 
 function bridgeSnapshot(): DesktopSnapshot {
   return {
-    connection: { state: 'connected', endpoint: 'qunshu://local-channel-runtime', attempt: 0, lastError: '' },
+    connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: [{
       id: 'qingtian-channel:1',
       channelId: '1',
@@ -85,10 +86,6 @@ function telemetry(composerId = 'composer-alpha-123'): CursorTelemetrySnapshot {
       lastUpdatedAt: 30,
       contextUsage: { ratio: 0.63 },
       changes: { additions: 12, deletions: 4, files: 3 },
-      workEntries: [
-        { kind: 'text', text: '好的，我先看一下代码结构。', line: 2, at: 40 },
-        { kind: 'tool', text: 'Glob **/*.ts', toolName: 'Glob', line: 2, at: 40 }
-      ]
     }],
     bindingCandidates: [],
     updatedAt: 30
@@ -120,6 +117,7 @@ class FakeBridge implements DesktopSessionTransport {
 
 class FakeTeam implements DesktopSessionTeamSource {
   readonly recorded: Parameters<DesktopSessionTeamSource['recordComposerBinding']>[0][] = []
+  private readonly listeners = new Set<(snapshot: TeamControlSnapshot) => void>()
   private snapshot: TeamControlSnapshot
 
   constructor(snapshot = teamSnapshot()) {
@@ -127,7 +125,18 @@ class FakeTeam implements DesktopSessionTeamSource {
   }
 
   getSnapshot(): TeamControlSnapshot { return structuredClone(this.snapshot) }
-  subscribe(): () => void { return () => undefined }
+  subscribe(listener: (snapshot: TeamControlSnapshot) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+  setReasoning(value: string): void {
+    const member = this.snapshot.members[0]
+    if (!member?.slot.modelSelection) return
+    member.slot.modelSelection.parameters = member.slot.modelSelection.parameters.map((parameter) => (
+      parameter.id === 'reasoning' ? { ...parameter, value } : parameter
+    ))
+    for (const listener of this.listeners) listener(this.getSnapshot())
+  }
   recordComposerBinding(input: Parameters<DesktopSessionTeamSource['recordComposerBinding']>[0]): boolean {
     const binding = this.snapshot.bindings.find((value) => value.slotId === input.slotId)
     if (!binding || binding.generation !== input.generation || binding.composerId) return false
@@ -140,32 +149,300 @@ class FakeTeam implements DesktopSessionTeamSource {
 }
 
 describe('desktop Cursor session enrichment', () => {
-  it('adds only bound Composer metrics to the matching QingTian channel', () => {
+  it('publishes Cursor native partial text as a live response without writing conversation history', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(active),
+      { readWorkspace: () => ({ ...telemetry(), composers: [] }) },
+      undefined,
+      {
+        inspectComposerRuntime: async () => ({
+          'composer-alpha-123': {
+            composerId: 'composer-alpha-123', state: 'active', detail: '正在生成',
+            observedAt: Date.now(), isGenerating: true,
+            responseId: 'bubble-live-1', responseText: '这是 Cursor 正在生成的原生回答'
+          }
+        })
+      }
+    )
+    try {
+      let pushedLiveText = ''
+      const unsubscribe = service.subscribe((snapshot) => {
+        pushedLiveText = snapshot.liveAgentResponses?.['1']?.text ?? pushedLiveText
+      })
+      service.refreshTelemetry()
+      await vi.waitFor(() => {
+        expect(service.getSnapshot().liveAgentResponses?.['1']).toMatchObject({
+          id: 'bubble-live-1', status: 'streaming', text: '这是 Cursor 正在生成的原生回答'
+        })
+      })
+      expect(pushedLiveText).toBe('这是 Cursor 正在生成的原生回答')
+      expect(service.getSnapshot().conversations['1']).toBeUndefined()
+      unsubscribe()
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('projects direct Cursor-native process events in their original order without an inspect fallback', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(active),
+      { readWorkspace: () => ({ ...telemetry(), composers: [] }) },
+      undefined,
+      { inspectComposerRuntime: async () => ({}) }
+    )
+    try {
+      // observer 可能先于 runtime binding 水合：首帧先到也必须暂存并在刷新后回放。
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: Date.now(), isGenerating: true,
+        process: {
+          items: [
+            { kind: 'thinking', id: 'th-native', text: '先分析再执行', status: 'done', durationMs: 2_400 },
+            { kind: 'message', id: 'msg-native', text: '准备读取目标文件。', status: 'done' },
+            { kind: 'tool', id: 'read-native', toolName: 'read_file_v2', toolKind: 'read', summary: '/p/a.ts', status: 'done', output: 'const a = 1' },
+            { kind: 'thinking', id: 'th-native-2', text: '检查读取结果', status: 'running' },
+            { kind: 'tool', id: 'browser-native', toolName: 'browser_navigate', toolKind: 'browser', summary: 'http://localhost', status: 'running' }
+          ],
+          todos: [{ content: '完成验证', status: 'in_progress' }],
+          generatingBubbleCount: 1
+        }
+      })
+      expect(service.getSnapshot().liveProcess?.['1']).toBeUndefined()
+      service.refreshTelemetry()
+      const blocks = service.getSnapshot().liveProcess?.['1']?.blocks ?? []
+      expect(blocks.map((block) => block.id)).toEqual([
+        'th-native', 'msg-native', 'read-native', 'th-native-2', 'browser-native', 'cursor:todos'
+      ])
+      expect(blocks[0]).toMatchObject({ kind: 'thinking', durationMs: 2_400 })
+      expect(blocks[1]).toMatchObject({ kind: 'message', text: '准备读取目标文件。' })
+      expect(blocks[2]).toMatchObject({ kind: 'tool', output: 'const a = 1' })
+      expect(blocks[4]).toMatchObject({ kind: 'tool', toolKind: 'browser', status: 'running' })
+      expect(blocks[5]).toMatchObject({ kind: 'tool', toolKind: 'todo', todos: [{ content: '完成验证', status: 'in_progress' }] })
+      // 页面 binding 只推最近窗口；主进程必须按稳定 id 增量合并，长任务早期步骤不丢。
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: Date.now() + 5, isGenerating: true,
+        process: {
+          items: [{ kind: 'tool', id: 'write-native', toolName: 'write_file', toolKind: 'write', summary: '/p/b.ts', status: 'running' }],
+          generatingBubbleCount: 1
+        }
+      })
+      expect(service.getSnapshot().liveProcess?.['1']?.blocks.map((block) => block.id)).toEqual([
+        'th-native', 'msg-native', 'read-native', 'th-native-2', 'browser-native', 'cursor:todos', 'write-native'
+      ])
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: Date.now() + 10, isGenerating: false
+      })
+      expect(service.getSnapshot().liveProcess?.['1']?.blocks.every((block) => block.status === 'done')).toBe(true)
+    } finally {
+      service.dispose()
+    }
+  })
+
+
+  it('write signal triggers immediate runtime inspection for native response state', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    let inspectCalls = 0
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(active),
+      { readWorkspace: () => ({ ...telemetry(), composers: [] }) },
+      undefined,
+      {
+        inspectComposerRuntime: async () => {
+          inspectCalls += 1
+          return {
+            'composer-alpha-123': {
+              composerId: 'composer-alpha-123', state: 'active', detail: '正在生成',
+              observedAt: Date.now(), isGenerating: true,
+              responseId: 'bubble-live-1', responseText: '事件驱动'
+            }
+          }
+        }
+      }
+    )
+    try {
+      // 首次遥测刷新建立 lastRuntimeArgs 基线
+      service.refreshTelemetry()
+      await vi.waitFor(() => { expect(inspectCalls).toBeGreaterThan(0) })
+      const before = inspectCalls
+      // 等待 inspect 节流窗口（120ms）过去，写信号才不会被节流挡住
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      // 无关 composer 的写信号：不触发
+      service.notifyComposerWriteSignal('composer-other')
+      expect(inspectCalls).toBe(before)
+      // 绑定 composer 的写信号：立即触发 inspect
+      service.notifyComposerWriteSignal('composer-alpha-123')
+      await vi.waitFor(() => { expect(inspectCalls).toBeGreaterThan(before) })
+      await vi.waitFor(() => expect(service.getSnapshot().liveAgentResponses?.['1']?.text).toBe('事件驱动'))
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('does not drop the final write signal while an inspection is already in flight', async () => {
+    vi.useFakeTimers()
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    let inspectCalls = 0
+    let finishFirst!: (value: Record<string, never>) => void
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(active),
+      { readWorkspace: () => ({ ...telemetry(), composers: [] }) },
+      undefined,
+      {
+        inspectComposerRuntime: async () => {
+          inspectCalls += 1
+          if (inspectCalls === 1) return new Promise((resolve) => { finishFirst = resolve })
+          return {}
+        }
+      }
+    )
+    try {
+      service.refreshTelemetry()
+      expect(inspectCalls).toBe(1)
+      service.notifyComposerWriteSignal('composer-alpha-123')
+      finishFirst({})
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(150)
+      expect(inspectCalls).toBe(2)
+    } finally {
+      service.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+
+
+  it('uses live Cursor termination evidence to flip a stale processing session offline immediately', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const source: CursorComposerTelemetrySource = {
+      readWorkspace: () => ({
+        ...telemetry(),
+        composers: [{
+          ...telemetry().composers[0]!,
+          activity: {
+            state: 'unknown', workInProgress: true,
+            detail: 'Agent 疑似在执行长任务', channelId: '1'
+          }
+        }]
+      })
+    }
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(active),
+      source,
+      undefined,
+      {
+        inspectComposerRuntime: async () => ({
+          'composer-alpha-123': {
+            composerId: 'composer-alpha-123', state: 'stopped',
+            detail: 'Cursor Agent 已因错误终止', observedAt: Date.now()
+          }
+        })
+      }
+    )
+    try {
+      service.refreshTelemetry()
+      await vi.waitFor(() => {
+        expect(service.getSnapshot().sessions[0]).toMatchObject({
+          status: 'offline', online: false, connected: false, waiting: false
+        })
+      })
+      expect(service.getSnapshot().sessions[0]?.healthEvidence).toContain('Cursor Agent 已因错误终止')
+    } finally {
+      service.dispose()
+    }
+  })
+
+
+
+  it('prefers the per-composer model profile over the global current config', () => {
     const snapshot = enrichDesktopSnapshot(
       bridgeSnapshot(),
       teamSnapshot('composer-alpha-123'),
-      telemetry()
+      {
+        ...telemetry(),
+        composers: [{
+          ...telemetry().composers[0]!,
+          modelProfile: {
+            scope: 'cursor-composer-current',
+            modelId: 'kimi-k3',
+            displayName: 'Kimi K3',
+            options: ['Think'],
+            maxMode: true,
+            contextTokenLimit: 1_048_576
+          }
+        }]
+      }
     )
 
-    expect(snapshot.sessions[0]).toMatchObject({
-      composerId: 'composer-alpha-123',
-      composerTitle: '主控会话',
-      startedAt: 20,
-      contextUsage: { ratio: 0.63 },
-      changes: { additions: 12, deletions: 4, files: 3 },
-      workEntries: [
-        { kind: 'text', text: '好的，我先看一下代码结构。', line: 2, at: 40 },
-        { kind: 'tool', text: 'Glob **/*.ts', toolName: 'Glob', line: 2, at: 40 }
-      ],
-      executionProfile: {
-        scope: 'cursor-composer-current',
-        modelId: 'composer-2.5',
-        displayName: 'Composer 2.5',
-        options: ['Fast']
-      },
-      telemetry: { state: 'bound', source: 'cursor-local', bindingMethod: 'launch_marker' }
+    expect(snapshot.sessions[0]?.executionProfile).toMatchObject({
+      modelId: 'kimi-k3',
+      options: ['Think'],
+      maxMode: true
     })
-    expect(snapshot.sessions[0]?.modelName).toBeUndefined()
+  })
+
+  it('projects the launch-time selection one-to-one ahead of Cursor read-back', () => {
+    const team = teamSnapshot('composer-alpha-123')
+    const withSelection: typeof team = {
+      ...team,
+      members: [{
+        slot: {
+          id: 'slot-1', runId: 'run-a', roleId: 'role-1', name: '主控席',
+          channelId: '1', order: 0, createdAt: 1, updatedAt: 1, avatarId: 'lead',
+          modelSelection: {
+            modelId: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol',
+            parameters: [{ id: 'reasoning', value: 'medium' }, { id: 'context', value: '1m' }],
+            maxMode: true
+          }
+        },
+        role: {
+          id: 'role-1', runId: 'run-a', key: 'lead', templateKey: 'lead', name: '主控协调',
+          mission: '', instructions: '', capabilities: [], skills: [], accent: 'mint', order: 0
+        },
+        binding: team.bindings[0],
+        readiness: 'ready'
+      }] as typeof team.members
+    }
+    const snapshot = enrichDesktopSnapshot(bridgeSnapshot(), withSelection, telemetry())
+
+    expect(snapshot.sessions[0]?.executionProfile).toEqual({
+      scope: 'cursor-composer-current',
+      modelId: 'gpt-5.6-sol',
+      displayName: 'GPT-5.6 Sol',
+      options: ['Think', '1M'],
+      maxMode: true,
+      contextTokenLimit: 1_000_000
+    })
   })
 
   it('persists a deterministic candidate once and immediately exposes it as bound', () => {
@@ -256,36 +533,41 @@ describe('desktop Cursor session enrichment', () => {
     }
   })
 
-  it('rebuilds the session view when live Cursor work text changes without a length change', () => {
-    let text = '检查 A'
-    let updatedAt = 30
-    const service = new DesktopSessionService(new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')), {
-      readWorkspace: () => {
-        const next = telemetry()
-        return {
-          ...next,
-          updatedAt: updatedAt++,
-          composers: [{
-            ...next.composers[0]!,
-            workEntries: [
-              { kind: 'text', text, line: 2, at: 40, turn: 'turn-live' }
-            ]
-          }]
+  it('rebuilds the conversation model badges when the saved reasoning changes', () => {
+    const snapshot = teamSnapshot('composer-alpha-123')
+    snapshot.members = [{
+      slot: {
+        id: 'slot-1', runId: 'run-a', roleId: 'role-1', name: '主控席',
+        channelId: '1', order: 0, createdAt: 1, updatedAt: 1, avatarId: 'lead',
+        modelSelection: {
+          modelId: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol',
+          parameters: [{ id: 'reasoning', value: 'medium' }, { id: 'context', value: '1m' }],
+          maxMode: true
         }
-      }
+      },
+      role: {
+        id: 'role-1', runId: 'run-a', key: 'lead', templateKey: 'lead', name: '主控协调',
+        mission: '', instructions: '', capabilities: [], skills: [], accent: 'mint', order: 0
+      },
+      binding: snapshot.bindings[0],
+      readiness: 'ready'
+    }] as typeof snapshot.members
+    const team = new FakeTeam(snapshot)
+    const service = new DesktopSessionService(new FakeBridge(), team, {
+      readWorkspace: () => telemetry()
     })
     try {
-      service.refreshTelemetry()
-      const first = service.getSnapshot().sessions[0]
-      text = '检查 B'
-      service.refreshTelemetry()
-      const second = service.getSnapshot().sessions[0]
+      const first = service.getSnapshot().sessions[0]!
+      expect(first.executionProfile?.options).toEqual(['Think', '1M'])
+      team.setReasoning('max')
+      const second = service.getSnapshot().sessions[0]!
       expect(second).not.toBe(first)
-      expect(second?.workEntries?.[0]?.text).toBe('检查 B')
+      expect(second.executionProfile?.options).toEqual(['Think', 'Max', '1M'])
     } finally {
       service.dispose()
     }
   })
+
 
   it('slows telemetry polling to the idle cadence when no team run is active', () => {
     vi.useFakeTimers()
@@ -315,6 +597,62 @@ describe('desktop Cursor session enrichment', () => {
 })
 
 describe('channel composer context fallback', () => {
+  it('falls back field-by-field when the bound composer is present but contextUsage is temporarily absent', () => {
+    const base = telemetry('composer-bound-no-context')
+    const snapshot = enrichDesktopSnapshot(
+      bridgeSnapshot(),
+      teamSnapshot('composer-bound-no-context'),
+      {
+        ...base,
+        composers: [
+          { ...base.composers[0]!, contextUsage: undefined },
+          {
+            composerId: 'composer-channel-context', title: '同通道上下文来源', createdAt: 20, lastUpdatedAt: 31,
+            contextUsage: { ratio: 0.42 }
+          }
+        ],
+        channelActivities: {
+          '1': {
+            channelId: '1', state: 'active', detail: '同通道转录仍在增长',
+            composerId: 'composer-channel-context', observedAt: 31
+          }
+        }
+      }
+    )
+
+    expect(snapshot.sessions[0]?.composerId).toBe('composer-bound-no-context')
+    expect(snapshot.sessions[0]?.contextUsage).toEqual({ ratio: 0.42 })
+  })
+
+  it('keeps the last known context value across a transient telemetry hole', () => {
+    let includeContext = true
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(teamSnapshot('composer-alpha-123')),
+      {
+        readWorkspace: () => {
+          const next = telemetry()
+          return {
+            ...next,
+            composers: next.composers.map((composer) => ({
+              ...composer,
+              contextUsage: includeContext ? composer.contextUsage : undefined
+            }))
+          }
+        }
+      }
+    )
+    try {
+      service.refreshTelemetry()
+      expect(service.getSnapshot().sessions[0]?.contextUsage).toEqual({ ratio: 0.63 })
+      includeContext = false
+      service.refreshTelemetry()
+      expect(service.getSnapshot().sessions[0]?.contextUsage).toEqual({ ratio: 0.63 })
+    } finally {
+      service.dispose()
+    }
+  })
+
   it('shows context usage from the channel-located composer when no composer binding exists', () => {
     const base = telemetry()
     const snapshot = enrichDesktopSnapshot(
@@ -343,6 +681,7 @@ describe('channel composer context fallback', () => {
     expect(snapshot.sessions[0]?.composerId).toBeUndefined()
     expect(snapshot.sessions[0]?.contextUsage).toEqual({ ratio: 0.69 })
   })
+
 
   it('keeps context empty when neither binding nor channel evidence can locate a composer', () => {
     const snapshot = enrichDesktopSnapshot(

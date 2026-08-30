@@ -1,12 +1,13 @@
-import type { AgentSessionStatus } from './agent-session'
+import type { AgentRuntimeEvidence, AgentSessionStatus } from './agent-session'
 import {
   cursorComposerBindingMarker,
   type ComposerBindingMethod
 } from './cursor-telemetry'
 import type { AssignedAgentSkill } from './agent-skill'
+import type { CursorModelSelection } from './cursor-model'
 import type { TeamFailoverRecord } from './team-failover'
 import { TEAM_REPLY_STYLE_INSTRUCTION } from './team-reply-style'
-import { QUNSHU_MCP_SERVER_NAME } from './channel-message'
+import { SG_TEAM_MCP_SERVER_ID } from './channel-message'
 
 export type TeamRunStatus =
   | 'draft'
@@ -83,6 +84,8 @@ export interface AgentSlot {
   roleId: string
   name: string
   avatarId: string
+  /** 该席位下一次自动创建 Cursor Composer 时使用的独立模型配置。 */
+  modelSelection?: CursorModelSelection
   channelId?: string
   order: number
   createdAt: number
@@ -126,9 +129,14 @@ export interface TeamMemberRuntime {
   channelId: string
   status: AgentSessionStatus
   online: boolean
+  runtimeEvidence?: AgentRuntimeEvidence
   waiting: boolean
+  /** 连接相位（waiting/processing/keepalive/need_reply_sync），在岗判定见 isAgentOnDuty。 */
+  connectionPhase?: string
   queueDepth: number
   lastSeenAt?: number
+  /** Cursor/转录最近一次正面活动证据；与 MCP lastSeenAt 分离。 */
+  lastAgentActivityAt?: number
   healthEvidence: string[]
   workingFiles: string[]
 }
@@ -156,7 +164,9 @@ export interface TeamRuntimeChannelView {
   displayName: string
   status: AgentSessionStatus
   online: boolean
+  runtimeEvidence?: AgentRuntimeEvidence
   waiting: boolean
+  connectionPhase?: string
   queueDepth: number
   registered: boolean
   assignedSlotId?: string
@@ -304,6 +314,7 @@ export interface TeamMemberConfiguration {
   roleTemplateKey: string
   avatarId: string
   skills: AssignedAgentSkill[]
+  modelSelection?: CursorModelSelection
 }
 
 function roleTemplateOf(key: string): TeamRoleTemplate {
@@ -344,7 +355,7 @@ export function emptyTeamControlSnapshot(): TeamControlSnapshot {
       mcpInstalled: false,
       agentsWaiting: false,
       canLaunch: false,
-      blockers: ['晴天通道尚未连接', '尚未绑定 Cursor 工作区']
+      blockers: ['拾光通道尚未连接', '尚未绑定 Cursor 工作区']
     }
   }
 }
@@ -411,6 +422,9 @@ export function createConfiguredTeamBundle(input: {
     name: configured[index]!.template.slotName
       + (role.templateKey === 'specialist' || occurrences.get(role.templateKey)! > 1 ? ` ${configured[index]!.instanceNumber}` : ''),
     avatarId: configured[index]!.member.avatarId,
+    modelSelection: configured[index]!.member.modelSelection
+      ? structuredClone(configured[index]!.member.modelSelection)
+      : undefined,
     channelId: configured[index]!.member.channelId.trim(),
     order: index,
     createdAt: now,
@@ -475,8 +489,8 @@ export function buildTeamLaunchHint(input: {
 }): string {
   const { channelId, binding } = input
   return [
-    `群枢协作通道 CH-${channelId} 已启动。`,
-    `请先调用 ${QUNSHU_MCP_SERVER_NAME}.team_check_in({channel_id:'${channelId}'}) 领取角色职责与团队目标；`,
+    `拾光协作通道 CH-${channelId} 已启动。`,
+    `请先调用 ${SG_TEAM_MCP_SERVER_ID} 的 team_check_in({channel_id:'${channelId}'}) 领取角色职责与团队目标；`,
     `此后所有团队工具与通信保活均传同一 channel_id，并严格按 check_in 返回的指令工作。`,
     `本次 Cursor 会话绑定标记：${cursorComposerBindingMarker({ bindingKey: binding.composerBindingKey, channelId })}`
   ].join('')
@@ -488,31 +502,39 @@ export function buildTeamRoleBriefing(input: {
   role: TeamRole
   slot: AgentSlot
   binding: RuntimeBinding
+  effectiveLead?: boolean
+  originalLeadDemoted?: boolean
 }): string {
   const { run, role, slot, binding } = input
+  const effectiveLead = input.effectiveLead ?? role.templateKey === 'lead'
   const channelId = binding.channelId
-  const server = QUNSHU_MCP_SERVER_NAME
+  const server = SG_TEAM_MCP_SERVER_ID
   const ch = `{channel_id:'${channelId}'}`
   const telemetryMarker = cursorComposerBindingMarker({
     bindingKey: binding.composerBindingKey,
     channelId
   })
-  const roleWorkflow = role.templateKey === 'lead'
-    ? `3. 调用 ${server}.team_list_board ${ch} 了解当前任务板；启动后即使任务板为空，也只进入待命，不要依据团队目标自行调用 team_plan_tasks。只有收到用户明确要求“开始 / 分配 / 拆任务 / 执行”后，才创建带依赖、验收标准和目标 AgentSlot 的计划。`
+  const roleWorkflow = effectiveLead
+    ? `3. 调用 ${server} 的 team_list_board ${ch} 了解当前任务板；启动后即使任务板为空，也只进入待命，不要依据团队目标自行调用 team_plan_tasks。只有收到用户明确要求“开始 / 分配 / 拆任务 / 执行”后，才创建带依赖、验收标准和目标 AgentSlot 的计划。`
     : role.templateKey === 'reviewer'
-      ? `3. 优先调用 ${server}.team_list_reviews ${ch} 并领取独立验收；没有待验收项时，再调用 team_list_mine / team_list_available 检查其他质量任务。`
-      : `3. 调用 ${server}.team_list_mine ${ch}；有 leased/running 任务就继续，否则调用 team_list_available 并按能力领取。`
+      ? `3. 优先调用 ${server} 的 team_list_reviews ${ch} 并领取独立验收；没有待验收项时，再调用 team_list_mine / team_list_available 检查其他质量任务。`
+      : `3. 调用 ${server} 的 team_list_mine ${ch}；有 leased/running 任务就继续，否则调用 team_list_available 并按能力领取。`
   const executionWorkflow = role.templateKey === 'reviewer'
     ? '4. 验收必须独立复现并检查验收标准；用 team_renew_review 续租，最后用 team_submit_review 提交通过证据或明确打回原因。'
     : '4. 领取后调用 team_start_task；每个里程碑（实现完成、测试完成、遇到阻塞、返工完成）都必须 team_report_progress 上报，长任务定期续租；完成后 submit_for_review，不能自行宣布验收通过。'
-  const collaborationWorkflow = role.templateKey === 'lead'
+  const collaborationWorkflow = effectiveLead
     ? '5. 收件箱优先：每次被唤醒（check_messages 投递、任何 team 工具调用后）先调用 team_list_inbox 处理未读上报；成员的进度/提交/失败/验收是你调度的唯一依据，忽略上报即失职。收到重要上报必须立即推进下一步（安排验收、打回返工、收尾）；只有出现新的可执行结论、阻塞、需要用户决策或用户明确询问时，才用 record_reply 向用户同步 1—3 句。无未读、已读重复、纯 keepalive、单纯“继续监控/继续轮询”必须静默续等，禁止制造可见消息堵塞队列。用户要求“全体/各角色/多人”回答时必须 team_broadcast + team_collect_responses 收真实回应，禁止代答。'
     : '5. 每轮先处理未读消息：调用 team_list_inbox / team_read_message；directive 或 question 必须用 team_respond_message 回应原 messageId。进度与结论除自动同步外，关键节点必须主动向主控上报（team_report_progress / team_send_message），静默干活即失职。'
   const skills = role.skills.length
     ? `已分配 Agent Skills：${role.skills.map((skill) => `/${skill.name}`).join('、')}。只在任务相关时按 Cursor Skills 机制调用，不要把技能名称当作已完成工作。`
     : '当前席位没有单独指定 Agent Skill；仍可按 Cursor 自动发现机制使用工作区内相关技能。'
   return [
-    `你是群枢外置协作中枢中的「${role.name}」Agent。`,
+    `你是拾光外置协作中枢中的「${role.name}」Agent。`,
+    effectiveLead && role.templateKey !== 'lead'
+      ? '当前权限：你已接管为本 TeamRun 的唯一有效主控；保留原专业职责，同时承担全局规划、调度、消息协调与收尾责任。'
+      : input.originalLeadDemoted
+        ? '当前权限：主控权限已转移给临时主控；你保留原席位上下文，但不得再调用主控专用工具，直至权限复位。'
+        : '',
     `稳定身份：${slot.id}；本次可替换运行时：CH-${channelId}；TeamRun：${run.id}。`,
     `本次 Cursor 会话绑定标记：${telemetryMarker}`,
     `团队目标：${run.goal}`,
@@ -522,14 +544,14 @@ export function buildTeamRoleBriefing(input: {
     skills,
     `所有团队工具与通信保活工具只调用 ${server}，且每次传 ${ch}；禁止调用其他通道。`,
     '按顺序执行：',
-    `1. 本简报即启动回执；随后调用 ${server}.team_get_context ${ch}，只读取本轮团队上下文快照（稳定成员目录、未读协作消息、本轮已确认记忆）；不要读取或复述 Cursor 历史聊天。若有未读消息，先读取并处理。聊天记录本身不是团队记忆。`,
+    `1. 本简报即启动回执；随后调用 ${server} 的 team_get_context ${ch}，只读取本轮团队上下文快照（稳定成员目录、未读协作消息、本轮已确认记忆）；不要读取或复述 Cursor 历史聊天。若有未读消息，先读取并处理。聊天记录本身不是团队记忆。`,
     roleWorkflow,
     executionWorkflow,
     collaborationWorkflow,
     `6. 单点 Agent 间指令与回应使用 team_send_message/team_respond_message，以 messageId 建立回执；禁止使用普通回复或 ${server} 冒充成员已响应。`,
     `7. 发现会影响团队后续工作的决策、约束、风险或经验时，调用 team_memory_propose 并附消息、任务或文件来源；主控与质量角色应在协作过程中处理待确认提案，不要求用户整理记忆。`,
-    `8. 每轮开始时自定 turn 标识；过程中每次工具调用/关键思考后调用 record_process 流式上报（同 block.id 翻转状态，界面实时渲染）；只有处理真实用户消息并输出完整可见回复后，才调用 ${server}.record_reply ${ch}（带同一 turn 归档本轮过程）同步给用户，再调用 ${server}.check_messages ${ch} 等待下一条消息。内部协作通知只用 team_* 回执处理，不算用户可见回复；${server}.check_messages 返回 keepalive、无未读或已读重复时，不要输出可见回复、不要 record_reply，直接静默继续等待。`,
-    role.templateKey === 'lead'
+    `8. 思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件，不要额外上报过程。只有处理真实用户消息并输出完整可见回复后，才调用 ${server} 的 record_reply ${ch} 同步正文，再调用 ${server} 的 check_messages ${ch} 等待下一条消息。内部协作通知只用 team_* 回执处理，不算用户可见回复；${server} 的 check_messages 返回 keepalive、无未读或已读重复时，不要输出可见回复、不要 record_reply，直接静默继续等待。`,
+    effectiveLead
       ? '9. 只有任务板已经由用户明确启动/分配后，才主动调度、催办（team_send_message 询问成员）或处理真实上报；空任务板表示等待用户下一条指令，不要自动拆任务。向用户说明现状只用于状态真的变化、出现阻塞或用户询问，禁止重复发送同一进展。'
       : '9. 遇到额度耗尽、工具缺失或无法推进的阻塞：立即向主控 team_send_message 上报阻塞原因并说明已尝试的步骤，禁止沉默卡死。',
     '如果额度耗尽、授权失败、工具缺失或出现不可恢复错误：明确报告一次并停止自动重试，禁止制造无限调用循环。'

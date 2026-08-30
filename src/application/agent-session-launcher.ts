@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { DesktopSnapshot } from '../shared/desktop-api'
-import type { AgentLaunchItem, AgentLaunchPlan } from '../domain/agent-launch'
+import type { AgentLaunchItem, AgentLaunchPlan, AgentLaunchRequest } from '../domain/agent-launch'
+import type { CursorModelSelection } from '../domain/cursor-model'
+import { isAgentOnDuty } from '../domain/channel-message'
 import { cursorComposerBindingMarker } from '../domain/cursor-telemetry'
 import { CURSOR_CDP_UNAVAILABLE_HINT } from '../infrastructure/cursor/cursor-cdp-session-creator'
 
@@ -22,6 +24,7 @@ export interface AgentLaunchCreatorPort {
     name: string
     prompt: string
     workspacePath?: string
+    modelSelection?: CursorModelSelection
   }): Promise<AgentLaunchCreateReceipt>
 }
 
@@ -30,6 +33,8 @@ export interface AgentLaunchContextPort {
   activeWorkspacePath(): string | undefined
   /** 当前通道运行绑定的 bindingKey（存在时为开场白追加精确绑定标记）。 */
   bindingKeyForChannel(channelId: string): string | undefined
+  /** 席位持久化的默认模型；本次 launch request 可覆盖。 */
+  modelSelectionForChannel?(channelId: string): CursorModelSelection | undefined
 }
 
 export interface AgentLaunchSnapshotPort {
@@ -46,6 +51,8 @@ export interface AgentSessionLauncherOptions {
   now?: () => number
   /** 本轮所有通道均已创建提交成功（CDP 硬回执齐全）时触发一次；后续 composer/waiting 验证继续。 */
   onAllTriggered?: (plan: AgentLaunchPlan) => void
+  /** 整轮进入终态时触发；供上层把创建失败收敛回 TeamRun 状态机。 */
+  onFinished?: (plan: AgentLaunchPlan) => void
 }
 
 const DEFAULT_TRIGGER_TIMEOUT_MS = 15_000
@@ -57,8 +64,8 @@ const DEFAULT_STAGGER_MS = 0
 /**
  * 一键批量创建 Cursor Agent 会话的编排器。
  *
- * 创建路径：CDP 直连 Cursor 渲染进程，调用晴天网关联接（__qtComposerBridge）
- * 的原生 createAgent + submitByComposerId——与插件批量重试同源同 API，
+ * 创建路径：CDP 直连 Cursor 渲染进程；按席位 modelSelection 创建带独立
+ * partialState.modelConfig 的 Composer，再由晴天网关联接 submitByComposerId 提交——
  * 纯程序化、无 DOM、无焦点竞争，因此全部通道真并发（默认无 stagger）。
  * 每个通道独立走三级证据判定，总耗时取决于最慢的一个而非求和：
  *   1. trigger：CDP 创建 + 提交完成，返回真实 composerId（硬回执）
@@ -76,6 +83,7 @@ export class AgentSessionLauncher {
   private readonly now: () => number
   private current: AgentLaunchPlan | undefined
   private readonly onAllTriggered?: (plan: AgentLaunchPlan) => void
+  private readonly onFinished?: (plan: AgentLaunchPlan) => void
 
   constructor(
     private readonly prompts: AgentLaunchPromptPort,
@@ -92,20 +100,35 @@ export class AgentSessionLauncher {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
     this.now = options.now ?? Date.now
     this.onAllTriggered = options.onAllTriggered
+    this.onFinished = options.onFinished
   }
 
   getPlan(): AgentLaunchPlan | undefined {
     return this.current ? structuredClone(this.current) : undefined
   }
 
-  async launch(channelIds: string[], onProgress?: (plan: AgentLaunchPlan) => void): Promise<AgentLaunchPlan> {
+  async launch(
+    requests: Array<string | AgentLaunchRequest>,
+    onProgress?: (plan: AgentLaunchPlan) => void
+  ): Promise<AgentLaunchPlan> {
     if (this.current?.state === 'running') throw new Error('已有会话创建任务进行中')
-    const unique = [...new Set(channelIds.map((id) => id.trim()).filter(Boolean))]
-    if (!unique.length) throw new Error('请选择需要创建会话的通道')
+    const unique = new Map<string, CursorModelSelection | undefined>()
+    for (const request of requests) {
+      const channelId = (typeof request === 'string' ? request : request.channelId).trim()
+      if (!channelId || unique.has(channelId)) continue
+      const requested = typeof request === 'string' ? undefined : request.modelSelection
+      unique.set(channelId, requested ?? this.context.modelSelectionForChannel?.(channelId))
+    }
+    if (!unique.size) throw new Error('请选择需要创建会话的通道')
     const plan: AgentLaunchPlan = {
       id: randomUUID(),
       state: 'running',
-      items: unique.map((channelId) => ({ channelId, stage: 'trigger' as const, message: '等待触发' })),
+      items: [...unique].map(([channelId, modelSelection]) => ({
+        channelId,
+        modelSelection: modelSelection ? structuredClone(modelSelection) : undefined,
+        stage: 'trigger' as const,
+        message: modelSelection ? `等待触发 · ${modelSelection.displayName}` : '等待触发 · Cursor 当前模型'
+      })),
       startedAt: this.now()
     }
     this.current = plan
@@ -128,6 +151,7 @@ export class AgentSessionLauncher {
     plan.state = plan.items.every((item) => item.stage === 'done') ? 'done' : 'failed'
     plan.finishedAt = this.now()
     emit()
+    this.onFinished?.(structuredClone(plan))
     return structuredClone(plan)
   }
 
@@ -157,14 +181,20 @@ export class AgentSessionLauncher {
       prompt += `\n\n本次 Cursor 会话绑定标记：${cursorComposerBindingMarker({ bindingKey, channelId: item.channelId })}`
     }
 
-    this.setStage(item, 'trigger', '正在 Cursor 窗口内创建并提交会话…', emit)
+    this.setStage(
+      item,
+      'trigger',
+      `正在 Cursor 窗口内创建 ${item.modelSelection?.displayName ?? '当前模型'} 会话…`,
+      emit
+    )
     let receipt: AgentLaunchCreateReceipt
     try {
       receipt = await this.creator.createAgentSession({
         channelId: item.channelId,
-        name: `CH-${item.channelId} · 群枢会话`,
+        name: `CH-${item.channelId} · 拾光会话`,
         prompt,
-        workspacePath: this.context.activeWorkspacePath()
+        workspacePath: this.context.activeWorkspacePath(),
+        modelSelection: item.modelSelection
       })
     } catch (reason) {
       this.fail(item, `创建调用未能完成：${this.reasonOf(reason)}`, emit)
@@ -217,7 +247,9 @@ export class AgentSessionLauncher {
       this.waitingTimeoutMs,
       () => {
         const view = this.sessionView(item.channelId)
-        return view?.waiting && view.online ? true : undefined
+        // 在岗 = 在线且处于协议内相位（长轮询/保活/处理中），不能只认裸 waiting：
+        // 新会话签到、首次 record_reply 等启动动作均处于 processing 相位。
+        return isAgentOnDuty(view) ? true : undefined
       },
       (elapsedSec) => {
         const activityAt = this.sessionView(item.channelId)?.lastAgentActivityAt
@@ -237,12 +269,13 @@ export class AgentSessionLauncher {
     emit()
   }
 
-  private sessionView(channelId: string): { online: boolean; waiting: boolean; composerId?: string; lastAgentActivityAt?: number } | undefined {
+  private sessionView(channelId: string): { online: boolean; waiting: boolean; connectionPhase?: string; composerId?: string; lastAgentActivityAt?: number } | undefined {
     const session = this.snapshots.getSnapshot().sessions.find((candidate) => candidate.channelId === channelId)
     if (!session) return undefined
     return {
       online: session.online,
       waiting: session.waiting,
+      connectionPhase: session.connectionPhase,
       composerId: session.composerId,
       lastAgentActivityAt: session.lastAgentActivityAt
     }

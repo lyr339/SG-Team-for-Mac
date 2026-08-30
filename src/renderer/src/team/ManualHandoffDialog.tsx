@@ -32,7 +32,11 @@ export function ManualHandoffDialog({ options, busy, error, onClose, onConfirm }
                 ? <AgentAvatar avatarId={candidate.avatarId} name={candidate.roleName} online size="sm" />
                 : <i className="handoff-candidate-channel">CH{candidate.channelId}</i>}
               <span><strong>{candidate.roleName} · CH-{candidate.channelId}</strong><small>{candidate.blocker || candidate.impact}</small></span>
-              <em>{candidate.kind === 'standby' ? '备用' : candidate.eligible ? '可交接' : '不可用'}</em>
+              <em>{candidate.kind === 'standby'
+                ? '备用'
+                : candidate.mode === 'lead_authority' && candidate.eligible
+                  ? '接管主控'
+                  : candidate.eligible ? '可交接' : '不可用'}</em>
             </label>
           ))}
           {!options.candidates.length ? <p>当前没有仍在线的候选 Agent。</p> : null}

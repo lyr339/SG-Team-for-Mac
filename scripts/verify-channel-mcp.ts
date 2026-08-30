@@ -1,6 +1,6 @@
 /**
  * 一体化 S3-1 统一通道 MCP 冒烟（真实 stdio + 构建产物）：
- * - unified 角色（qunshu-ch-N 单条目）：通信四工具 + 团队工具同服，
+ * - unified 角色（SG Team 单条目）：通信三工具 + 团队工具同服，
  *   投递/守门/同步/再投递全链路，身份按 channelId 实时解析；
  * - 活性钩子：团队工具调用同样刷新通道 presence（S2 红利保留）。
  *
@@ -56,15 +56,15 @@ async function openUnifiedClient(channelId: string) {
     args: [mcpServerPath],
     env: {
       ...inheritedEnvironment,
-      QINGTIAN_TEAM_DB: databasePath,
-      QINGTIAN_SERVER_ROLE: 'unified',
-      QINGTIAN_WORKSPACE_PATH: join(directory, 'workspace')
+      SG_TEAM_DB: databasePath,
+      SG_TEAM_SERVER_ROLE: 'unified',
+      SG_TEAM_WORKSPACE_PATH: join(directory, 'workspace')
     },
     stderr: 'pipe'
   })
   let stderr = ''
   transport.stderr?.on('data', (chunk) => { stderr += chunk.toString() })
-  const client = new Client({ name: 'qunshu-channel-smoke', version: '1.0.0' })
+  const client = new Client({ name: 'sg-team-channel-smoke', version: '1.0.0' })
   await client.connect(transport)
   return {
     client,
@@ -82,13 +82,13 @@ function textOf(result: Awaited<ReturnType<Client['callTool']>>): string {
     .join('\n')
 }
 
-// ── 统一服务器：通信四工具 + 团队工具同服 ────────────────────────────
+// ── 统一服务器：通信三工具 + 团队工具同服 ────────────────────────────
 const repository = new SqliteChannelMessageRepository(databasePath)
 repository.enqueueOutbound('1', '冒烟：请审查统一通道服务器', 1_000)
 
 const channel = await openUnifiedClient('1')
 const toolNames = (await channel.client.listTools()).tools.map((tool) => tool.name).sort()
-for (const expected of ['check_messages', 'qingtian', 'record_reply', 'wait_messages', 'team_check_in', 'team_list_mine']) {
+for (const expected of ['check_messages', 'record_reply', 'team_check_in', 'team_list_mine']) {
   if (!toolNames.includes(expected)) throw new Error(`统一服务器缺少工具 ${expected}：${toolNames}`)
 }
 
@@ -98,7 +98,7 @@ if (delivered.isError) throw new Error(`投递失败：${textOf(delivered)}`)
 const deliveredText = textOf(delivered)
 if (!deliveredText.includes('冒烟：请审查统一通道服务器')) throw new Error('投递正文缺失')
 if (!deliveredText.includes('持续对话协议')) throw new Error('首投协议后缀缺失')
-if (!deliveredText.includes('qunshu-ch-1')) throw new Error('统一服务器名未进入投递后缀')
+if (!deliveredText.includes('SG Team · CH-1')) throw new Error('统一服务器名未进入投递后缀')
 if (!deliveredText.includes('[轮次 #1 · 队列剩余 0 条]')) throw new Error('轮次后缀缺失')
 
 repository.enqueueOutbound('1', '第二条消息', 2_000)
@@ -125,7 +125,7 @@ if (!presence || presence.deliveredCount !== 2 || presence.turnCount < 3) {
 }
 if (Date.now() - presence.lastSeenAt > 10_000) throw new Error('presence 心跳未刷新')
 await channel.close()
-if (!channel.stderr().includes('[qunshu-mcp] ready unified')) {
+if (!channel.stderr().includes('[sg-team-mcp] ready unified')) {
   throw new Error(`统一服务器就绪日志缺失：${channel.stderr()}`)
 }
 

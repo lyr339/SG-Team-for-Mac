@@ -18,6 +18,12 @@ export interface CursorAccountDeleteResult {
   authExpired?: boolean
   /** 官网要求先退出团队——奥仔 completed 后「退团」副作用落地有服务端延迟（实机实测），调用方应等待重试而非识败。 */
   needLeaveTeam?: boolean
+  /** 失败响应的 HTTP 状态码（请求未送达时缺省），用于区分 429 限流 / 403 封锁 / 5xx 服务端。 */
+  status?: number
+  /** 失败响应 Retry-After 头解析出的秒数（未携带或无法解析时缺省）。 */
+  retryAfterSec?: number
+  /** 限流型拒绝（HTTP 429 / 携带 Retry-After / 正文含 "Try again later"）——调用方应指数退避重试而非识败。 */
+  rateLimited?: boolean
 }
 
 export interface CursorAccountDeleterOptions {
@@ -43,6 +49,25 @@ function extractSetCookie(headers: Headers, name: string): string | undefined {
 function boundedError(value: unknown): string {
   const text = value instanceof Error ? value.message : String(value ?? '')
   return text.replace(/\s+/g, ' ').trim().slice(0, 200) || '未知错误'
+}
+
+/**
+ * 解析 Retry-After 响应头为秒数。支持两种合法形态：
+ *   - 非负整数秒（如 "20"）；
+ *   - HTTP-date（如 "Wed, 27 Aug 2026 05:30:00 GMT"），按与 nowMs 的差值折算。
+ * 无法解析返回 undefined。
+ */
+export function parseRetryAfterSec(value: string | null | undefined, nowMs: number): number | undefined {
+  if (!value) return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  if (/^\d+$/.test(trimmed)) {
+    const sec = Number.parseInt(trimmed, 10)
+    return Number.isFinite(sec) && sec >= 0 ? sec : undefined
+  }
+  const at = Date.parse(trimmed)
+  if (Number.isNaN(at)) return undefined
+  return Math.max(0, Math.round((at - nowMs) / 1000))
 }
 
 export class CursorAccountDeleter {
@@ -84,7 +109,7 @@ export class CursorAccountDeleter {
 
   async deleteAccount(sessionToken: string): Promise<CursorAccountDeleteResult> {
     const token = sessionToken.trim()
-    if (!token) return { ok: false, message: '缺少会话 Token，无法删除官网账号' }
+    if (!token) return { ok: false, message: '缺少会话 Token，无法加固账号' }
 
     const sessionCookie = `WorkosCursorSessionToken=${encodeURIComponent(token)}`
     const csrfToken = await this.mintCsrfToken(sessionCookie)
@@ -111,30 +136,54 @@ export class CursorAccountDeleter {
 
     if (response.ok) return { ok: true, message: 'Cursor 官网账号已删除' }
 
+    const status = response.status
+    const retryAfterSec = parseRetryAfterSec(response.headers.get('retry-after'), Date.now())
+
     // 会话失效：官网 307 重定向到 WorkOS 认证链（redirect:'manual' 下直接可见）
-    if (response.status >= 300 && response.status < 400) {
-      return { ok: false, authExpired: true, message: '会话已失效（官网要求重新登录）' }
+    if (status >= 300 && status < 400) {
+      return { ok: false, authExpired: true, status, retryAfterSec, message: '会话已失效（官网要求重新登录）' }
     }
 
-    let detail = `HTTP ${response.status}`
+    // 诊断增强：失败结果必须能直接区分 429 限流 / 403 封锁 / 5xx 服务端——
+    // 统一带上 HTTP 状态码、Retry-After 与响应体截断（≤160 字符）。
+    let bodySnippet = ''
+    let detail = ''
     try {
-      const body: unknown = await response.json()
-      const message = typeof body === 'object' && body !== null
-        ? (body as { error?: { message?: unknown } }).error?.message
-        : undefined
-      if (typeof message === 'string' && message.trim()) detail = message.trim().slice(0, 200)
+      const raw = await response.text()
+      bodySnippet = raw.replace(/\s+/g, ' ').trim().slice(0, 160)
+      try {
+        const parsed: unknown = JSON.parse(raw)
+        const message = typeof parsed === 'object' && parsed !== null
+          ? (parsed as { error?: { message?: unknown } }).error?.message
+          : undefined
+        if (typeof message === 'string' && message.trim()) detail = message.trim()
+      } catch {
+        // 非 JSON 响应体：诊断直接用截断后的原文
+      }
     } catch {
-      // 保留 HTTP 状态码
+      // 响应体读取失败：仅保留状态码
     }
-    if (detail === 'invalid_csrf_token') {
-      return { ok: false, message: '官网拒绝了删除请求（CSRF 校验失败）' }
+    const summary = detail || bodySnippet
+
+    if (summary === 'invalid_csrf_token') {
+      return { ok: false, status, retryAfterSec, message: '官网拒绝了加固请求（CSRF 校验失败）' }
     }
-    if (detail.toLowerCase().includes('leave the team')) {
-      return { ok: false, needLeaveTeam: true, message: `官网要求先退出团队：${detail}` }
+    if (summary.toLowerCase().includes('leave the team')) {
+      return { ok: false, needLeaveTeam: true, status, retryAfterSec, message: `官网要求先退出团队：${summary.slice(0, 200)}` }
     }
-    if (response.status === 401 || response.status === 403) {
-      return { ok: false, authExpired: true, message: `官网拒绝了删除请求（会话可能已失效：${detail}）` }
+    // 限流型拒绝：HTTP 429 / 携带 Retry-After / 正文含 "Try again later"
+    // （cursor.com 应用层冷却，会话本身仍有效——调用方应退避重试而非轮换 token）
+    const rateLimited = status === 429 || retryAfterSec !== undefined || /try again later/i.test(summary)
+    if ((status === 401 || status === 403) && !rateLimited) {
+      return { ok: false, authExpired: true, status, retryAfterSec, message: `官网拒绝了删除请求（会话可能已失效：${summary || `HTTP ${status}`}）` }
     }
-    return { ok: false, message: `官网删除账号失败：${detail}` }
+    // 「官网删除账号失败：」前缀被 UI 依赖，改动时不得移除
+    return {
+      ok: false,
+      status,
+      retryAfterSec,
+      rateLimited: rateLimited || undefined,
+      message: `官网删除账号失败：HTTP ${status}${retryAfterSec !== undefined ? `（Retry-After ${retryAfterSec}s）` : ''}：${summary || '无响应体'}`
+    }
   }
 }

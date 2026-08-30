@@ -1,4 +1,4 @@
-# 群枢软件优化清单（reviewer / CH-3 审计产出）
+# 拾光软件优化清单（reviewer / CH-3 审计产出）
 
 审计基线（2026-08-25 实测）：typecheck ✅、vitest 49 文件 355 用例全绿、build + smoke:channel/mcp ✅。
 产物体积：renderer 764K JS + 117K CSS；main 495K；mcp 970K。
@@ -10,8 +10,8 @@
 
 | # | 项 | 优先级 | 成本 | 依据 |
 |---|----|--------|------|------|
-| 1.1 | 根目录误置构建产物清理：`index-FYVr4WmZ.js`（704K，8/22）与 `index.js`（476K，8/24）不是源码，删除并加 .gitignore | P0 | S | 根目录 ls 实测 |
-| 1.2 | 空目录 `cursor-bridge-extension/`（0 文件）删除 | P0 | S | ls 实测 |
+| 1.1 | ✅ 已完成：根目录误置构建产物已清理并加 .gitignore 防线（`/index-*.js`） | P0 | S | 根目录实测 |
+| 1.2 | ✅ 已完成：空目录已删除 | P0 | S | ls 实测 |
 | 1.3 | ✅ 已完成：快照→渲染链路完成结构共享、SessionRailCard memo、稳定回调；长列表虚拟化暂缓（500 条上限下滚动锚定/分组跨窗风险高于收益） | P1 | M–L | snapshot-sharing / App acceptSnapshot / SessionRailCard |
 | 1.4 | ✅ 已完成：主进程定时器采取克制收敛，最重的 Cursor telemetry 空闲期 2s → 10s 降频，活跃期不变；统一总线暂缓以避免时序风险 | P1 | M | desktop-session-service |
 | 1.5 | ✅ 已完成：relay conversations 引用共享 + session fingerprint 缓存 + enrich 层同步缓存；基准 4 通道 × 200 轮显示 conversations 75% 复用、session 100% 复用 | P1 | S–M | channel-message-relay / desktop-session-service |
@@ -45,7 +45,7 @@
 
 | # | 项 | 优先级 | 成本 | 依据 |
 |---|----|--------|------|------|
-| 5.1 | 附件校验零单测：attachmentRejection（白名单/大小/文案）与 handleFileSelect 的 quota/合计逻辑仅靠本次浏览器手测，无回归保护。抽纯函数 + vitest 边界用例 | P0 | S | ComposerWorkbench.tsx + tests/ 实测 |
+| 5.1 | ✅ 已完成：attachment-rules 纯函数抽取 + vitest 边界用例（白名单/大小/文案/合计配额） | P0 | S | tests/attachment-rules.test.ts |
 | 5.2 | ✅ 部分完成：新增 ProcessBlocks 三态/ARIA 测试与 ComposerWorkbench 快捷提示词/附件/错误态 SSR 测试；SessionWorkspace/App 组件级测试仍可择机补 | P1 | M | tests/process-blocks.test.tsx / tests/composer-workbench.test.tsx |
 | 5.3 | ✅ 已完成：新增 GitHub Actions 最小 CI，跑 `npm ci`、typecheck、test、build、smoke:channel | P1 | S–M | .github/workflows/ci.yml |
 | 5.4 | 发布门禁：verify:mac（打包产物冒烟）纳入定期发布流程；冒烟场景已覆盖通信/团队工具/附件清单 ✅ | P2 | S | package.json |

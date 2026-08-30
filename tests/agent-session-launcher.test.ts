@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentSessionLauncher, type AgentLaunchCreateReceipt } from '../src/application/agent-session-launcher'
 import type { DesktopSnapshot } from '../src/shared/desktop-api'
 import type { AgentLaunchPlan } from '../src/domain/agent-launch'
+import type { CursorModelSelection } from '../src/domain/cursor-model'
 
 interface FakeSession {
   channelId: string
@@ -16,8 +17,10 @@ interface HarnessOptions {
   promptErrors?: Record<string, string>
   createResults?: Record<string, AgentLaunchCreateReceipt>
   bindingKeys?: Record<string, string>
+  modelSelections?: Record<string, CursorModelSelection>
   workspacePath?: string
   onAllTriggered?: (plan: AgentLaunchPlan) => void
+  onFinished?: (plan: AgentLaunchPlan) => void
 }
 
 function snapshotWith(sessions: FakeSession[]): DesktopSnapshot {
@@ -27,7 +30,13 @@ function snapshotWith(sessions: FakeSession[]): DesktopSnapshot {
 function createHarness(initial: FakeSession[], options: HarnessOptions = {}) {
   const state = { sessions: new Map(initial.map((session) => [session.channelId, { ...session }])) }
   const promptCalls: string[] = []
-  const createCalls: Array<{ channelId: string; name: string; prompt: string; workspacePath?: string }> = []
+  const createCalls: Array<{
+    channelId: string
+    name: string
+    prompt: string
+    workspacePath?: string
+    modelSelection?: CursorModelSelection
+  }> = []
   const launcher = new AgentSessionLauncher(
     {
       fetchStartPrompt: async (channelId) => {
@@ -46,10 +55,11 @@ function createHarness(initial: FakeSession[], options: HarnessOptions = {}) {
     },
     {
       activeWorkspacePath: () => options.workspacePath,
-      bindingKeyForChannel: (channelId) => options.bindingKeys?.[channelId]
+      bindingKeyForChannel: (channelId) => options.bindingKeys?.[channelId],
+      modelSelectionForChannel: (channelId) => options.modelSelections?.[channelId]
     },
     { getSnapshot: () => snapshotWith([...state.sessions.values()]) },
-    { sleep: async () => {}, pollIntervalMs: 1, triggerTimeoutMs: 50, composerTimeoutMs: 50, waitingTimeoutMs: 50, onAllTriggered: options.onAllTriggered }
+    { sleep: async () => {}, pollIntervalMs: 1, triggerTimeoutMs: 50, composerTimeoutMs: 50, waitingTimeoutMs: 50, onAllTriggered: options.onAllTriggered, onFinished: options.onFinished }
   )
   return { launcher, promptCalls, createCalls, state }
 }
@@ -91,7 +101,7 @@ describe('AgentSessionLauncher', () => {
     readyWaiting(state, '2', 'composer-2')
     const plan = await pending
     expect(plan.state).toBe('done')
-    expect(createCalls[0]).toMatchObject({ channelId: '2', name: 'CH-2 · 群枢会话' })
+    expect(createCalls[0]).toMatchObject({ channelId: '2', name: 'CH-2 · 拾光会话' })
     expect(createCalls[0]?.prompt).toBe('PROMPT-CH-2')
   })
 
@@ -107,7 +117,7 @@ describe('AgentSessionLauncher', () => {
     readyWaiting(state, '3', 'composer-3')
     const plan = await pending
     expect(plan.state).toBe('done')
-    expect(createCalls[0]?.prompt).toContain('[[QINGTIAN_TEAM_BIND:bind-abc:CH-3]]')
+    expect(createCalls[0]?.prompt).toContain('[[SG_TEAM_BIND:bind-abc:CH-3]]')
   })
 
   it('取开场提示词失败 → trigger 层失败', async () => {
@@ -153,6 +163,29 @@ describe('AgentSessionLauncher', () => {
     readyWaiting(state, '2', 'composer-2')
     await pending
     expect(createCalls[0]?.workspacePath).toBe('/Users/test/team-workspace')
+  })
+
+  it('uses the persisted per-channel model and allows a launch-time override', async () => {
+    const persisted: CursorModelSelection = {
+      modelId: 'kimi-k3', displayName: 'Kimi K3', parameters: [{ id: 'reasoning', value: 'high' }]
+    }
+    const override: CursorModelSelection = {
+      modelId: 'claude-fable-5', displayName: 'Claude Fable 5', parameters: [
+        { id: 'thinking', value: 'true' },
+        { id: 'context', value: '1m' },
+        { id: 'effort', value: 'max' }
+      ]
+    }
+    const { launcher, state, createCalls } = createHarness(
+      [{ channelId: '2', online: true, waiting: false }],
+      { modelSelections: { '2': persisted } }
+    )
+    const pending = launcher.launch([{ channelId: '2', modelSelection: override }])
+    await Promise.resolve()
+    readyWaiting(state, '2', 'composer-2')
+    const plan = await pending
+    expect(createCalls[0]?.modelSelection).toEqual(override)
+    expect(plan.items[0]?.modelSelection).toEqual(override)
   })
 
   it('遥测绑定到别的 composerId（非本次回执）→ composer 层失败', async () => {
@@ -235,6 +268,42 @@ describe('AgentSessionLauncher', () => {
     expect(plan.items.map((item) => item.stage)).toEqual(['done', 'done'])
   })
 
+  it('批量创建时每个通道严格携带各自选择的模型与完整参数', async () => {
+    const selections: Record<string, CursorModelSelection> = {
+      '1': {
+        modelId: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', maxMode: true,
+        parameters: [
+          { id: 'context', value: '1m' },
+          { id: 'reasoning', value: 'max' },
+          { id: 'fast', value: 'false' }
+        ]
+      },
+      '2': {
+        modelId: 'claude-opus-5', displayName: 'Claude Opus 5', maxMode: true,
+        parameters: [
+          { id: 'thinking', value: 'true' },
+          { id: 'context', value: '1m' },
+          { id: 'effort', value: 'high' },
+          { id: 'fast', value: 'true' }
+        ]
+      }
+    }
+    const { launcher, state, createCalls } = createHarness([
+      { channelId: '1', online: true, waiting: false },
+      { channelId: '2', online: true, waiting: false }
+    ])
+    const pending = launcher.launch([
+      { channelId: '1', modelSelection: selections['1'] },
+      { channelId: '2', modelSelection: selections['2'] }
+    ])
+    for (let i = 0; i < 50 && createCalls.length < 2; i += 1) await Promise.resolve()
+    expect(Object.fromEntries(createCalls.map((call) => [call.channelId, call.modelSelection])))
+      .toEqual(selections)
+    readyWaiting(state, '1', 'composer-1')
+    readyWaiting(state, '2', 'composer-2')
+    expect((await pending).state).toBe('done')
+  })
+
   it('单通道失败不阻塞其他通道完成', async () => {
     const { launcher, state } = createHarness(
       [
@@ -290,6 +359,21 @@ describe('AgentSessionLauncher', () => {
     const plan = await pending
     expect(plan.state).toBe('failed')
     expect(fired).toHaveLength(0)
+  })
+
+  it('失败终态通过 onFinished 精确回传一次', async () => {
+    const finished: AgentLaunchPlan[] = []
+    const { launcher } = createHarness(
+      [{ channelId: '1', online: true, waiting: false }],
+      {
+        createResults: { '1': { ok: false, message: '启动失败' } },
+        onFinished: (plan) => finished.push(plan)
+      }
+    )
+    await launcher.launch(['1'])
+    expect(finished).toHaveLength(1)
+    expect(finished[0]?.state).toBe('failed')
+    expect(finished[0]?.items[0]?.message).toBe('启动失败')
   })
 
   it('全部通道本已待命（未发生创建）时不触发 onAllTriggered', async () => {

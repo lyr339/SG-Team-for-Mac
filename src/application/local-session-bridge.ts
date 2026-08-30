@@ -3,7 +3,7 @@ import type { DesktopSessionTransport } from './desktop-session-service'
 import type { TeamControlBridge } from './team-control-service'
 import type { ChannelMessageRelay } from './channel-message-relay'
 
-const LOCAL_ENDPOINT = 'qunshu://local-channel-runtime'
+const LOCAL_ENDPOINT = 'shiguang://local-channel-runtime'
 
 type SnapshotListener = (snapshot: DesktopSnapshot) => void
 
@@ -23,10 +23,10 @@ function localSnapshot(now = Date.now()): DesktopSnapshot {
 }
 
 /**
- * 群枢本地通道桥。
+ * 拾光本地通道桥。
  *
  * 旧版通过 qingtian-v2 的 3180 WebSocket 投递消息、发现通道；一体化后
- * 通道收发由 SQLite + qunshu-ch-N 内嵌统一 server 完成。这个桥只提供本机控制面
+ * 通道收发由 SQLite + SG Team 内嵌统一 server 完成。这个桥只提供本机控制面
  * 快照与发送入口，确保组队、安装和启动不再依赖旧插件进程。
  */
 export class LocalSessionBridge implements DesktopSessionTransport, TeamControlBridge {
@@ -47,7 +47,7 @@ export class LocalSessionBridge implements DesktopSessionTransport, TeamControlB
 
   beginConversationScope(input: { runId: string; startedAt: number }): DesktopSnapshot {
     if (!input.runId.trim() || !Number.isFinite(input.startedAt)) throw new Error('会话作用域无效')
-    this.relay.resetScope(input.startedAt)
+    this.relay.resetScope(input.runId, input.startedAt)
     const snapshot = this.getSnapshot()
     this.emit(snapshot)
     return snapshot

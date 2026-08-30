@@ -40,7 +40,7 @@ function sendInputOf(value: unknown): SendMessageInput {
 }
 
 /**
- * 群枢本地会话 IPC（一体化后无外置连接面）：
+ * 拾光本地会话 IPC（一体化后无外置连接面）：
  * 快照读取/推送与消息发送直连 DesktopSessionService，
  * 内嵌通道经 SQLite 队列分流，其余通道无传输可走。
  */

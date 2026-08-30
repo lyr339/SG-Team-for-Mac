@@ -103,9 +103,7 @@ export class TeamCollaborationAgentService {
 
   isCoordinator(): boolean {
     const agent = this.currentAgent()
-    if (agent.isActingLead) return true
-    const capabilities = new Set(this.identity.capabilities)
-    return capabilities.has('coordination') && capabilities.has('planning')
+    return agent.isEffectiveLead === true
   }
 
   listInbox(unreadOnly = true, limit = 30): TeamInboxEntry[] {
@@ -146,7 +144,7 @@ export class TeamCollaborationAgentService {
     clientMessageId?: string
   }): TeamMessage {
     const agent = this.currentAgent()
-    if (input.kind === 'directive' && agent.roleTemplateKey !== 'lead' && !agent.isActingLead) {
+    if (input.kind === 'directive' && !agent.isEffectiveLead) {
       throw new TaskPoolError('lead_only_directive', '只有主控协调可以发送任务指令')
     }
     const recipientSlotId = input.recipientSlotId.trim()
@@ -178,7 +176,7 @@ export class TeamCollaborationAgentService {
     clientMessageId?: string
   }): TeamMessage[] {
     const agent = this.currentAgent()
-    if (agent.roleTemplateKey !== 'lead' && !agent.isActingLead) {
+    if (!agent.isEffectiveLead) {
       throw new TaskPoolError('lead_only_broadcast', '只有主控协调可以向全体成员广播')
     }
     const recipients = this.repository.listRunMembers(agent.runId)
@@ -208,7 +206,7 @@ export class TeamCollaborationAgentService {
     response?: string
   }> {
     const agent = this.currentAgent()
-    if (agent.roleTemplateKey !== 'lead' && !agent.isActingLead) {
+    if (!agent.isEffectiveLead) {
       throw new TaskPoolError('lead_only_collect', '只有主控协调可以集中收集团队回应')
     }
     const requestedIds = (messageIds ?? []).map((id) => id.trim()).filter(Boolean)
@@ -243,9 +241,9 @@ export class TeamCollaborationAgentService {
     eventKey: string
   }): TeamMessage | undefined {
     const agent = this.currentAgent()
-    if (agent.roleTemplateKey === 'lead') return undefined
+    if (agent.isEffectiveLead) return undefined
     const lead = this.repository.listRunMembers(agent.runId)
-      .find((member) => member.roleTemplateKey === 'lead')
+      .find((member) => member.isEffectiveLead)
     if (!lead) return undefined
     return this.repository.createMessage({
       runId: agent.runId,
@@ -372,6 +370,69 @@ export class TeamCollaborationAgentService {
       }
     }
     return this.tasks.plan(inputs)
+  }
+
+  createLeadTakeoverContext(input: {
+    previousLeadSlotId?: string
+    evidence: string[]
+    recoveredTaskIds: string[]
+  }): TeamMessage {
+    const agent = this.currentAgent()
+    if (!agent.isEffectiveLead) {
+      throw new TaskPoolError('lead_only_takeover_context', '只有当前有效主控可以生成接管上下文')
+    }
+    const snapshot = this.repository.loadRun(agent.runId)
+    const previousLeadSlotId = input.previousLeadSlotId?.trim()
+    const pending = previousLeadSlotId
+      ? snapshot.messageOrder
+        .map((id) => snapshot.messages[id])
+        .filter((message): message is TeamMessage => Boolean(message))
+        .filter((message) => (
+          (message.recipient.type === 'agent'
+            && message.recipient.slotId === previousLeadSlotId
+            && message.receipt.readAt === undefined)
+          || (message.sender.type === 'agent'
+            && message.sender.slotId === previousLeadSlotId
+            && message.recipient.type === 'agent'
+            && teamMessageRequiresResponse(message.kind)
+            && message.receipt.respondedAt === undefined)
+        ))
+        .slice(-20)
+      : []
+    const board = this.tasks.listBoard()
+    const activeTasks = board
+      .filter(({ task }) => ['queued', 'leased', 'running', 'review'].includes(task.status))
+      .slice(0, 30)
+    return this.repository.createMessage({
+      runId: agent.runId,
+      sender: { type: 'operator' },
+      recipient: { type: 'agent', slotId: agent.slotId },
+      kind: 'notice',
+      subject: '主控接管上下文',
+      content: [
+        '【主控接管上下文】你已成为当前 TeamRun 的唯一有效主控。',
+        input.evidence.length ? `失联证据：${input.evidence.join('；')}` : '',
+        input.recoveredTaskIds.length ? `已迁移/重排任务：${input.recoveredTaskIds.join('、')}` : '原主控没有活动任务需要迁移。',
+        '',
+        '当前活动任务：',
+        activeTasks.length
+          ? activeTasks.map(({ task }) => `- ${task.id}｜${task.title}｜${task.status}｜${task.progress}%`).join('\n')
+          : '- 无',
+        '',
+        '原主控相关待处理消息：',
+        pending.length
+          ? pending.map((message) => `- ${message.id}｜${message.kind}｜${message.content.slice(0, 500)}`).join('\n')
+          : '- 无',
+        '',
+        '先调用 team_read_message 阅读本消息，再用 team_list_board 核对任务；需要重新领取的任务按正常 claim 流程处理。'
+      ].filter((line, index, values) => line !== '' || values[index - 1] !== '').join('\n'),
+      clientMessageId: generatedClientMessageId('lead-takeover-context', [
+        agent.runId,
+        agent.slotId,
+        previousLeadSlotId ?? '',
+        input.recoveredTaskIds
+      ])
+    })
   }
 
   private currentAgent(): AuthorizedTeamAgent {

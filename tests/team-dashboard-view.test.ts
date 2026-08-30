@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TeamControlSnapshot, TeamRunStatus } from '../src/domain/team-control'
-import { teamDashboardPhase, unresolvedDashboardGates } from '../src/renderer/src/team/team-dashboard-view'
+import { teamDashboardPhase, teamRuntimePresence, unresolvedDashboardGates } from '../src/renderer/src/team/team-dashboard-view'
 import { teamControlSnapshot } from '../src/renderer/src/preview/mock-data'
 
 function snapshot(status: TeamRunStatus): TeamControlSnapshot {
@@ -42,5 +42,25 @@ describe('team dashboard lifecycle view', () => {
 
     team.members[0]!.runtime!.online = false
     expect(unresolvedDashboardGates(team).map((gate) => gate.label)).toEqual(['1 个在岗 Agent 离线'])
+  })
+
+  it('separates persistent run status from live transport presence', () => {
+    const team = snapshot('running')
+    team.members = team.members.map((member) => ({
+      ...member,
+      runtime: member.runtime ? {
+        ...member.runtime,
+        online: false,
+        waiting: false,
+        connectionPhase: 'offline'
+      } : member.runtime
+    }))
+    expect(teamRuntimePresence(team)).toBe('offline')
+
+    team.members[0]!.runtime!.connectionPhase = 'processing'
+    expect(teamRuntimePresence(team)).toBe('in_flight_unverified')
+
+    team.members[1]!.runtime!.online = true
+    expect(teamRuntimePresence(team)).toBe('online')
   })
 })

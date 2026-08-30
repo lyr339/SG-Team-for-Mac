@@ -1,16 +1,29 @@
+import { sanitizeModelGeneratedText } from './model-output-sanitizer'
+
 export type ConversationRole = 'user' | 'assistant' | 'system' | 'error'
 export type ConversationEntryStatus = 'pending' | 'streaming' | 'complete' | 'failed'
 
+export interface ProcessBlockTiming {
+  /** 拾光首次观测到该步骤的时间。 */
+  startedAt?: number
+  /** 步骤进入 done/failed 的时间。 */
+  completedAt?: number
+  /** true 表示时间来自 CDP 采样边界，仅为观测近似值，不是 Cursor 原生耗时。 */
+  timingEstimated?: boolean
+}
+
 /** 工具调用过程区块 */
-export interface ProcessBlockTool {
+export interface ProcessBlockTool extends ProcessBlockTiming {
   kind: 'tool'
   id: string
   toolName: string
-  toolKind?: 'command' | 'read' | 'search' | 'edit' | 'write' | 'mcp' | 'todo' | 'other'
+  toolKind?: 'command' | 'read' | 'search' | 'edit' | 'write' | 'browser' | 'mcp' | 'todo' | 'other'
   /** 工具调用摘要（如文件路径、命令行） */
   summary?: string
   /** 工具输入参数明细 */
   input?: Record<string, unknown>
+  /** Cursor 原生 todo 项（toolKind=todo）。 */
+  todos?: Array<{ content: string; status: string }>
   /** 工具执行输出（如有） */
   output?: string
   /** 执行状态 */
@@ -20,15 +33,25 @@ export interface ProcessBlockTool {
 }
 
 /** 思考过程区块 */
-export interface ProcessBlockThinking {
+export interface ProcessBlockThinking extends ProcessBlockTiming {
   kind: 'thinking'
+  id: string
+  text: string
+  status: 'running' | 'done'
+  /** Cursor 原生 thinkingDurationMs；存在时优先于采样时间。 */
+  durationMs?: number
+}
+
+/** Cursor 回合中夹在思考与工具之间的原生 assistant-message。 */
+export interface ProcessBlockMessage extends ProcessBlockTiming {
+  kind: 'message'
   id: string
   text: string
   status: 'running' | 'done'
 }
 
 /** 命令执行输出区块 */
-export interface ProcessBlockCommand {
+export interface ProcessBlockCommand extends ProcessBlockTiming {
   kind: 'command'
   id: string
   command: string
@@ -37,7 +60,7 @@ export interface ProcessBlockCommand {
   status: 'running' | 'done' | 'failed'
 }
 
-export type ProcessBlock = ProcessBlockTool | ProcessBlockThinking | ProcessBlockCommand
+export type ProcessBlock = ProcessBlockTool | ProcessBlockThinking | ProcessBlockMessage | ProcessBlockCommand
 
 export function normalizeEscapedNewlines(text: string): string {
   let normalized = text.replace(/\r\n?/g, '\n')
@@ -56,19 +79,35 @@ function normalizeOptionalText(text: string | undefined): string | undefined {
   return text === undefined ? undefined : normalizeEscapedNewlines(text)
 }
 
+/** 模型上报文本统一先净化（工具调用标记泄漏截断）再做转义换行归一。 */
+function sanitizeThenNormalize(text: string): string {
+  return normalizeEscapedNewlines(sanitizeModelGeneratedText(text).text)
+}
+
+function sanitizeOptionalText(text: string | undefined): string | undefined {
+  return text === undefined ? undefined : sanitizeThenNormalize(text)
+}
+
 export function normalizeProcessBlockText(block: ProcessBlock): ProcessBlock {
   if (block.kind === 'thinking') {
-    return { ...block, text: normalizeEscapedNewlines(block.text) }
+    return { ...block, text: sanitizeThenNormalize(block.text) }
+  }
+  if (block.kind === 'message') {
+    return { ...block, text: sanitizeThenNormalize(block.text) }
   }
   if (block.kind === 'tool') {
     return {
       ...block,
-      summary: normalizeOptionalText(block.summary),
-      output: normalizeOptionalText(block.output),
-      error: normalizeOptionalText(block.error)
+      summary: sanitizeOptionalText(block.summary),
+      output: sanitizeOptionalText(block.output),
+      error: sanitizeOptionalText(block.error)
     }
   }
-  return { ...block, output: normalizeEscapedNewlines(block.output) }
+  return {
+    ...block,
+    command: sanitizeModelGeneratedText(block.command).text,
+    output: sanitizeThenNormalize(block.output)
+  }
 }
 
 /** 消息附件 */
@@ -91,7 +130,7 @@ export interface ConversationEntry {
   text: string
   timestamp: number
   status: ConversationEntryStatus
-  source: 'desktop' | 'qingtian' | 'cursor' | 'recovery'
+  source: 'desktop' | 'cursor' | 'recovery'
   commandId?: string
   streamId?: string
   /** Agent 回合标识；用于把 Cursor transcript 过程贴回对应回复。 */

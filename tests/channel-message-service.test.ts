@@ -86,13 +86,13 @@ describe('ChannelMessageService', () => {
   it('does not open the reply-sync gate after a silent internal notification', async () => {
     const { repository, service } = fixture()
     try {
-      repository.enqueueOutbound('1', '【群枢内部协作通知】消息 ID：m1', 1_000, undefined, true)
+      repository.enqueueOutbound('1', '【拾光内部协作通知】消息 ID：m1', 1_000, undefined, true)
       const first = await service.checkMessages({ channelId: '1' })
       expect(first).toMatchObject({ type: 'delivered' })
       expect(first.type === 'delivered' && first.message.silent).toBe(true)
       expect(repository.getPresence('1')?.pendingReplySyncSince).toBeUndefined()
 
-      repository.enqueueOutbound('1', '【群枢内部协作通知】消息 ID：m2', 2_000, undefined, true)
+      repository.enqueueOutbound('1', '【拾光内部协作通知】消息 ID：m2', 2_000, undefined, true)
       const second = await service.checkMessages({ channelId: '1' })
       expect(second).toMatchObject({ type: 'delivered' })
       expect(second.type === 'delivered' && second.message.text).toContain('m2')
@@ -104,7 +104,7 @@ describe('ChannelMessageService', () => {
   it('treats legacy internal notification rows as silent and self-heals their stale sync gate', async () => {
     const { repository, service } = fixture()
     try {
-      repository.enqueueOutbound('1', '【群枢内部协作通知】消息 ID：legacy', 1_000)
+      repository.enqueueOutbound('1', '【拾光内部协作通知】消息 ID：legacy', 1_000)
       const deliveredLegacy = await service.checkMessages({ channelId: '1' })
       expect(deliveredLegacy).toMatchObject({ type: 'delivered' })
       expect(deliveredLegacy.type === 'delivered' && deliveredLegacy.message.silent).toBe(true)
@@ -246,34 +246,20 @@ describe('ChannelMessageService', () => {
     }
   })
 
-  it('warns when a reply carries process blocks that were never streamed via record_process', () => {
+
+  it('truncates tool-call token leakage in record_reply content and warns the agent', async () => {
     const { repository, service } = fixture()
     try {
-      // 断流场景：整批直带 process、同 turn 无任何流式事件 → 附 streamingWarning
-      const batchOnly = service.recordReply({
-        channelId: '1',
-        content: '整批归档的回复',
-        turn: 'turn-batch',
-        process: [{ kind: 'thinking', id: 't1', text: '未流式上报的思考', status: 'done' }]
-      })
-      expect((batchOnly as { streamingWarning?: string }).streamingWarning).toContain('record_process')
+      // 工具调用特殊标记用拼接构造，避免字面序列被传输层误解析
+      const leaked = '**结论先说：分析到一半 '
+        + '<|' + 'close' + '|>' + 'argument' + '<|' + 'sep' + '|>'
+      const result = service.recordReply({ channelId: '1', content: leaked })
+      expect((result as { contentWarning?: string }).contentWarning).toContain('泄漏')
+      expect(repository.listUnconsumedReplies()[0]?.content).toBe('结论先说：分析到一半')
 
-      // 流式场景：先 record_process 逐块上报，record_reply 带同 turn → 无 warning
-      service.recordProcess({
-        channelId: '1',
-        turn: 'turn-live',
-        block: { kind: 'tool', id: 'tool-1', toolName: 'Read', toolKind: 'read', status: 'done' }
-      })
-      const streamed = service.recordReply({ channelId: '1', content: '流式回合的回复', turn: 'turn-live' })
-      expect((streamed as { streamingWarning?: string }).streamingWarning).toBeUndefined()
-
-      // 无 turn 的旧协议回合不骚扰
-      const legacy = service.recordReply({
-        channelId: '1',
-        content: '无 turn 回复',
-        process: [{ kind: 'thinking', id: 't2', text: '旧协议', status: 'done' }]
-      })
-      expect((legacy as { streamingWarning?: string }).streamingWarning).toBeUndefined()
+      const clean = service.recordReply({ channelId: '1', content: '正常回复 **加粗** 保留' })
+      expect((clean as { contentWarning?: string }).contentWarning).toBeUndefined()
+      expect(repository.listUnconsumedReplies().at(-1)?.content).toBe('正常回复 **加粗** 保留')
     } finally {
       repository.close()
     }

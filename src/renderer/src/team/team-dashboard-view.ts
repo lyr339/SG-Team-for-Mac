@@ -1,6 +1,8 @@
 import type { TeamControlSnapshot, TeamRunStatus } from '../../../domain/team-control'
+import { hasInFlightExecution } from '../../../domain/channel-message'
 
 export type TeamDashboardPhase = 'prelaunch' | 'launching' | 'active' | 'paused' | 'completed'
+export type TeamRuntimePresence = 'online' | 'in_flight_unverified' | 'offline'
 
 export interface TeamDashboardGate {
   label: string
@@ -14,6 +16,16 @@ export function teamDashboardPhase(status: TeamRunStatus): TeamDashboardPhase {
   if (status === 'running' || status === 'attention') return 'active'
   if (status === 'paused') return 'paused'
   return 'completed'
+}
+
+/**
+ * TeamRun 状态是持久业务状态，不等同于当前连接状态。长任务保护要求“疑似离线”
+ * 不能直接 complete run，但大厅也不能在 0 在线时继续显示“协作执行中”。
+ */
+export function teamRuntimePresence(team: TeamControlSnapshot): TeamRuntimePresence {
+  if (team.members.some((member) => member.runtime?.online)) return 'online'
+  if (team.members.some((member) => hasInFlightExecution(member.runtime))) return 'in_flight_unverified'
+  return 'offline'
 }
 
 export function unresolvedDashboardGates(team: TeamControlSnapshot): TeamDashboardGate[] {

@@ -1,4 +1,4 @@
-# 群枢 design system
+# 拾光 design system
 
 The default product language is a light, calm desktop workspace. Dark dashboard styling is not part of the current direction.
 
@@ -12,7 +12,7 @@ top product bar
 - The session pane never disappears on desktop.
 - Overview cards summarize; they do not replace the detailed workspace.
 - Connection configuration stays in a small popover instead of occupying the main page.
-- Commerce, refund and promotional controls from reference products are not part of 群枢.
+- Commerce, refund and promotional controls from reference products are not part of 拾光.
 
 ## Color semantics
 

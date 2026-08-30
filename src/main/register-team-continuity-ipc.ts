@@ -1,20 +1,18 @@
 import { ipcMain, type BrowserWindow } from 'electron'
-import type { TeamContinuityService } from '../application/team-continuity-service'
 import type { TeamFailoverService } from '../application/team-failover-service'
 import type { TeamControlService } from '../application/team-control-service'
 import { IPC } from '../shared/desktop-api'
 import { assertTrustedSender } from './ipc-security'
 
+/**
+ * 连续性 IPC：手动交接入口（快照读取由恢复流程在主进程内部完成，
+ * 自动检查点由 TeamContinuityService 自身的 watcher 驱动，均不经渲染层）。
+ */
 export function registerTeamContinuityIpc(
-  service: TeamContinuityService,
   failover: TeamFailoverService,
   team: TeamControlService,
   getWindow: () => BrowserWindow | undefined
 ): () => void {
-  ipcMain.handle(IPC.teamContinuityGet, (event) => {
-    assertTrustedSender(event, getWindow)
-    return service.getSnapshot()
-  })
   ipcMain.handle(IPC.teamContinuityHandoffOptions, (event, slotId: unknown) => {
     assertTrustedSender(event, getWindow)
     if (typeof slotId !== 'string' || !slotId.trim() || slotId.length > 240) throw new Error('AgentSlot 无效')
@@ -36,13 +34,7 @@ export function registerTeamContinuityIpc(
     return { handoff, team: team.getSnapshot() }
   })
 
-  const unsubscribe = service.subscribe((snapshot) => {
-    const window = getWindow()
-    if (window && !window.isDestroyed()) window.webContents.send(IPC.teamContinuitySnapshot, snapshot)
-  })
   return () => {
-    unsubscribe()
-    ipcMain.removeHandler(IPC.teamContinuityGet)
     ipcMain.removeHandler(IPC.teamContinuityHandoffOptions)
     ipcMain.removeHandler(IPC.teamContinuityHandoff)
   }

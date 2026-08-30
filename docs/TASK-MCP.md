@@ -1,4 +1,4 @@
-# 群枢 Agent MCP
+# 拾光 Agent MCP
 
 The built server is `out/mcp/index.mjs`. Tools are role-scoped instead of exposing every mutation to every Agent.
 
@@ -29,33 +29,31 @@ The lead additionally receives `team_list_board` and `team_plan_tasks`. Lead/rev
 
 ## Install from the desktop app
 
-Open **任务池 → 安装 Agent MCP**, then explicitly choose the Cursor workspace. The installer:
+Open the lobby and press **安装团队 MCP**, then explicitly choose the Cursor workspace. The installer:
 
 - preserves unrelated keys and MCP servers in `.cursor/mcp.json`;
-- backs up an existing config before an atomic replacement;
-- installs one server per currently discovered QingTian channel;
-- writes the production MCP bundle path outside `app.asar`;
+- removes dual-entry-era legacy entries (`qingtian-team-ch-N`, `qt-ch-N`, `qtwx-mcp-N`, `qunshu-ch-N`) from the workspace config;
 - registers a fresh generation in SQLite and revokes the previous generation;
 - restores the original config if generation activation fails.
+
+The single native `SG Team` entry in the global `~/.cursor/mcp.json` is registered at app startup; the production bundle lives outside `app.asar` so Cursor can execute it with `ELECTRON_RUN_AS_NODE=1`.
 
 Restart Cursor after installation. A cancelled folder picker performs no write.
 
 ## Process-bound identity
 
-The model never supplies its identity or a lease token. Each Cursor MCP process is bound by environment:
+The model never supplies its identity or a lease token. One unified server process serves every channel; the process is bound to the task database by environment, and each tool call carries `channel_id`:
 
 ```json
 {
   "mcpServers": {
-    "qingtian-team-ch-2": {
-      "command": "/Applications/群枢.app/Contents/MacOS/群枢",
-      "args": ["/Applications/群枢.app/Contents/Resources/mcp/index.mjs"],
+    "SG Team": {
+      "command": "/Applications/拾光.app/Contents/MacOS/拾光",
+      "args": ["/Applications/拾光.app/Contents/Resources/mcp/index.mjs"],
       "env": {
         "ELECTRON_RUN_AS_NODE": "1",
-        "QINGTIAN_TEAM_DB": "/absolute/path/to/task-pool.sqlite3",
-        "QINGTIAN_AGENT_SESSION_ID": "workspace-id:ch-2:generation",
-        "QINGTIAN_TEAM_RUN_ID": "local-inbox",
-        "QINGTIAN_AGENT_CAPABILITIES": "code,frontend"
+        "SG_TEAM_DB": "/absolute/path/to/task-pool.sqlite3",
+        "SG_TEAM_SERVER_ROLE": "unified"
       }
     }
   }

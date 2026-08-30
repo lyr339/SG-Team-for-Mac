@@ -4,11 +4,13 @@
  */
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import type { AccountAutomationRun } from '../../../domain/account-automation'
 import type { ConversationEntry } from '../../../domain/conversation-entry'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES, emptyTeamControlSnapshot } from '../../../domain/team-control'
 import type { TeamRunStatus } from '../../../domain/team-control'
 import type { QingtianDesktopApi, TeamSetupDraft } from '../../../shared/desktop-api'
 import { App } from '../App'
+import { applyAppearancePreferences, readAppearancePreferences } from '../appearance-preferences'
 import {
   collaborationSnapshot,
   continuitySnapshot,
@@ -17,10 +19,12 @@ import {
   taskPoolSnapshot,
   teamControlSnapshot
 } from './mock-data'
+import '../claude-theme.css'
 import '../styles.css'
 import '../team-v2.css'
 import '../team-setup.css'
 import '../lobby/lobby.css'
+import '../controls.css'
 
 type Listener<T> = (snapshot: T) => void
 
@@ -32,6 +36,19 @@ const manualHandoffMode = previewParameters.get('handoff') === '1'
 const offlineSessionsPreviewMode = previewParameters.get('offlineSessions') === '1'
 const messageFormatPreviewMode = previewParameters.get('messageFormat') === '1'
 const requestedRunStatus = previewParameters.get('runStatus')
+// 账号自动化走查场景：?automation=countdown|processing|importing|deleting|done|failed|cancelled
+const automationScene = (['countdown', 'processing', 'importing', 'deleting', 'done', 'failed', 'cancelled'] as const)
+  .find((phase) => phase === previewParameters.get('automation'))
+const previewNow = Date.now()
+const automationSceneRun: AccountAutomationRun | undefined = automationScene ? ({
+  countdown: { phase: 'countdown', message: '将在 6.5s 后自动处理当前账号（可取消）', remainingSec: 6.5, planId: 'preview-plan', startedAt: previewNow - 3_500 },
+  processing: { phase: 'processing', message: '奥仔：正在提交 Session Token 处理…', planId: 'preview-plan', startedAt: previewNow - 12_000 },
+  importing: { phase: 'importing', message: '会话已失效，正在刷新浏览器会话获取新 Token…', planId: 'preview-plan', startedAt: previewNow - 26_000 },
+  deleting: { phase: 'deleting', message: '奥仔已完成，正在刷新浏览器会话并秒级加固账号…', planId: 'preview-plan', startedAt: previewNow - 31_000 },
+  done: { phase: 'done', message: '自动化完成：已处理、账号已加固（浏览器会话内秒级执行）、本地记录已移除', planId: 'preview-plan', startedAt: previewNow - 47_000, finishedAt: previewNow - 5_000 },
+  failed: { phase: 'failed', message: '奥仔处理失败：卡密余额不足，请先充值或更换卡密（本地账号已保留）', planId: 'preview-plan', startedAt: previewNow - 22_000, finishedAt: previewNow - 8_000 },
+  cancelled: { phase: 'cancelled', message: '已取消本次自动化', planId: 'preview-plan', startedAt: previewNow - 9_000, finishedAt: previewNow - 4_000 }
+} as const)[automationScene] : undefined
 const previewRunStatus = (['draft', 'ready', 'launching', 'running', 'attention', 'paused', 'completed'] as TeamRunStatus[])
   .find((status) => status === requestedRunStatus)
 const setupSkill = (name: string, description: string, source: 'cursor' | 'workspace' | 'user' | 'vercel' | 'anthropic', installed = true) => ({
@@ -50,7 +67,7 @@ const setupDraft: TeamSetupDraft = {
   workspacePath: '/Users/demo/Workspace/wedge-demo',
   channels: Array.from({ length: 5 }, (_, index) => ({
     channelId: String(index + 1),
-    displayName: `QingTian CH-${index + 1}`,
+    displayName: `SG Team CH-${index + 1}`,
     status: offlineSessionsPreviewMode ? 'offline' as const : index === 2 || index === 4 ? 'idle' as const : 'waiting' as const,
     online: !offlineSessionsPreviewMode,
     waiting: !offlineSessionsPreviewMode && index !== 2 && index !== 4,
@@ -58,6 +75,7 @@ const setupDraft: TeamSetupDraft = {
   })),
   roleTemplates: structuredClone(TEAM_ROLE_TEMPLATES),
   avatarIds: [...AGENT_AVATAR_IDS],
+  cursorModels: structuredClone(desktopSnapshot.cursorModels ?? []),
   skills: [
     setupSkill('review', '自动选择并执行代码审查流程。', 'cursor'),
     setupSkill('review-security', '检查安全漏洞与权限边界。', 'cursor'),
@@ -231,7 +249,6 @@ if (previewRunStatus === 'completed') {
 const desktopListeners = new Set<Listener<typeof state.desktop>>()
 const memoryListeners = new Set<Listener<typeof state.memory>>()
 const teamListeners = new Set<Listener<typeof state.team>>()
-const previewNow = Date.now()
 let previewCursorAccounts: Array<{
   id: string; label: string; maskedToken: string; active: boolean; createdAt: number; updatedAt: number
 }> = [
@@ -284,34 +301,41 @@ const api: QingtianDesktopApi = {
       token: 'preview-local-cursor-token'
     })
   },
-  webLoginCursorAccount: async () => {
-    return api.saveCursorAccount({
-      label: 'user_preview_0001（网页登录）',
-      token: 'user_preview_0001::preview-web-login-token'
-    })
-  },
   importCursorAccountFromBrowser: async () => {
     return api.saveCursorAccount({
       label: 'user_preview_0001（Microsoft Edge）',
       token: 'user_preview_0001::preview-browser-token'
     })
   },
-  injectCursorAccount: async () => ({
-    injected: true,
-    backupPath: `/backup/state.vscdb.backup-${Date.now()}`,
-    requiresRestart: false,
-    cursorPid: 12345
+  restartCursorWithAccount: async () => ({
+    switched: true,
+    killedCursor: true,
+    relaunchMode: 'cdp' as const,
+    cdpPortReady: true,
+    machineIdentityApplied: true,
+    runtimeVerified: true,
+    backupDir: `/backup/account-switch-${Date.now()}`
   }),
-  getAozaiCardStatus: async () => ({ saved: false }),
+  verifyCursorRuntimeAccount: async () => ({ status: 'matched' as const, cursorLabel: 'preview@cursor.com', activeLabel: 'preview@cursor.com' }),
+  refreshCursorMembership: async () => ({ state: 'ok' as const, profile: { tier: 'pro' as const, raw: 'pro', trialEligible: false, isTeamMember: false, lastPaymentFailed: false, fetchedAt: Date.now() } }),
+  getAozaiCardStatus: async () => automationSceneRun
+    ? { saved: true, maskedCode: '••••6l8Q', type: '50次卡', remaining: 46 }
+    : { saved: false },
   saveAozaiCard: async () => ({ saved: true, maskedCode: '••••6l8Q', type: '50次卡', remaining: 46 }),
   clearAozaiCard: async () => ({ saved: false }),
   refreshAozaiBalance: async () => ({ saved: true, maskedCode: '••••6l8Q', type: '50次卡', remaining: 46 }),
   processAozaiAccount: async () => ({ ok: true, message: '处理成功', remaining: 45 }),
   onAozaiProgress: () => () => {},
-  launchAgentSessions: async (channelIds) => ({
+  launchAgentSessions: async (requests) => ({
     id: 'preview-launch',
     state: 'done',
-    items: channelIds.map((channelId) => ({ channelId, stage: 'done' as const, message: '会话已就绪', composerId: `preview-composer-${channelId}` })),
+    items: requests.map((request) => ({
+      channelId: request.channelId,
+      modelSelection: request.modelSelection,
+      stage: 'done' as const,
+      message: '会话已就绪',
+      composerId: `preview-composer-${request.channelId}`
+    })),
     startedAt: Date.now(),
     finishedAt: Date.now()
   }),
@@ -335,10 +359,26 @@ const api: QingtianDesktopApi = {
   }),
   cancelCdpAutoHealCountdown: async () => {},
   onCdpAutoHealEvent: () => () => {},
-  getAccountAutomationSettings: async () => ({ enabled: false, delaySec: 30 }),
+  getAccountAutomationSettings: async () => ({ enabled: Boolean(automationSceneRun), delaySec: 10 }),
   saveAccountAutomationSettings: async (settings) => settings,
-  getAccountAutomationRun: async () => ({ phase: 'idle' as const, message: '', startedAt: 0 }),
+  getAccountAutomationRun: async () => automationSceneRun ?? { phase: 'idle' as const, message: '', startedAt: 0 },
   cancelAccountAutomation: async () => ({ phase: 'cancelled' as const, message: '已取消本次自动化', startedAt: 0, finishedAt: Date.now() }),
+  listAccountAutomationBitProfiles: async () => ({
+    ok: true,
+    profiles: [
+      { id: 'bit-proxy', name: '代理', seq: 1 },
+      { id: 'bit-direct', name: '直连', seq: 2 }
+    ]
+  }),
+  getAccountAutomationRoxyApiKey: async () => ({ saved: true, maskedKey: '6192****eada' }),
+  saveAccountAutomationRoxyApiKey: async () => ({ saved: true, maskedKey: '6192****eada' }),
+  importCursorAccountFromFingerprint: async () => {
+    return api.saveCursorAccount({
+      label: 'user_preview_0001（Roxy指纹）',
+      token: 'user_preview_0001::preview-fingerprint-token'
+    })
+  },
+  openFingerprintLoginPage: async () => {},
   onAccountAutomationProgress: () => () => {},
   getSnapshot: async () => structuredClone(state.desktop),
   sendMessage: async ({ channelId, text }) => {
@@ -359,17 +399,13 @@ const api: QingtianDesktopApi = {
     return { commandId: entry.id }
   },
   getTaskPoolSnapshot: async () => structuredClone(previewTasks),
-  createTask: async () => { throw new Error('预览环境不支持创建任务') },
-  cancelTask: async () => { throw new Error('预览环境不支持取消任务') },
-  approveTask: async () => { throw new Error('预览环境不支持验收任务') },
-  rejectTask: async () => { throw new Error('预览环境不支持打回任务') },
   installTaskMcp: async () => ({
     ok: true,
     workspacePath: detectedSetupDraft.workspacePath,
     workspaceId: detectedSetupDraft.workspaceId,
     runId: state.team.activeRun?.id ?? 'preview-run',
     configPath: `${detectedSetupDraft.workspacePath}/.cursor/mcp.json`,
-    serverNames: state.desktop.sessions.map((session) => `qt-ch-${session.channelId}`),
+    serverNames: ['SG Team'],
     autoInjected: true,
     restartRequired: false
   }),
@@ -434,17 +470,14 @@ const api: QingtianDesktopApi = {
       channelId: member.slot.channelId!,
       roleTemplateKey: member.role.templateKey,
       avatarId: member.slot.avatarId,
-      skillIds: member.role.skills.map((skill) => skill.id)
+      skillIds: member.role.skills.map((skill) => skill.id),
+      modelSelection: member.slot.modelSelection
     }))
   }),
-  setActiveTeamWorkspace: async () => structuredClone(state.team),
   updateTeamGoal: async () => structuredClone(state.team),
   launchTeam: async () => structuredClone(state.team),
+  setSlotModelSelection: async () => structuredClone(state.team),
   getTeamCollaborationSnapshot: async () => structuredClone(collaborationSnapshot),
-  sendTeamMessage: async () => { throw new Error('预览环境不支持发送团队消息') },
-  replyTeamMessage: async () => { throw new Error('预览环境不支持回复团队消息') },
-  markTeamMessageRead: async () => { throw new Error('预览环境不支持已读回执') },
-  getTeamContinuitySnapshot: async () => structuredClone(continuitySnapshot),
   getManualHandoffOptions: async (slotId) => {
     const source = state.team.members.find((member) => member.slot.id === slotId)
     if (!source?.binding) throw new Error('待交接角色不存在')
@@ -457,6 +490,7 @@ const api: QingtianDesktopApi = {
         ...state.team.standbyChannels.filter((channel) => channel.agentSessionId).map((channel) => ({
           agentSessionId: channel.agentSessionId!,
           kind: 'standby' as const,
+          mode: 'role_rebind' as const,
           channelId: channel.channelId,
           roleName: channel.displayName,
           eligible: channel.online && channel.waiting && channel.queueDepth === 0,
@@ -466,13 +500,20 @@ const api: QingtianDesktopApi = {
         ...state.team.members.filter((member) => member.slot.id !== source.slot.id && member.binding && member.runtime?.online).map((member) => ({
         agentSessionId: member.binding!.agentSessionId,
         kind: 'member' as const,
+        mode: source.role.templateKey === 'lead' ? 'lead_authority' as const : 'role_rebind' as const,
         channelId: member.binding!.channelId,
         slotId: member.slot.id,
         roleName: member.role.name,
         avatarId: member.slot.avatarId,
-        eligible: member.runtime!.waiting && member.runtime!.queueDepth === 0 && member.role.templateKey !== 'lead',
-        blocker: member.role.templateKey === 'lead' ? '不能挪走当前唯一主控' : undefined,
-        impact: `${member.role.name}席将转为离线空缺`
+        eligible: source.role.templateKey === 'lead'
+          ? true
+          : member.runtime!.waiting && member.runtime!.queueDepth === 0 && member.role.templateKey !== 'lead',
+        blocker: source.role.templateKey !== 'lead' && member.role.templateKey === 'lead'
+          ? '不能挪走当前唯一主控'
+          : undefined,
+        impact: source.role.templateKey === 'lead'
+          ? `保留${member.role.name}职责与现有任务，同时接管唯一主控权限`
+          : `${member.role.name}席将转为离线空缺`
         }))
       ]
     }
@@ -482,6 +523,28 @@ const api: QingtianDesktopApi = {
     const donor = state.team.members.find((member) => member.binding?.agentSessionId === replacementAgentSessionId)
     const standby = state.team.standbyChannels.find((channel) => channel.agentSessionId === replacementAgentSessionId)
     const sourceBinding = source.binding!
+    if (source.role.templateKey === 'lead' && donor) {
+      state.team = {
+        ...state.team,
+        revision: state.team.revision + 1,
+        activeRun: state.team.activeRun
+          ? { ...state.team.activeRun, actingLeadSlotId: donor.slot.id, updatedAt: Date.now() }
+          : undefined,
+        runs: state.team.runs.map((run) => run.id === state.team.activeRun?.id
+          ? { ...run, actingLeadSlotId: donor.slot.id, updatedAt: Date.now() }
+          : run)
+      }
+      pushTeam()
+      return {
+        handoff: {
+          mode: 'lead_authority' as const,
+          messageId: 'preview-lead-authority-message',
+          actingLeadSlotId: donor.slot.id,
+          recoveredTaskIds: []
+        },
+        team: structuredClone(state.team)
+      }
+    }
     const sourceChannel = sourceBinding.channelId
     const replacementChannelId = donor?.binding?.channelId ?? standby!.channelId
     const replacementAgentSessionIdResolved = donor?.binding?.agentSessionId ?? standby!.agentSessionId!
@@ -521,31 +584,46 @@ const api: QingtianDesktopApi = {
     pushTeam()
     return {
       handoff: {
+        mode: 'role_rebind',
         failover,
         messageId: 'preview-handoff-message', vacatedSlotId: donor?.slot.id
       },
       team: structuredClone(state.team)
     }
   },
-  getTeamMemorySnapshot: async () => structuredClone(state.memory),
+  setWindowChromeColorMode: async () => true,
   onSnapshot: (listener) => {
     desktopListeners.add(listener)
     return () => desktopListeners.delete(listener)
   },
+  // 用量预览：给大厅会话卡注入一份数据让徽章可见（无推送，仅初始拉取）。
+  getCursorUsageSnapshot: async () => {
+    const composer = state.desktop.sessions.find((session) => session.composerId)?.composerId
+    return composer ? {
+      [composer]: {
+        composerId: composer,
+        turns: 3,
+        inputTokens: 12_168,
+        outputTokens: 42,
+        cacheReadTokens: 3_968,
+        cacheWriteTokens: 0,
+        estimatedCostUsd: 0.0421,
+        pricedModel: 'Claude Sonnet',
+        lastTurnAt: previewNow
+      }
+    } : {}
+  },
+  onCursorUsageSnapshot: () => () => {},
   onTaskPoolSnapshot: () => () => {},
   onTeamControlSnapshot: (listener) => {
     teamListeners.add(listener)
     return () => teamListeners.delete(listener)
   },
-  onTeamCollaborationSnapshot: () => () => {},
-  onTeamContinuitySnapshot: () => () => {},
-  onTeamMemorySnapshot: (listener) => {
-    memoryListeners.add(listener)
-    return () => memoryListeners.delete(listener)
-  }
+  onTeamCollaborationSnapshot: () => () => {}
 }
 
 window.qingtianDesktop = api
+applyAppearancePreferences(readAppearancePreferences())
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

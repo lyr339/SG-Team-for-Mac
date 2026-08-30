@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
 import type { ConversationEntry, MessageAttachment } from '../../domain/conversation-entry'
-import type { LiveProcessState } from '../../shared/desktop-api'
+import type { LiveAgentResponseState, LiveProcessState } from '../../shared/desktop-api'
 import { formatClock, formatFileSize, formatRelativeTime, statusLabel } from './format'
 import { ComposerWorkbench } from './ComposerWorkbench'
 import { AgentAvatar } from './AgentAvatar'
 import { MessageContent } from './MessageContent'
-import { CursorProcessPanel } from './CursorProcessPanel'
-import { ProcessBlocks } from './ProcessBlocks'
+import { ProcessTurnCard } from './ProcessTurnCard'
+import { LiveAgentResponse } from './LiveAgentResponse'
+import { suggestedActionsFromText } from './process-turn-view'
 
 interface SessionWorkspaceProps {
   session: AgentSession
@@ -20,8 +21,10 @@ interface SessionWorkspaceProps {
   onDraftChange: (value: string) => void
   attachments: MessageAttachment[]
   onAttachmentsChange: (attachments: MessageAttachment[]) => void
-  /** 进行中的实时过程流（record_process 透出）；回复归档后由后端移除。 */
+  /** Cursor 内存模型直接推送的当前回合过程流。 */
   liveProcess?: LiveProcessState
+  /** Cursor Composer 原生回复文本（CDP 250ms 增量）。 */
+  liveAgentResponse?: LiveAgentResponseState
 }
 
 /** 同角色且间隔小于该值的连续消息合并成一组（只显示一次头像与名称）。 */
@@ -31,50 +34,11 @@ const DIVIDER_WINDOW_MS = 10 * 60_000
 /** 长回复气泡限高（超出折叠为渐变遮罩 + 「展开全文」），避免单条回复撑满会话窗。 */
 const MESSAGE_CLAMP_PX = 384
 
-type CursorWorkEntryView = NonNullable<AgentSession['workEntries']>[number]
-
-interface CursorWorkGroup {
-  key: string
-  entries: CursorWorkEntryView[]
-}
-
 type TimelineItem =
   | { type: 'entry'; key: string; entry: ConversationEntry; timestamp: number; order: number }
-  | { type: 'cursor-work'; key: string; group: CursorWorkGroup; timestamp: number; order: number }
   | { type: 'live-process'; key: string; timestamp: number; order: number }
+  | { type: 'live-response'; key: string; timestamp: number; order: number }
   | { type: 'running-placeholder'; key: string; timestamp: number; order: number }
-
-function cursorWorkTurnKey(entry: CursorWorkEntryView): string {
-  return entry.turn ?? `line:${entry.line}`
-}
-
-function groupCursorWorkEntries(entries: CursorWorkEntryView[]): CursorWorkGroup[] {
-  const groups: CursorWorkGroup[] = []
-  const byKey = new Map<string, CursorWorkGroup>()
-  for (const entry of entries) {
-    const key = cursorWorkTurnKey(entry)
-    const existing = byKey.get(key)
-    if (existing) {
-      existing.entries.push(entry)
-      continue
-    }
-    const group = { key, entries: [entry] }
-    byKey.set(key, group)
-    groups.push(group)
-  }
-  return groups
-}
-
-function cursorWorkGroupTimestamp(group: CursorWorkGroup): number {
-  const timestamps = group.entries
-    .map((entry) => entry.at)
-    .filter((value) => Number.isFinite(value))
-  return timestamps.length ? Math.min(...timestamps) : 0
-}
-
-function cursorWorkGroupRunning(group: CursorWorkGroup): boolean {
-  return group.entries.some((entry) => entry.status === 'running')
-}
 
 /**
  * 长文本气泡内容：超过限高默认折叠，用户点击「展开全文」查看完整内容。
@@ -141,6 +105,18 @@ function QuoteIcon(): React.JSX.Element {
   )
 }
 
+function RetryIcon(): React.JSX.Element {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 6A5.5 5.5 0 1 0 13 10.7M13.2 2.8V6H10" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35"/></svg>
+}
+
+function StarIcon({ filled }: { filled: boolean }): React.JSX.Element {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m8 2 1.8 3.7 4.1.6-3 2.9.7 4.1L8 11.4l-3.6 1.9.7-4.1-3-2.9 4.1-.6z" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2"/></svg>
+}
+
+function ListenIcon(): React.JSX.Element {
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6.3h2.4L8.2 4v8L5.4 9.7H3zM10.7 5.6a3.2 3.2 0 0 1 0 4.8M12.5 3.8a5.8 5.8 0 0 1 0 8.4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.25"/></svg>
+}
+
 export function SessionWorkspace({
   session,
   entries,
@@ -152,13 +128,16 @@ export function SessionWorkspace({
   onDraftChange,
   attachments,
   onAttachmentsChange,
-  liveProcess
+  liveProcess,
+  liveAgentResponse
 }: SessionWorkspaceProps): React.JSX.Element {
   const [sendError, setSendError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [awayFromBottom, setAwayFromBottom] = useState(false)
   const [copiedId, setCopiedId] = useState('')
+  const [starredIds, setStarredIds] = useState<ReadonlySet<string>>(new Set())
   const visibleEntries = useMemo(() => entries.filter((entry) => !entry.silent), [entries])
+  const latestAssistantId = [...visibleEntries].reverse().find((entry) => entry.role === 'assistant')?.id
   const timelineRef = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
   const seenCount = useRef(visibleEntries.length)
@@ -167,29 +146,6 @@ export function SessionWorkspace({
   const lastEntryKey = lastEntry
     ? `${lastEntry.id}:${lastEntry.status}:${lastEntry.text.length}`
     : 'empty'
-  const workEntries = session.workEntries ?? []
-  const workCount = workEntries.length
-  const lastWorkEntry = workEntries.at(-1)
-  const workEntriesKey = lastWorkEntry
-    ? [
-        workCount,
-        lastWorkEntry.turn ?? '',
-        lastWorkEntry.line,
-        lastWorkEntry.kind,
-        lastWorkEntry.status ?? '',
-        lastWorkEntry.text.length,
-        lastWorkEntry.details?.length ?? 0,
-        lastWorkEntry.todos?.length ?? 0
-      ].join(':')
-    : 'empty'
-  const cursorWorkGroups = useMemo(() => groupCursorWorkEntries(workEntries), [workEntries])
-  const cursorWorkByTurn = useMemo(
-    () => new Map(cursorWorkGroups.map((group) => [group.key, group.entries] as const)),
-    [cursorWorkGroups]
-  )
-  const replyTurns = useMemo(() => new Set(visibleEntries.flatMap((entry) => (
-    entry.role === 'assistant' && entry.turn ? [entry.turn] : []
-  ))), [visibleEntries])
   const queuedTransport = session.deliveryMode === 'queued'
   // live 过程流指纹：块数/状态翻转都改变它，驱动贴底滚动跟上实时过程
   const liveProcessKey = liveProcess
@@ -205,23 +161,23 @@ export function SessionWorkspace({
         ].join(':'))
       ].join('|')
     : ''
-  const liveCursorWorkEntries = liveProcess ? cursorWorkByTurn.get(liveProcess.turn) : undefined
-  const looseCursorWorkGroups = useMemo(
-    () => cursorWorkGroups.filter((group) => (
-      !replyTurns.has(group.key) && group.key !== liveProcess?.turn
-    )),
-    [cursorWorkGroups, liveProcess?.turn, replyTurns]
-  )
+  const finalizedLiveResponse = liveAgentResponse && visibleEntries.some((entry) => (
+    entry.role === 'assistant'
+    && entry.status === 'complete'
+    && entry.timestamp >= liveAgentResponse.startedAt - 5_000
+    && entry.text.trim() === liveAgentResponse.text.trim()
+  ))
+  const visibleLiveResponse = liveAgentResponse && !finalizedLiveResponse ? liveAgentResponse : undefined
+  const liveResponseKey = visibleLiveResponse
+    ? `${visibleLiveResponse.id}:${visibleLiveResponse.status}:${visibleLiveResponse.text.length}:${visibleLiveResponse.updatedAt}`
+    : ''
   const pendingVisibleUser = visibleEntries.at(-1)?.role === 'user'
   const lastVisibleTimestamp = visibleEntries.at(-1)?.timestamp ?? 0
-  const hasLooseLiveWork = looseCursorWorkGroups.some((group) => (
-    cursorWorkGroupRunning(group)
-  ))
   const showRunningPlaceholder = pendingVisibleUser
     && session.online
     && session.status === 'running'
     && !liveProcess?.blocks.length
-    && !hasLooseLiveWork
+    && !visibleLiveResponse
   const timelineItems = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = visibleEntries.map((entry, index) => ({
       type: 'entry',
@@ -230,19 +186,6 @@ export function SessionWorkspace({
       timestamp: entry.timestamp,
       order: index * 10
     }))
-    looseCursorWorkGroups.forEach((group, index) => {
-      const rawTimestamp = cursorWorkGroupTimestamp(group)
-      const timestamp = pendingVisibleUser && cursorWorkGroupRunning(group)
-        ? Math.max(rawTimestamp, lastVisibleTimestamp + 1)
-        : rawTimestamp
-      items.push({
-        type: 'cursor-work',
-        key: `cursor-work:${group.key}`,
-        group,
-        timestamp,
-        order: index * 10 + 5
-      })
-    })
     if (liveProcess?.blocks.length) {
       items.push({
         type: 'live-process',
@@ -258,12 +201,20 @@ export function SessionWorkspace({
         order: Number.MAX_SAFE_INTEGER
       })
     }
+    if (visibleLiveResponse) {
+      items.push({
+        type: 'live-response',
+        key: `live-response:${visibleLiveResponse.id}`,
+        timestamp: Math.max(visibleLiveResponse.updatedAt, lastVisibleTimestamp + 2),
+        order: Number.MAX_SAFE_INTEGER
+      })
+    }
     return items.sort((left, right) => (
       left.timestamp - right.timestamp
       || left.order - right.order
       || left.key.localeCompare(right.key)
     ))
-  }, [visibleEntries, looseCursorWorkGroups, liveProcess, showRunningPlaceholder, session.id, pendingVisibleUser, lastVisibleTimestamp])
+  }, [visibleEntries, liveProcess, visibleLiveResponse, showRunningPlaceholder, session.id, lastVisibleTimestamp])
   const canSend = (session.online || queuedTransport) && !submitting
   const disconnected = agentOffline && !queuedTransport
   const queuedOffline = agentOffline && queuedTransport
@@ -290,7 +241,7 @@ export function SessionWorkspace({
       scrollTimelineTo(timelineRef.current?.scrollHeight ?? 0)
       seenCount.current = visibleEntries.length
     }
-  }, [visibleEntries.length, lastEntryKey, session.composerId, session.id, workEntriesKey, liveProcessKey])
+  }, [visibleEntries.length, lastEntryKey, session.composerId, session.id, liveProcessKey, liveResponseKey])
 
   useEffect(() => {
     if (!copiedId) return
@@ -338,6 +289,25 @@ export function SessionWorkspace({
     onDraftChange(draft ? `${draft}\n\n${quoted}\n\n` : `${quoted}\n\n`)
   }
 
+  const retryEntry = async (entry: ConversationEntry): Promise<void> => {
+    const index = visibleEntries.findIndex((candidate) => candidate.id === entry.id)
+    const previousUser = visibleEntries.slice(0, index).reverse().find((candidate) => candidate.role === 'user')
+    await quickSend(previousUser?.text
+      ? `请重新处理上一条请求，保留有效结论并修正不足：\n\n${previousUser.text}`
+      : '请重新检查并回答上一条请求，保留有效结论并修正不足。')
+  }
+
+  const listenEntry = (entry: ConversationEntry): void => {
+    if (!('speechSynthesis' in window)) {
+      setSendError('当前系统没有可用的朗读服务')
+      return
+    }
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(entry.text)
+    utterance.lang = 'zh-CN'
+    window.speechSynthesis.speak(utterance)
+  }
+
   const quickSend = async (text: string): Promise<void> => {
     if (!canSend || !text.trim()) return
     setSubmitting(true)
@@ -376,11 +346,10 @@ export function SessionWorkspace({
       && gap < GROUP_WINDOW_MS
     const mine = entry.role === 'user'
     const rowTone = entry.role === 'error' ? 'error' : mine ? 'mine' : 'agent'
-    const cursorWorkForEntry = entry.role === 'assistant' && entry.turn
-      ? cursorWorkByTurn.get(entry.turn)
-      : undefined
-    const hasCursorWork = Boolean(cursorWorkForEntry?.length)
-    const hasProcess = hasCursorWork || Boolean(entry.processBlocks?.length)
+    const hasProcess = Boolean(entry.processBlocks?.length)
+    const suggestions = entry.role === 'assistant' && entry.status === 'complete'
+      ? suggestedActionsFromText(entry.text)
+      : []
     return (
       <div key={`entry-wrap:${entry.id}`}>
         {needDivider && (
@@ -393,7 +362,7 @@ export function SessionWorkspace({
                 ? <i className="chat-face chat-face--mine">你</i>
                 : entry.role === 'error'
                   ? <i className="chat-face chat-face--error">!</i>
-                  : <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
+                  : <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
             )}
           </span>
           <div className="chat-col">
@@ -404,10 +373,15 @@ export function SessionWorkspace({
               </div>
             )}
             <div className="chat-bubble">
-              {hasCursorWork ? (
-                <CursorProcessPanel entries={cursorWorkForEntry!} title="Cursor 过程" variant="inline" />
-              ) : entry.processBlocks && entry.processBlocks.length > 0 ? (
-                <ProcessBlocks blocks={entry.processBlocks} />
+              {hasProcess ? (
+                <ProcessTurnCard
+                  id={entry.turn ?? `entry:${entry.id}`}
+                  blocks={entry.processBlocks}
+                  startedAt={entry.processBlocks?.[0]?.startedAt}
+                  updatedAt={entry.timestamp}
+                  defaultOpen={entry.id === latestAssistantId}
+                  compact
+                />
               ) : null}
               {entry.text
                 ? <ClampedMessage text={entry.text} />
@@ -432,6 +406,16 @@ export function SessionWorkspace({
               {entry.status === 'streaming' && (
                 <span className="typing-indicator"><i /><i /><i /></span>
               )}
+              {suggestions.length ? (
+                <div className="response-suggestions" aria-label="接下来可以">
+                  <span>接下来可以：</span>
+                  <div>{suggestions.map((suggestion, index) => (
+                    <button key={`${entry.id}:suggestion:${index}`} onClick={() => onDraftChange(suggestion)}>
+                      <i>{index + 1}</i><span>{suggestion}</span>
+                    </button>
+                  ))}</div>
+                </div>
+              ) : null}
             </div>
             <div className="chat-tail">
               {entry.text && (
@@ -440,7 +424,7 @@ export function SessionWorkspace({
                   title="复制消息全文"
                   onClick={() => void copyEntry(entry)}
                 >
-                  <CopyIcon />{copiedId === entry.id ? '已复制' : '复制'}
+                  <CopyIcon /><span>{copiedId === entry.id ? '已复制' : '复制'}</span>
                 </button>
               )}
               {entry.role === 'assistant' && entry.status === 'complete' && entry.text && (
@@ -449,9 +433,21 @@ export function SessionWorkspace({
                   title="引用这条消息回复"
                   onClick={() => quoteEntry(entry)}
                 >
-                  <QuoteIcon />引用
+                  <QuoteIcon /><span>引用</span>
                 </button>
               )}
+              {entry.role === 'assistant' && entry.status === 'complete' && entry.text ? (
+                <>
+                  <button className="chat-action" title="重新生成这条回答" onClick={() => void retryEntry(entry)}><RetryIcon /><span>重试</span></button>
+                  <button className={`chat-action ${starredIds.has(entry.id) ? 'is-active' : ''}`} title={starredIds.has(entry.id) ? '取消收藏' : '收藏回答'} onClick={() => setStarredIds((current) => {
+                    const next = new Set(current)
+                    if (next.has(entry.id)) next.delete(entry.id)
+                    else next.add(entry.id)
+                    return next
+                  })}><StarIcon filled={starredIds.has(entry.id)} /><span>收藏</span></button>
+                  <button className="chat-action" title="朗读回答" onClick={() => listenEntry(entry)}><ListenIcon /><span>朗读</span></button>
+                </>
+              ) : null}
               <span className={`chat-state ${entry.status === 'failed' ? 'is-failed' : ''}`}>
                 {entry.status === 'pending' && '发送中…'}
                 {entry.status === 'complete' && mine && `已发送 ${formatClock(entry.timestamp)}`}
@@ -465,54 +461,51 @@ export function SessionWorkspace({
     )
   }
 
-  const renderCursorWorkRow = (group: CursorWorkGroup): React.JSX.Element => {
-    const running = group.entries.some((entry) => entry.status === 'running')
-    return (
-      <div className="chat-row chat-row--agent chat-row--process cursor-work-row" key={`cursor-work:${group.key}`}>
-        <span className="chat-gutter">
-          <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
-        </span>
-        <div className="chat-col">
-          <div className="chat-name">
-            <strong>Agent</strong>
-            <span className="live-process-badge"><i className="process-pulse" />{running ? 'Cursor 实时过程' : 'Cursor 过程'} · {group.entries.length} 条</span>
-          </div>
-          <div className="chat-bubble">
-            <CursorProcessPanel
-              entries={group.entries}
-              title={running ? 'Cursor 实时过程' : 'Cursor 过程'}
-              variant="inline"
-            />
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   const renderLiveProcessRow = (): React.JSX.Element => (
     <div className="chat-row chat-row--agent live-process-row" key={`live-process:${liveProcess?.turn ?? session.id}`}>
       <span className="chat-gutter">
-        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
+        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
       </span>
       <div className="chat-col">
         <div className="chat-name">
           <strong>Agent</strong>
-          <span className="live-process-badge"><i className="process-pulse" />实时过程中 · {Math.max(liveProcess?.blocks.length ?? 0, liveCursorWorkEntries?.length ?? 0)} 步</span>
+          <time>{formatClock(liveProcess?.startedAt ?? Date.now())}</time>
         </div>
         <div className="chat-bubble">
-          {liveCursorWorkEntries?.length ? (
-            <CursorProcessPanel entries={liveCursorWorkEntries} title="Cursor 实时过程" variant="inline" />
-          ) : null}
-          {liveProcess ? <ProcessBlocks blocks={liveProcess.blocks} /> : null}
+          <ProcessTurnCard
+            id={liveProcess?.turn ?? `live:${session.id}`}
+            blocks={liveProcess?.blocks}
+            startedAt={liveProcess?.startedAt}
+            updatedAt={liveProcess?.updatedAt ?? Date.now()}
+            defaultOpen
+            compact
+            live
+          />
         </div>
       </div>
     </div>
   )
 
+  const renderLiveResponseRow = (): React.JSX.Element => {
+    const response = visibleLiveResponse!
+    return (
+    <div className="chat-row chat-row--agent live-response-row" key={`live-response:${response.id}`}>
+      <span className="chat-gutter">
+        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
+      </span>
+      <div className="chat-col">
+        <div className="chat-name"><strong>Agent</strong><time>{formatClock(response.startedAt)}</time></div>
+        <div className="chat-bubble"><LiveAgentResponse response={response} /></div>
+        <div className="chat-tail"><span className="chat-state">{response.status === 'streaming' ? 'Cursor 实时生成中' : '正在归档…'}</span></div>
+      </div>
+    </div>
+    )
+  }
+
   const renderRunningPlaceholder = (): React.JSX.Element => (
     <div className="chat-row chat-row--agent live-process-row" key={`running-placeholder:${session.id}`}>
       <span className="chat-gutter">
-        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.roleTemplateKey === 'lead'} size="sm" /></span>
+        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
       </span>
       <div className="chat-col">
         <div className="chat-name">
@@ -535,8 +528,8 @@ export function SessionWorkspace({
         previousEntry = item.entry
         return rendered
       }
-      if (item.type === 'cursor-work') return renderCursorWorkRow(item.group)
       if (item.type === 'live-process') return renderLiveProcessRow()
+      if (item.type === 'live-response') return renderLiveResponseRow()
       return renderRunningPlaceholder()
     })
   }
@@ -548,7 +541,7 @@ export function SessionWorkspace({
         <AgentAvatar
           avatarId={session.avatarId}
           name={session.displayName}
-          crowned={session.roleTemplateKey === 'lead'}
+          crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'}
           online={session.online}
           size="lg"
         />
@@ -579,10 +572,10 @@ export function SessionWorkspace({
           ? 'Cursor Agent 已离线，这条会话此刻不能发送'
           : 'Cursor Agent 在线，但没有进入待命'}</strong>
         <span>{queuedOffline
-          ? '只要该 Cursor 会话继续调用 qunshu.check_messages，就会自动取走；不会因为心跳过期阻止发送。'
+          ? '只要该 Cursor 会话继续调用 SG Team 的 check_messages，就会自动取走；不会因为心跳过期阻止发送。'
           : disconnected
           ? '会话与本地时间线仍保留，重新启动对应 Cursor Agent 后可以继续。'
-          : `消息会排队，直到对应 Cursor 会话调用 qtwx-mcp-${session.channelId}.check_messages。`}</span>
+          : `消息会排队，直到对应 Cursor 会话调用 SG Team 的 check_messages。`}</span>
       </div>
 
       <div className="workspace-timeline-wrap">

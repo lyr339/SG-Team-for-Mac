@@ -1,3 +1,4 @@
+import { numberOf, type SqliteRow } from '../sqlite/rows'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
@@ -25,14 +26,6 @@ import {
 } from '../sqlite/agent-registrations'
 
 const SCHEMA_VERSION = 3
-
-type SqliteRow = Record<string, string | number | bigint | null>
-
-function numberOf(value: unknown): number {
-  if (typeof value === 'bigint') return Number(value)
-  const number = Number(value)
-  return Number.isFinite(number) ? number : 0
-}
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined

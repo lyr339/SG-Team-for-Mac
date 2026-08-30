@@ -28,7 +28,7 @@ export function SessionOverview({
           ) : (
             <>
               <h2>还没有发现 Cursor 会话</h2>
-              <p>在 Cursor 工作区安装群枢通道 MCP 并启动 Agent 会话后，这里会自动出现。</p>
+              <p>在 Cursor 工作区安装拾光通道 MCP 并启动 Agent 会话后，这里会自动出现。</p>
             </>
           )}
         </div>

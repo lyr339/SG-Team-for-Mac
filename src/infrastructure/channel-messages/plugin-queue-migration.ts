@@ -22,7 +22,7 @@ export interface PluginQueueMigrationResult {
  * 一次性迁移 qingtian-v2 插件文件队列中的未读消息（一体化 S1 切换前排空）。
  *
  * 插件队列位于 ~/.cursor/qingtian-runtime/messages/s/<channelId>/messages.json。
- * 接管 qtwx-mcp-N 后插件 server 不再被调用，存量消息必须迁入群枢 SQLite
+ * 接管 qtwx-mcp-N 后插件 server 不再被调用，存量消息必须迁入拾光 SQLite
  * （channel_outbox），否则用户已发送但未投递的消息会永久滞留。
  * 迁移成功后原文件改名归档，保证幂等（重复执行不会二次导入）。
  */
@@ -78,7 +78,7 @@ export function migratePluginQueueFile(
   }
 
   try {
-    renameSync(queuePath, `${queuePath}.qunshu-migrated-${Date.now()}`)
+    renameSync(queuePath, `${queuePath}.sg-team-migrated-${Date.now()}`)
   } catch (error) {
     return {
       channelId: normalizedChannel,

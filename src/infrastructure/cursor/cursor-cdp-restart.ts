@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { promisify } from 'node:util'
+import { buildCursorWindowsStartArgs, countWindowsCursorProcesses, resolveCursorWindowsExecutable } from './cursor-windows-launch'
 
 /**
  * 一键重启 Cursor 并附加 --remote-debugging-port，使 CDP 会话创建可用。
- * 仅支持 macOS（与当前打包目标一致）。优雅退出优先，避免强杀丢失未保存状态。
+ * 支持 macOS 与 Windows（两平台彻底分离：mac 走 osascript/open，win 走 taskkill/cmd start）。
+ * 优雅退出优先，避免强杀丢失未保存状态。
  */
 
 const execFileAsync = promisify(execFile)
@@ -42,7 +44,8 @@ export interface CursorCdpRestartOptions {
   platform?: NodeJS.Platform
 }
 
-async function cursorMainProcessCount(execFileFn: typeof execFileAsync): Promise<number> {
+async function cursorMainProcessCount(execFileFn: typeof execFileAsync, platform: NodeJS.Platform): Promise<number> {
+  if (platform === 'win32') return countWindowsCursorProcesses(execFileFn)
   try {
     const { stdout } = await execFileFn('pgrep', ['-f', CURSOR_PROCESS_PATTERN])
     return stdout.split('\n').map((line) => line.trim()).filter(Boolean).length
@@ -54,8 +57,8 @@ async function cursorMainProcessCount(execFileFn: typeof execFileAsync): Promise
 
 export async function restartCursorWithCdp(options: CursorCdpRestartOptions): Promise<CursorCdpRestartResult> {
   const platform = options.platform ?? process.platform
-  if (platform !== 'darwin') {
-    return { ok: false, message: '当前仅支持 macOS 自动重启 Cursor；请手动以 --remote-debugging-port 启动' }
+  if (platform !== 'darwin' && platform !== 'win32') {
+    return { ok: false, message: '当前平台不支持自动重启 Cursor（仅 macOS / Windows）；请手动以 --remote-debugging-port 启动' }
   }
   const execFileFn = options.execFileFn ?? execFileAsync
   // 默认探测必须带超时：裸 fetch 在端口无响应时会挂起，拖延 PORT_READY_TIMEOUT_MS 的退出时机
@@ -69,21 +72,35 @@ export async function restartCursorWithCdp(options: CursorCdpRestartOptions): Pr
   }
 
   try {
-    if (await cursorMainProcessCount(execFileFn) > 0) {
-      await execFileFn('osascript', ['-e', 'tell application "Cursor" to quit'])
+    if (await cursorMainProcessCount(execFileFn, platform) > 0) {
+      // 优雅退出（不做强杀——本模块策略与账号切换器不同，保留用户未保存内容）：
+      // mac 走 AppleScript quit；win 走 taskkill（无 /F 即 WM_CLOSE，等价语义）
+      if (platform === 'win32') {
+        await execFileFn('taskkill', ['/IM', 'Cursor.exe'])
+      } else {
+        await execFileFn('osascript', ['-e', 'tell application "Cursor" to quit'])
+      }
       const quitDeadline = now() + QUIT_TIMEOUT_MS
-      while (now() < quitDeadline && await cursorMainProcessCount(execFileFn) > 0) {
+      while (now() < quitDeadline && await cursorMainProcessCount(execFileFn, platform) > 0) {
         await sleep(POLL_INTERVAL_MS)
       }
-      if (await cursorMainProcessCount(execFileFn) > 0) {
+      if (await cursorMainProcessCount(execFileFn, platform) > 0) {
         return { ok: false, message: 'Cursor 未能在限定时间内退出（可能有未保存的拦截弹窗），请手动关闭后重试' }
       }
     }
 
-    const openArgs = workspacePath
-      ? ['-a', 'Cursor', workspacePath, '--args', `--remote-debugging-port=${port}`]
-      : ['-a', 'Cursor', '--args', `--remote-debugging-port=${port}`]
-    await execFileFn('open', openArgs)
+    if (platform === 'win32') {
+      await execFileFn('cmd.exe', buildCursorWindowsStartArgs({
+        executable: resolveCursorWindowsExecutable(),
+        workspacePath,
+        cdpPort: port
+      }))
+    } else {
+      const openArgs = workspacePath
+        ? ['-a', 'Cursor', workspacePath, '--args', `--remote-debugging-port=${port}`]
+        : ['-a', 'Cursor', '--args', `--remote-debugging-port=${port}`]
+      await execFileFn('open', openArgs)
+    }
 
     const readyDeadline = now() + PORT_READY_TIMEOUT_MS
     while (now() < readyDeadline) {

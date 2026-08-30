@@ -57,13 +57,13 @@ describe('CursorMcpInstaller', () => {
     expect(installed.customSetting).toBe(true)
     expect(installed.mcpServers.github).toEqual({ command: 'github-mcp' })
     expect(installed.mcpServers['qingtian-team-ch-9']).toBeUndefined()
-    // S4：静态条目一律不写入工作区（全局 ~/.cursor/mcp.json 承载单一 qunshu 条目）
+    // S4：静态条目一律不写入工作区（全局 ~/.cursor/mcp.json 承载单一 SG Team 条目）
     expect(installed.mcpServers['qunshu-ch-1']).toBeUndefined()
     expect(installed.mcpServers['qunshu-ch-2']).toBeUndefined()
     expect(installed.mcpServers['qt-ch-1']).toBeUndefined()
     expect(installed.mcpServers['qtwx-mcp-1']).toBeUndefined()
     expect(installed.mcpServers['qtwx-mcp-2']).toBeUndefined()
-    expect(result.serverNames).toEqual(['qunshu'])
+    expect(result.serverNames).toEqual(['SG Team'])
     expect(result.registrations.agents.map((agent) => agent.agentSessionId)).toEqual([
       `${result.workspaceId}:ch-1:generation123`,
       `${result.workspaceId}:ch-2:generation123`
@@ -91,7 +91,7 @@ describe('CursorMcpInstaller', () => {
       runId: 'team-run-main',
       generation: 'generation123'
     })
-    expect(result.serverNames).toEqual(['qunshu'])
+    expect(result.serverNames).toEqual(['SG Team'])
     expect(result.backupPath).toBeDefined()
     expect(existsSync(join(files.workspace, '.cursor', 'mcp.json'))).toBe(true)
   })
@@ -113,7 +113,7 @@ describe('CursorMcpInstaller', () => {
       generation: 'generation123'
     })
     const installed = JSON.parse(readFileSync(result.configPath, 'utf8'))
-    expect(result.serverNames).toEqual(['qunshu'])
+    expect(result.serverNames).toEqual(['SG Team'])
     expect(installed.mcpServers['qunshu-ch-3']).toBeUndefined()
     expect(installed.mcpServers['qunshu']).toBeUndefined()
   })
@@ -149,13 +149,13 @@ describe('CursorMcpInstaller', () => {
     const project = JSON.parse(readFileSync(configPath, 'utf8'))
     expect(project.customSetting).toBe(true)
     expect(project.mcpServers.github).toEqual({ command: 'github-mcp' })
-    // global 模式：工作区静态条目全部让位（全局 mcp.json 拥有 qunshu-ch-N）
+    // global 模式：工作区静态条目全部让位（全局 mcp.json 拥有 SG Team）
     expect(project.mcpServers['qtwx-mcp-1']).toBeUndefined()
     expect(project.mcpServers['qunshu-ch-9']).toBeUndefined()
     expect(Object.keys(project.mcpServers).some((name) => (
       name.startsWith('qingtian-team-ch-') || name.startsWith('qt-ch-') || name.startsWith('qtwx-mcp-') || name.startsWith('qunshu-ch-')
     ))).toBe(false)
-    expect(first.serverNames).toEqual(['qunshu'])
+    expect(first.serverNames).toEqual(['SG Team'])
     expect(first.restartRequired).toBe(true)
     expect(first.backupPath && existsSync(first.backupPath)).toBe(true)
     expect(install().restartRequired).toBe(false)
@@ -200,7 +200,7 @@ describe('CursorMcpInstaller', () => {
     })
     const installed = JSON.parse(readFileSync(result.configPath, 'utf8'))
     expect(installed.mcpServers['qunshu-ch-2']).toBeUndefined()
-    expect(result.serverNames).toEqual(['qunshu'])
+    expect(result.serverNames).toEqual(['SG Team'])
   })
 
   it('installs an explicitly listed unassigned channel as standby (takeover era)', () => {
@@ -226,7 +226,7 @@ describe('CursorMcpInstaller', () => {
       generation: 'generation123',
       registrationMode: 'global'
     })
-    expect(result.serverNames).toEqual(['qunshu'])
+    expect(result.serverNames).toEqual(['SG Team'])
     expect(result.registrations.agents.map((agent) => agent.channelId)).toEqual(['1', '5'])
     // 不写工作区静态条目
     const project = JSON.parse(readFileSync(result.configPath, 'utf8'))

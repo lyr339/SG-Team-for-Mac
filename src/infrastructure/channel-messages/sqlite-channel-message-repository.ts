@@ -1,3 +1,4 @@
+import { numberOf, type SqliteRow } from '../sqlite/rows'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -5,23 +6,12 @@ import { DatabaseSync } from 'node:sqlite'
 import {
   CHANNEL_OUTBOX_MAX_PENDING,
   CHANNEL_OUTBOUND_DEDUPE_WINDOW_MS,
-  CHANNEL_PROCESS_EVENTS_ARCHIVED_TTL_MS,
-  CHANNEL_PROCESS_EVENTS_MAX_PENDING,
   CHANNEL_REPLY_DEDUPE_WINDOW_MS,
   type ChannelInboundReply,
   type ChannelOutboundMessage,
-  type ChannelPresence,
-  type ChannelProcessEvent
+  type ChannelPresence
 } from '../../domain/channel-message'
-import type { MessageAttachment, ProcessBlock } from '../../domain/conversation-entry'
-
-type SqliteRow = Record<string, string | number | bigint | null>
-
-function numberOf(value: unknown): number {
-  if (typeof value === 'bigint') return Number(value)
-  const number = Number(value)
-  return Number.isFinite(number) ? number : 0
-}
+import type { MessageAttachment } from '../../domain/conversation-entry'
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined
@@ -34,45 +24,7 @@ function stringArrayOf(value: unknown): string[] {
   return parsed.map(String).filter(Boolean)
 }
 
-/** process_json 解析：异常/非数组一律视为无过程，绝不让历史脏数据拖垮读取链路。 */
-function processBlocksOf(value: unknown): ProcessBlock[] | undefined {
-  if (typeof value !== 'string' || !value) return undefined
-  try {
-    const parsed = JSON.parse(value)
-    return Array.isArray(parsed) && parsed.length ? parsed as ProcessBlock[] : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** 单块过程事件 payload 解析（容错同上）。 */
-function processBlockOf(value: unknown): ProcessBlock | undefined {
-  if (typeof value !== 'string' || !value) return undefined
-  try {
-    const parsed = JSON.parse(value)
-    return parsed && typeof parsed === 'object' ? parsed as ProcessBlock : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function processEventOf(row: SqliteRow): ChannelProcessEvent | undefined {
-  const block = processBlockOf(row.payload_json)
-  if (!block) return undefined
-  return {
-    id: String(row.id),
-    channelId: String(row.channel_id),
-    turn: String(row.turn),
-    blockId: String(row.block_id),
-    seq: numberOf(row.seq),
-    block,
-    createdAt: numberOf(row.created_at),
-    updatedAt: numberOf(row.updated_at),
-    archived: numberOf(row.archived) === 1
-  }
-}
-
-/** attachments_json 解析：异常/非数组一律视为无附件（与 process_json 同一容错原则）。 */
+/** attachments_json 解析：异常/非数组一律视为无附件。 */
 function attachmentsOf(value: unknown): MessageAttachment[] | undefined {
   if (typeof value !== 'string' || !value) return undefined
   try {
@@ -94,6 +46,7 @@ function canonicalReplyContent(value: string): string {
 function outboundOf(row: SqliteRow): ChannelOutboundMessage {
   return {
     id: String(row.id),
+    runId: optionalString(row.run_id),
     channelId: String(row.channel_id),
     seq: numberOf(row.seq),
     text: String(row.text),
@@ -114,8 +67,6 @@ function replyOf(row: SqliteRow): ChannelInboundReply {
     groupId: optionalString(row.group_id),
     taskId: optionalString(row.task_id),
     files: stringArrayOf(row.files_json),
-    process: processBlocksOf(row.process_json),
-    turn: optionalString(row.turn),
     visible: visible ? undefined : false,
     createdAt: numberOf(row.created_at),
     consumedAt: row.consumed_at === null ? undefined : numberOf(row.consumed_at)
@@ -147,10 +98,6 @@ export interface RecordReplyInput {
   groupId?: string
   taskId?: string
   files?: string[]
-  /** 过程区块（record_reply process 契约 v1）；缺省表示本轮无过程归档。 */
-  process?: ProcessBlock[]
-  /** 流式过程回合标识：落地时把该 turn 的过程事件整批归档（archived=1）。 */
-  turn?: string
   /** false 表示后台/内部同步，不进入用户可见时间线；缺省为 true。 */
   visible?: boolean
 }
@@ -170,7 +117,7 @@ export interface PresencePatch {
 
 /**
  * 通道消息队列 SQLite 仓库。与任务池共用同一数据库文件（WAL），
- * 群枢主进程与内嵌 MCP server 进程通过该库交换消息，不引入额外 IPC。
+ * 拾光主进程与内嵌 MCP server 进程通过该库交换消息，不引入额外 IPC。
  */
 export class SqliteChannelMessageRepository {
   private readonly database: DatabaseSync
@@ -190,11 +137,18 @@ export class SqliteChannelMessageRepository {
     text: string,
     now = Date.now(),
     attachments?: MessageAttachment[],
-    silent = false
+    silent = false,
+    runId?: string
   ): ChannelOutboundMessage {
     const normalizedChannel = String(channelId).trim()
     if (!/^\d+$/.test(normalizedChannel)) throw new Error(`通道号无效：${channelId}`)
     const normalizedText = String(text ?? '').trim()
+    const normalizedRunId = runId?.trim() || undefined
+    const activeRunId = this.currentScopeRunId()
+    if (normalizedRunId && activeRunId && normalizedRunId !== activeRunId) {
+      throw new Error(`消息属于已结束的 TeamRun，拒绝写入当前队列`)
+    }
+    const effectiveRunId = normalizedRunId ?? activeRunId
     // 纯附件消息合法：文本或附件至少其一
     if (!normalizedText && !attachments?.length) throw new Error('消息不能为空')
 
@@ -206,14 +160,15 @@ export class SqliteChannelMessageRepository {
           normalizedChannel,
           normalizedText,
           silent,
-          now
+          now,
+          effectiveRunId
         )
       if (duplicate) {
         this.database.exec('COMMIT')
         return duplicate
       }
       const depth = this.database.prepare(
-        'SELECT COUNT(*) AS count FROM channel_outbox WHERE channel_id = ? AND delivered_at IS NULL'
+        'SELECT COUNT(*) AS count FROM channel_outbox WHERE channel_id = ? AND delivered_at IS NULL AND retired_at IS NULL'
       ).get(normalizedChannel) as SqliteRow
       if (numberOf(depth.count) >= CHANNEL_OUTBOX_MAX_PENDING) {
         throw new Error(`CH-${normalizedChannel} 待投递消息已达上限，请等待 Agent 消费`)
@@ -223,6 +178,7 @@ export class SqliteChannelMessageRepository {
       ).get(normalizedChannel) as SqliteRow
       const message: ChannelOutboundMessage = {
         id: randomUUID(),
+        runId: effectiveRunId,
         channelId: normalizedChannel,
         seq: numberOf(last.seq) + 1,
         text: normalizedText,
@@ -231,9 +187,10 @@ export class SqliteChannelMessageRepository {
         silent: silent ? true : undefined
       }
       this.database.prepare(
-        'INSERT INTO channel_outbox (id, channel_id, seq, text, attachments_json, created_at, silent) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO channel_outbox (id, run_id, channel_id, seq, text, attachments_json, created_at, silent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(
         message.id,
+        message.runId ?? null,
         message.channelId,
         message.seq,
         message.text,
@@ -254,19 +211,23 @@ export class SqliteChannelMessageRepository {
     channelId: string,
     text: string,
     silent: boolean,
-    now: number
+    now: number,
+    runId?: string
   ): ChannelOutboundMessage | undefined {
     const row = this.database.prepare(`
       SELECT * FROM channel_outbox
       WHERE channel_id = ?
+        AND ${runId ? 'run_id = ?' : 'run_id IS NULL'}
         AND text = ?
         AND attachments_json IS NULL
         AND silent = ?
+        AND retired_at IS NULL
         AND created_at > ?
       ORDER BY created_at DESC, seq DESC
       LIMIT 1
     `).get(
       channelId,
+      ...(runId ? [runId] : []),
       text,
       silent ? 1 : 0,
       now - CHANNEL_OUTBOUND_DEDUPE_WINDOW_MS
@@ -276,9 +237,13 @@ export class SqliteChannelMessageRepository {
 
   /** Agent 侧：按 seq 升序读取通道待投递消息。 */
   listPendingOutbound(channelId: string): ChannelOutboundMessage[] {
-    const rows = this.database.prepare(
-      'SELECT * FROM channel_outbox WHERE channel_id = ? AND delivered_at IS NULL ORDER BY seq ASC'
-    ).all(String(channelId).trim()) as SqliteRow[]
+    const runId = this.currentScopeRunId()
+    const rows = this.database.prepare(`
+      SELECT * FROM channel_outbox
+      WHERE channel_id = ? AND delivered_at IS NULL AND retired_at IS NULL
+        AND ${runId ? 'run_id = ?' : 'run_id IS NULL'}
+      ORDER BY seq ASC
+    `).all(String(channelId).trim(), ...(runId ? [runId] : [])) as SqliteRow[]
     return rows.map(outboundOf)
   }
 
@@ -286,7 +251,7 @@ export class SqliteChannelMessageRepository {
   markOutboundDelivered(ids: string[], now = Date.now()): void {
     if (!ids.length) return
     const statement = this.database.prepare(
-      'UPDATE channel_outbox SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL'
+      'UPDATE channel_outbox SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL AND retired_at IS NULL'
     )
     this.database.exec('BEGIN IMMEDIATE')
     try {
@@ -310,9 +275,12 @@ export class SqliteChannelMessageRepository {
   }
 
   countPendingOutbound(channelId: string): number {
-    const row = this.database.prepare(
-      'SELECT COUNT(*) AS count FROM channel_outbox WHERE channel_id = ? AND delivered_at IS NULL'
-    ).get(String(channelId).trim()) as SqliteRow
+    const runId = this.currentScopeRunId()
+    const row = this.database.prepare(`
+      SELECT COUNT(*) AS count FROM channel_outbox
+      WHERE channel_id = ? AND delivered_at IS NULL AND retired_at IS NULL
+        AND ${runId ? 'run_id = ?' : 'run_id IS NULL'}
+    `).get(String(channelId).trim(), ...(runId ? [runId] : [])) as SqliteRow
     return numberOf(row.count)
   }
 
@@ -340,7 +308,7 @@ export class SqliteChannelMessageRepository {
     if (!duplicateIds.length) return 0
 
     const statement = this.database.prepare(
-      'UPDATE channel_outbox SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL'
+      'UPDATE channel_outbox SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL AND retired_at IS NULL'
     )
     this.database.exec('BEGIN IMMEDIATE')
     try {
@@ -351,6 +319,84 @@ export class SqliteChannelMessageRepository {
       if (this.database.isTransaction) this.database.exec('ROLLBACK')
       throw error
     }
+  }
+
+  /**
+   * 进入新 TeamRun 时原子结算旧作用域：
+   * - 旧未投递消息标记 retired（保留审计，但不再计数/投递）；
+   * - 清除旧轮 reply-sync 守门，避免新轮 check_messages 被上一轮回复阻塞；
+   */
+  retireScopeBefore(startedAt: number, now = Date.now()): {
+    outbound: number
+    presence: number
+  } {
+    const boundary = Math.max(0, Math.floor(startedAt))
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const outbound = this.database.prepare(`
+        UPDATE channel_outbox
+        SET retired_at = ?
+        WHERE delivered_at IS NULL AND retired_at IS NULL AND created_at < ?
+      `).run(now, boundary)
+      const presence = this.database.prepare(`
+        UPDATE channel_presence
+        SET pending_reply_sync_since = NULL,
+            pending_group_chat = 0,
+            pending_group_id = NULL,
+            updated_at = ?
+        WHERE pending_reply_sync_since IS NOT NULL AND pending_reply_sync_since < ?
+      `).run(now, boundary)
+      this.database.exec('COMMIT')
+      return {
+        outbound: numberOf(outbound.changes),
+        presence: numberOf(presence.changes)
+      }
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  /** 原子切换当前 TeamRun；非当前轮消息一律退役，MCP 进程只读取该 run。 */
+  beginScope(runId: string, startedAt: number, now = Date.now()): ReturnType<SqliteChannelMessageRepository['retireScopeBefore']> {
+    const normalizedRunId = runId.trim()
+    if (!normalizedRunId) throw new Error('TeamRun 作用域无效')
+    const boundary = Math.max(0, Math.floor(startedAt))
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      this.database.prepare(`
+        INSERT INTO channel_scope (id, run_id, started_at, updated_at)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+          run_id = excluded.run_id,
+          started_at = excluded.started_at,
+          updated_at = excluded.updated_at
+      `).run(normalizedRunId, boundary, now)
+      const outbound = this.database.prepare(`
+        UPDATE channel_outbox SET retired_at = ?
+        WHERE delivered_at IS NULL AND retired_at IS NULL
+          AND (run_id IS NULL OR run_id <> ? OR created_at < ?)
+      `).run(now, normalizedRunId, boundary)
+      const presence = this.database.prepare(`
+        UPDATE channel_presence
+        SET pending_reply_sync_since = NULL, pending_group_chat = 0,
+            pending_group_id = NULL, updated_at = ?
+        WHERE pending_reply_sync_since IS NOT NULL AND pending_reply_sync_since < ?
+      `).run(now, boundary)
+      this.database.exec('COMMIT')
+      return {
+        outbound: numberOf(outbound.changes),
+        presence: numberOf(presence.changes)
+      }
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  currentScopeRunId(): string | undefined {
+    const row = this.database.prepare('SELECT run_id FROM channel_scope WHERE id = 1').get() as SqliteRow | undefined
+    return row ? optionalString(row.run_id) : undefined
   }
 
   /** 主进程侧：按时间窗口读取已入队的可回放出站消息（含已投递/未投递）。 */
@@ -368,10 +414,9 @@ export class SqliteChannelMessageRepository {
   }
 
   /**
-   * Agent → 用户：归档一条完整可见回复（可携带过程区块 / 流式回合标识）。
+   * Agent → 用户：归档一条完整可见回复。
    * 幂等语义：MCP 客户端超时重试 / Agent 补同步重复提交时，同一轮回复只入一行——
-   * 有 turn 按 (channel_id, turn) 覆盖原行（保留行身份与时间线位置）；
-   * 无 turn 在 CHANNEL_REPLY_DEDUPE_WINDOW_MS 窗口内同内容视为重复提交，返回原行。
+   * CHANNEL_REPLY_DEDUPE_WINDOW_MS 窗口内同内容视为重复提交，返回原行。
    */
   recordReply(input: RecordReplyInput, now = Date.now()): ChannelInboundReply {
     const channelId = String(input.channelId).trim()
@@ -379,47 +424,16 @@ export class SqliteChannelMessageRepository {
     const content = String(input.content ?? '').trim()
     if (!content) throw new Error('回复内容不能为空')
     const files = (input.files ?? []).map(String).filter(Boolean).slice(0, 32)
-    const process = input.process?.length ? input.process.slice(0, 200) : undefined
-    const turn = input.turn?.trim() || undefined
     const visible = input.visible !== false
 
     this.database.exec('BEGIN IMMEDIATE')
     try {
       const presence = this.getPresence(channelId)
-      const allowContentDedupe = !turn && presence?.pendingReplySyncSince === undefined
-      const duplicate = this.findDuplicateReply(channelId, content, turn, visible, now, allowContentDedupe)
-      if (duplicate && !turn) {
+      const allowContentDedupe = presence?.pendingReplySyncSince === undefined
+      const duplicate = this.findDuplicateReply(channelId, content, visible, now, allowContentDedupe)
+      if (duplicate) {
         this.database.exec('COMMIT')
         return duplicate
-      }
-      if (duplicate && turn) {
-        // 同 turn 重试可能携带更完整的过程块/附件，覆盖内容字段但保留行身份与 created_at
-        this.database.prepare(`
-          UPDATE channel_replies
-          SET content = ?, title = ?, group_id = ?, task_id = ?, files_json = ?, process_json = ?, visible = ?
-          WHERE id = ?
-        `).run(
-          content,
-          input.title?.trim() || null,
-          input.groupId?.trim() || null,
-          input.taskId?.trim() || null,
-          JSON.stringify(files),
-          process ? JSON.stringify(process) : null,
-          visible ? 1 : 0,
-          duplicate.id
-        )
-        this.archiveProcessEvents(channelId, turn, now)
-        this.database.exec('COMMIT')
-        return {
-          ...duplicate,
-          content,
-          title: input.title?.trim() || undefined,
-          groupId: input.groupId?.trim() || undefined,
-          taskId: input.taskId?.trim() || undefined,
-          files,
-          process,
-          visible: visible ? undefined : false
-        }
       }
 
       const reply: ChannelInboundReply = {
@@ -430,14 +444,12 @@ export class SqliteChannelMessageRepository {
         groupId: input.groupId?.trim() || undefined,
         taskId: input.taskId?.trim() || undefined,
         files,
-        process,
-        turn,
         visible: visible ? undefined : false,
         createdAt: now
       }
       this.database.prepare(`
-        INSERT INTO channel_replies (id, channel_id, content, title, group_id, task_id, files_json, process_json, turn, visible, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO channel_replies (id, channel_id, content, title, group_id, task_id, files_json, visible, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         reply.id,
         reply.channelId,
@@ -446,15 +458,9 @@ export class SqliteChannelMessageRepository {
         reply.groupId ?? null,
         reply.taskId ?? null,
         JSON.stringify(reply.files),
-        reply.process ? JSON.stringify(reply.process) : null,
-        reply.turn ?? null,
         visible ? 1 : 0,
         reply.createdAt
       )
-      if (turn) {
-        // 回复落地即归档同 turn 的流式过程事件：live 透出消失，时间线改由回复承载
-        this.archiveProcessEvents(channelId, turn, now)
-      }
       this.database.exec('COMMIT')
       return reply
     } catch (error) {
@@ -463,21 +469,14 @@ export class SqliteChannelMessageRepository {
     }
   }
 
-  /** 查重：有 turn 按 (channel_id, turn)；无 turn 按窗口内同 (channel_id, content)。 */
+  /** 按时间窗口内同 (channel_id, content) 查重。 */
   private findDuplicateReply(
     channelId: string,
     content: string,
-    turn: string | undefined,
     visible: boolean,
     now: number,
     allowContentDedupe = true
   ): ChannelInboundReply | undefined {
-    if (turn) {
-      const row = this.database.prepare(
-        'SELECT * FROM channel_replies WHERE channel_id = ? AND turn = ? ORDER BY created_at ASC LIMIT 1'
-      ).get(channelId, turn) as SqliteRow | undefined
-      return row ? replyOf(row) : undefined
-    }
     if (!allowContentDedupe) return undefined
     const rows = this.database.prepare(`
       SELECT * FROM channel_replies
@@ -488,91 +487,6 @@ export class SqliteChannelMessageRepository {
     const canonical = canonicalReplyContent(content)
     const duplicate = rows.find((row) => canonicalReplyContent(String(row.content)) === canonical)
     return duplicate ? replyOf(duplicate) : undefined
-  }
-
-  /** 归档同 turn 的流式过程事件（record_reply 落地语义，insert/update 路径共用）。 */
-  private archiveProcessEvents(channelId: string, turn: string, now: number): void {
-    this.database.prepare(
-      'UPDATE channel_process_events SET archived = 1, updated_at = ? WHERE channel_id = ? AND turn = ? AND archived = 0'
-    ).run(now, channelId, turn)
-  }
-
-  /**
-   * record_process：按 (channel_id, turn, block_id) upsert 过程区块（状态翻转语义）。
-   * 单通道未归档事件超上限拒绝；写入时顺手清理过期已归档事件（零额外交互）。
-   */
-  recordProcessEvent(input: {
-    channelId: string
-    turn: string
-    block: ProcessBlock
-  }, now = Date.now()): ChannelProcessEvent {
-    const channelId = String(input.channelId).trim()
-    if (!/^\d+$/.test(channelId)) throw new Error(`通道号无效：${input.channelId}`)
-    const turn = String(input.turn ?? '').trim()
-    if (!turn || turn.length > 120) throw new Error('过程回合标识无效')
-    const block = input.block
-    if (!block || typeof block !== 'object' || !block.id) throw new Error('过程区块无效')
-
-    this.database.exec('BEGIN IMMEDIATE')
-    try {
-      // 顺手清理：已归档且过期的过程事件（reply 归档后 live 已不再需要）
-      this.database.prepare(
-        'DELETE FROM channel_process_events WHERE archived = 1 AND updated_at < ?'
-      ).run(now - CHANNEL_PROCESS_EVENTS_ARCHIVED_TTL_MS)
-
-      const existing = this.database.prepare(
-        'SELECT id, seq, created_at FROM channel_process_events WHERE channel_id = ? AND turn = ? AND block_id = ?'
-      ).get(channelId, turn, block.id) as SqliteRow | undefined
-      if (!existing) {
-        const pending = this.database.prepare(
-          'SELECT COUNT(*) AS count FROM channel_process_events WHERE channel_id = ? AND archived = 0'
-        ).get(channelId) as SqliteRow
-        if (numberOf(pending.count) >= CHANNEL_PROCESS_EVENTS_MAX_PENDING) {
-          throw new Error(`CH-${channelId} 未归档过程事件已达上限（${CHANNEL_PROCESS_EVENTS_MAX_PENDING}），请先 record_reply 归档`)
-        }
-      }
-      const seq = existing
-        ? numberOf(existing.seq)
-        : numberOf((this.database.prepare(
-            'SELECT MAX(seq) AS seq FROM channel_process_events WHERE channel_id = ?'
-          ).get(channelId) as SqliteRow).seq) + 1
-      const id = existing ? String(existing.id) : randomUUID()
-      const createdAt = existing ? numberOf(existing.created_at) : now
-      this.database.prepare(`
-        INSERT INTO channel_process_events (id, channel_id, turn, block_id, seq, payload_json, created_at, updated_at, archived)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
-        ON CONFLICT (channel_id, turn, block_id) DO UPDATE SET
-          payload_json = excluded.payload_json,
-          updated_at = excluded.updated_at
-      `).run(id, channelId, turn, block.id, seq, JSON.stringify(block), createdAt, now)
-      this.database.exec('COMMIT')
-      return { id, channelId, turn, blockId: block.id, seq, block, createdAt, updatedAt: now, archived: false }
-    } catch (error) {
-      if (this.database.isTransaction) this.database.exec('ROLLBACK')
-      throw error
-    }
-  }
-
-  /** 通道当前活跃回合的过程事件（未归档，按 seq 升序）。 */
-  listLiveProcessEvents(channelId: string): ChannelProcessEvent[] {
-    const rows = this.database.prepare(
-      'SELECT * FROM channel_process_events WHERE channel_id = ? AND archived = 0 ORDER BY seq ASC'
-    ).all(String(channelId).trim()) as SqliteRow[]
-    return rows.flatMap((row) => {
-      const event = processEventOf(row)
-      return event ? [event] : []
-    })
-  }
-
-  /** 指定回合的全部过程事件（含已归档，按 seq 升序）——reply 透出重建用。 */
-  listProcessEventsForTurn(channelId: string, turn: string): ChannelProcessEvent[] {
-    const rows = this.database.prepare(
-      'SELECT * FROM channel_process_events WHERE channel_id = ? AND turn = ? ORDER BY seq ASC'
-    ).all(String(channelId).trim(), turn.trim()) as SqliteRow[]
-    return rows.flatMap((row) => {
-      const event = processEventOf(row)
-      return event ? [event] : []
-    })
   }
 
   /** 主进程侧：读取未消费的入站回复（全通道，按时间升序）。 */
@@ -677,7 +591,7 @@ export class SqliteChannelMessageRepository {
   }
 
   /**
-   * 内嵌通道注册：安装器把 qtwx-mcp-N 指向群枢内嵌 server 后记录，
+   * 内嵌通道注册：安装器登记由拾光内嵌 server 接管的通道，
    * 主进程发送分流与活性投影据此判定通道归属（重启后可恢复）。
    */
   markChannelEmbedded(channelId: string, workspaceId: string, workspacePath: string, now = Date.now()): void {
@@ -696,7 +610,7 @@ export class SqliteChannelMessageRepository {
   }
 
   /**
-   * 精确同步当前工作区由群枢内嵌接管的通道。团队席位减少后，旧通道必须撤下，
+   * 精确同步当前工作区由拾光内嵌接管的通道。团队席位减少后，旧通道必须撤下，
    * 否则会话页会继续展示 CH-6/7/8 这类已不属于当前团队的历史通道。
    */
   replaceEmbeddedChannels(workspaceId: string, workspacePath: string, channelIds: string[], now = Date.now()): void {
@@ -772,12 +686,14 @@ export class SqliteChannelMessageRepository {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS channel_outbox (
         id TEXT PRIMARY KEY,
+        run_id TEXT,
         channel_id TEXT NOT NULL,
         seq INTEGER NOT NULL,
         text TEXT NOT NULL,
         attachments_json TEXT,
         created_at INTEGER NOT NULL,
         delivered_at INTEGER,
+        retired_at INTEGER,
         UNIQUE (channel_id, seq)
       );
 
@@ -795,28 +711,10 @@ export class SqliteChannelMessageRepository {
         group_id TEXT,
         task_id TEXT,
         files_json TEXT NOT NULL,
-        process_json TEXT,
-        turn TEXT,
         visible INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL,
         consumed_at INTEGER
       );
-
-      CREATE TABLE IF NOT EXISTS channel_process_events (
-        id TEXT PRIMARY KEY,
-        channel_id TEXT NOT NULL,
-        turn TEXT NOT NULL,
-        block_id TEXT NOT NULL,
-        seq INTEGER NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        archived INTEGER NOT NULL DEFAULT 0,
-        UNIQUE (channel_id, turn, block_id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_channel_process_events_live
-        ON channel_process_events (channel_id, archived, seq);
 
       CREATE INDEX IF NOT EXISTS idx_channel_replies_unconsumed
         ON channel_replies (consumed_at, created_at);
@@ -845,22 +743,21 @@ export class SqliteChannelMessageRepository {
         embedded INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS channel_scope (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        run_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `)
-    this.migrateProcessColumn()
     this.migrateAttachmentsColumn()
     this.migrateOutboundSilentColumn()
-    this.migrateReplyTurnColumn()
+    this.migrateOutboundRetiredColumn()
+    this.migrateOutboundRunColumn()
     this.migrateReplyVisibleColumn()
-  }
-
-  /** 老库增量迁移：channel_replies 补 process_json 列（新库建表已含）。 */
-  private migrateProcessColumn(): void {
-    this.migrateColumn('channel_replies', 'process_json')
-  }
-
-  /** 老库增量迁移：channel_replies 补 turn 列（流式过程回合标识）。 */
-  private migrateReplyTurnColumn(): void {
-    this.migrateColumn('channel_replies', 'turn')
+    // 旧版过程事件来自 Agent 主动上报，与 Cursor 原生过程重复且失真；迁移时彻底清除。
+    this.database.exec('DROP TABLE IF EXISTS channel_process_events')
   }
 
   /** 老库增量迁移：channel_replies 补 visible 列，用于隐藏后台 record_reply。 */
@@ -876,6 +773,16 @@ export class SqliteChannelMessageRepository {
   /** 老库增量迁移：channel_outbox 补 silent 列，用于重启水合时隐藏内部消息。 */
   private migrateOutboundSilentColumn(): void {
     this.migrateColumn('channel_outbox', 'silent', 'INTEGER NOT NULL DEFAULT 0')
+  }
+
+  /** 老库增量迁移：区分正常投递与 TeamRun 换轮退役。 */
+  private migrateOutboundRetiredColumn(): void {
+    this.migrateColumn('channel_outbox', 'retired_at', 'INTEGER')
+  }
+
+  /** 老库增量迁移：出站消息显式绑定 TeamRun。 */
+  private migrateOutboundRunColumn(): void {
+    this.migrateColumn('channel_outbox', 'run_id', 'TEXT')
   }
 
   private migrateColumn(table: string, column: string, definition = 'TEXT'): void {

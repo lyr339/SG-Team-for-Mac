@@ -19,67 +19,17 @@ export interface CursorComposerActivity {
   workInProgress?: boolean
 }
 
-/** 工具动作分组：驱动会话视图过程条目的图标与中文动作名。 */
-export type CursorWorkToolKind = 'command' | 'read' | 'search' | 'edit' | 'write' | 'mcp' | 'todo' | 'other'
-
-/** 过程条目中的任务清单项（来自 TodoWrite 工具调用的结构化快照）。 */
-export interface CursorWorkTodo {
-  content: string
-  /** 原样透传：pending / in_progress / completed / cancelled。 */
-  status: string
-}
-
-/** Cursor 工具调用的可展开明细。来源是 transcript 持久化的 tool input。 */
-export interface CursorWorkDetail {
-  label: string
-  value: string
-  kind?: 'text' | 'code' | 'path'
-}
-
-/**
- * Cursor 工作过程条目：从 agent-transcripts 增量解析出的助手侧动作
- *（可见叙述 / 工具调用），用于群枢会话视图回显 Cursor 内的工作过程。
- * qtwx-mcp 通道自身的保活轮询噪音已在解析侧过滤。
- */
-export interface CursorWorkEntry {
-  kind: 'text' | 'tool'
-  /** text：助手可见叙述；tool：工具调用的简短摘要（如 ReadFile src/a.ts）。 */
-  text: string
-  toolName?: string
-  /** kind=tool 时的动作分组（图标/动作名）。 */
-  toolKind?: CursorWorkToolKind
-  /** toolKind=todo 时的任务清单快照（来自 TodoWrite 的结构化 input）。 */
-  todos?: CursorWorkTodo[]
-  /** 工具调用输入明细。Cursor transcript 不包含 tool result，因此这里不是执行输出。 */
-  details?: CursorWorkDetail[]
-  /**
-   * kind=tool 时的执行状态。转录不含工具结果块，解析侧以「后续新行出现」
-   * 推断完成（Cursor 顺序执行：结果返回后助手才会续写），转录尾部
-   * 最后一个工具保持 running。
-   */
-  status?: 'running' | 'done'
-  /** 转录行号——跨轮询稳定，用作时间线条目 id 的一部分。 */
-  line: number
-  /** 首次被观测到的本地时间（转录条目本身不带时间戳）。 */
-  at: number
-  /**
-   * 所属 Cursor/群枢回合。优先来自 record_process / record_reply 的 turn；
-   * 没有显式 turn 时由解析层按协议边界生成隐式 turn，避免多轮过程串成一条长链。
-   */
-  turn?: string
-}
-
 export interface CursorComposerTelemetry {
   composerId: string
   title: string
   createdAt?: number
   lastUpdatedAt?: number
   modelName?: string
+  /** 该 Composer 的独立模型配置（逐会话）；缺失时消费方回退全局当前配置。 */
+  modelProfile?: AgentExecutionProfile
   activity?: CursorComposerActivity
   contextUsage?: ContextUsage
   changes?: ChangeSummary
-  /** 最近的工作过程条目（尾部限界，按转录顺序）。 */
-  workEntries?: CursorWorkEntry[]
 }
 
 export interface ComposerBindingCandidate {
@@ -121,10 +71,18 @@ export interface CursorTelemetrySnapshot {
 
 const SAFE_GENERATION = /^[a-zA-Z0-9_-]{1,128}$/
 const SAFE_CHANNEL_ID = /^\d{1,12}$/
+/** 当前品牌绑定标记标签；旧标签仅用于解析品牌升级前产生的转录。 */
+const BINDING_MARKER_TAG = 'SG_TEAM_BIND'
+const LEGACY_BINDING_MARKER_TAG = 'QINGTIAN_TEAM_BIND'
+/** 从 Composer 转录提取绑定标记，兼容新旧两种品牌格式。 */
+export const BINDING_MARKER_PATTERN = new RegExp(
+  `\\[\\[(?:${BINDING_MARKER_TAG}|${LEGACY_BINDING_MARKER_TAG}):[a-zA-Z0-9_-]{1,128}:CH-\\d{1,12}\\]\\]`,
+  'g'
+)
 
 /**
  * This marker is deliberately deterministic and contains no user content. It is
- * added to the launch prompt so the external control plane can bind a QingTian
+ * added to the launch prompt so the external control plane can bind an SG Team
  * channel to the exact Cursor Composer transcript without relying on timing.
  */
 export function cursorComposerBindingMarker(input: {
@@ -135,7 +93,12 @@ export function cursorComposerBindingMarker(input: {
   const channelId = input.channelId.trim()
   if (!SAFE_GENERATION.test(bindingKey)) throw new Error('Cursor 会话绑定键无效')
   if (!SAFE_CHANNEL_ID.test(channelId)) throw new Error('通道号无法用于 Cursor 会话绑定')
-  return `[[QINGTIAN_TEAM_BIND:${bindingKey}:CH-${channelId}]]`
+  return `[[${BINDING_MARKER_TAG}:${bindingKey}:CH-${channelId}]]`
+}
+
+/** 旧品牌标记规范化为现行格式，保证品牌升级前产生的老转录绑定匹配不失配。 */
+export function canonicalBindingMarker(marker: string): string {
+  return marker.replace(`[[${LEGACY_BINDING_MARKER_TAG}:`, `[[${BINDING_MARKER_TAG}:`)
 }
 
 export function emptyCursorTelemetrySnapshot(

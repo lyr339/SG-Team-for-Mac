@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import type { ChannelMessageService } from '../application/channel-message-service'
-import { QUNSHU_MCP_SERVER_NAME } from '../domain/channel-message'
+import { SG_TEAM_MCP_DISPLAY_NAME } from '../domain/channel-message'
 import {
   registerChannelCommunicationTools
 } from './channel-communication-tools'
@@ -24,13 +24,13 @@ export interface UnifiedChannelServerOptions {
 }
 
 /**
- * 群枢单一 MCP 服务器（S4）：Cursor 面板只出现一条原生条目「qunshu」，
- * 团队工具与通信保活四工具同服，全部以 channel_id 参数区分通道；
+ * 拾光单一 MCP 服务器（S4）：Cursor 面板只出现一条原生条目「SG Team」，
+ * 团队工具与通信保活工具同服，全部以 channel_id 参数区分通道；
  * 角色权限按每次调用的通道身份围栏校验（暴露超集、调用时收口）。
  */
 export function createUnifiedChannelServer(options: UnifiedChannelServerOptions): McpServer {
   const server = new McpServer(
-    { name: QUNSHU_MCP_SERVER_NAME, version: '1.0.0' },
+    { name: SG_TEAM_MCP_DISPLAY_NAME, version: '1.0.0' },
     { instructions: buildUnifiedServerInstructions() }
   )
   registerTeamTools(server, {

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import { CHANNEL_OUTBOX_MAX_PENDING, CHANNEL_PROCESS_EVENTS_MAX_PENDING } from '../src/domain/channel-message'
+import { CHANNEL_OUTBOX_MAX_PENDING } from '../src/domain/channel-message'
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
 
 function fixture() {
@@ -201,47 +201,7 @@ describe('SqliteChannelMessageRepository', () => {
     }
   })
 
-  it('dedupes same-turn reply retries by overwriting the original row', () => {
-    const repository = fixture()
-    try {
-      const first = repository.recordReply({ channelId: '1', content: '已收到', turn: 'turn-1' }, 100)
-      const retried = repository.recordReply({
-        channelId: '1',
-        content: '已收到（重试补全过程）',
-        turn: 'turn-1',
-        process: [{ kind: 'thinking', id: 't', text: '补全的过程块', status: 'done' }]
-      }, 200)
-      expect(retried.id).toBe(first.id)
-      expect(retried.createdAt).toBe(100)
-      const replies = repository.listUnconsumedReplies()
-      expect(replies).toHaveLength(1)
-      expect(replies[0]?.content).toBe('已收到（重试补全过程）')
-      expect(replies[0]?.process?.[0]).toMatchObject({ kind: 'thinking', text: '补全的过程块' })
-      // 不同 turn 各自成行，互不吞并
-      repository.recordReply({ channelId: '1', content: '已收到', turn: 'turn-2' }, 300)
-      expect(repository.listUnconsumedReplies()).toHaveLength(2)
-    } finally {
-      repository.close()
-    }
-  })
 
-  it('keeps archiving process events when a same-turn reply is retried', () => {
-    const repository = fixture()
-    try {
-      repository.recordReply({ channelId: '1', content: '完成', turn: 'turn-a' }, 100)
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'thinking', id: 't', text: '补报的过程', status: 'done' }
-      }, 200)
-      repository.recordReply({ channelId: '1', content: '完成', turn: 'turn-a' }, 300)
-      expect(repository.listLiveProcessEvents('1')).toHaveLength(0)
-      expect(repository.listProcessEventsForTurn('1', 'turn-a')).toHaveLength(1)
-      expect(repository.listUnconsumedReplies()).toHaveLength(1)
-    } finally {
-      repository.close()
-    }
-  })
 
   it('dedupes turn-less duplicate reply contents within the retry window only', () => {
     const repository = fixture()
@@ -262,194 +222,10 @@ describe('SqliteChannelMessageRepository', () => {
     }
   })
 
-  it('persists process blocks with replies and tolerates their absence', () => {
-    const repository = fixture()
-    try {
-      repository.recordReply({
-        channelId: '1',
-        content: '完成实现',
-        process: [
-          { kind: 'thinking', id: 'th-1', text: '先梳理链路再动手', status: 'done' },
-          {
-            kind: 'tool',
-            id: 'tool-1',
-            toolName: 'StrReplace',
-            toolKind: 'edit',
-            summary: 'src/domain/channel-message.ts',
-            input: { path: 'src/domain/channel-message.ts' },
-            status: 'done'
-          },
-          { kind: 'command', id: 'cmd-1', command: 'npm test', output: 'all passed', exitCode: 0, status: 'done' }
-        ]
-      }, 100)
-      repository.recordReply({ channelId: '1', content: '无过程回复' }, 200)
-      const [withProcess, withoutProcess] = repository.listUnconsumedReplies()
-      expect(withProcess?.process).toHaveLength(3)
-      expect(withProcess?.process?.[0]).toMatchObject({ kind: 'thinking', text: '先梳理链路再动手' })
-      expect(withProcess?.process?.[1]).toMatchObject({ kind: 'tool', toolName: 'StrReplace', toolKind: 'edit' })
-      expect(withProcess?.process?.[2]).toMatchObject({ kind: 'command', exitCode: 0 })
-      expect(withoutProcess?.process).toBeUndefined()
-    } finally {
-      repository.close()
-    }
-  })
 
-  it('migrates legacy channel_replies tables by adding the process_json column', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-')), 'channel.sqlite3')
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`
-      CREATE TABLE channel_replies (
-        id TEXT PRIMARY KEY,
-        channel_id TEXT NOT NULL,
-        content TEXT NOT NULL,
-        title TEXT,
-        group_id TEXT,
-        task_id TEXT,
-        files_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        consumed_at INTEGER
-      );
-      INSERT INTO channel_replies (id, channel_id, content, files_json, created_at)
-      VALUES ('legacy-1', '1', '历史回复', '[]', 50);
-    `)
-    legacy.close()
 
-    const repository = new SqliteChannelMessageRepository(path)
-    try {
-      const [legacyRow] = repository.listUnconsumedReplies()
-      expect(legacyRow?.content).toBe('历史回复')
-      expect(legacyRow?.process).toBeUndefined()
-      expect(legacyRow?.turn).toBeUndefined()
-      expect(legacyRow?.visible).toBeUndefined()
-      // process_json、turn 与 visible 列均补齐；过程事件表也已就绪
-      repository.recordReply({
-        channelId: '1',
-        content: '新回复',
-        process: [{ kind: 'thinking', id: 't', text: '迁移后可写', status: 'done' }],
-        turn: 'turn-legacy-1',
-        visible: false
-      })
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-legacy-1',
-        block: { kind: 'thinking', id: 'th-1', text: '老库新表可写', status: 'done' }
-      })
-      const rows = repository.listUnconsumedReplies()
-      const migrated = rows.find((reply) => reply.content === '新回复')
-      expect(migrated?.process).toHaveLength(1)
-      expect(migrated?.turn).toBe('turn-legacy-1')
-      expect(migrated?.visible).toBe(false)
-      expect(repository.listLiveProcessEvents('1')).toHaveLength(1)
-    } finally {
-      repository.close()
-    }
-  })
 
-  it('upserts process events by block id within a turn (running flips to done)', () => {
-    const repository = fixture()
-    try {
-      const first = repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'tool', id: 'tool-1', toolName: 'Shell', toolKind: 'command', summary: 'npm test', status: 'running' }
-      }, 100)
-      const second = repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'tool', id: 'tool-1', toolName: 'Shell', toolKind: 'command', summary: 'npm test', status: 'done' }
-      }, 200)
-      // 同一块 upsert：行数不增，状态翻转，seq 保持首次出现顺序
-      expect(second.id).toBe(first.id)
-      expect(second.seq).toBe(first.seq)
-      const live = repository.listLiveProcessEvents('1')
-      expect(live).toHaveLength(1)
-      expect(live[0]?.block).toMatchObject({ id: 'tool-1', status: 'done' })
 
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'thinking', id: 'th-1', text: '先跑测试', status: 'done' }
-      }, 300)
-      expect(repository.listLiveProcessEvents('1').map((event) => event.blockId)).toEqual(['tool-1', 'th-1'])
-      // 不同 turn 互不干扰
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-b',
-        block: { kind: 'thinking', id: 'th-1', text: '新一轮', status: 'running' }
-      }, 400)
-      expect(repository.listProcessEventsForTurn('1', 'turn-a')).toHaveLength(2)
-      expect(repository.listProcessEventsForTurn('1', 'turn-b')).toHaveLength(1)
-    } finally {
-      repository.close()
-    }
-  })
-
-  it('archives a turn on record_reply and prunes expired archived events on next write', () => {
-    const repository = fixture()
-    try {
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'command', id: 'cmd-1', command: 'npm test', output: 'ok', status: 'running' }
-      }, 100)
-      repository.recordReply({ channelId: '1', content: '完成', turn: 'turn-a' }, 200)
-      // 归档后 live 消失，历史仍可重建
-      expect(repository.listLiveProcessEvents('1')).toHaveLength(0)
-      expect(repository.listProcessEventsForTurn('1', 'turn-a')).toHaveLength(1)
-      expect(repository.listUnconsumedReplies()[0]?.turn).toBe('turn-a')
-
-      // 过期归档在下一次写入时清理
-      const stale = Date.now() - 11 * 60_000
-      repository.recordProcessEvent({
-        channelId: '2',
-        turn: 'turn-old',
-        block: { kind: 'thinking', id: 't', text: '旧回合', status: 'done' }
-      }, stale)
-      repository.recordReply({ channelId: '2', content: '旧回复', turn: 'turn-old' }, stale + 1)
-      expect(repository.listProcessEventsForTurn('2', 'turn-old')).toHaveLength(1)
-      repository.recordProcessEvent({
-        channelId: '2',
-        turn: 'turn-new',
-        block: { kind: 'thinking', id: 't2', text: '新回合触发清理', status: 'running' }
-      })
-      expect(repository.listProcessEventsForTurn('2', 'turn-old')).toHaveLength(0)
-      expect(repository.listProcessEventsForTurn('2', 'turn-new')).toHaveLength(1)
-    } finally {
-      repository.close()
-    }
-  })
-
-  it('rejects new process events beyond the per-channel pending cap', () => {
-    const repository = fixture()
-    try {
-      for (let index = 0; index < CHANNEL_PROCESS_EVENTS_MAX_PENDING; index += 1) {
-        repository.recordProcessEvent({
-          channelId: '1',
-          turn: 'turn-a',
-          block: { kind: 'thinking', id: `th-${index}`, text: `块 ${index}`, status: 'running' }
-        }, index)
-      }
-      expect(() => repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'thinking', id: 'th-overflow', text: '超限', status: 'running' }
-      })).toThrowError(/已达上限/)
-      // 既有块 upsert 不受上限影响（状态翻转不增行数）
-      expect(() => repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'thinking', id: 'th-0', text: '块 0 完成', status: 'done' }
-      })).not.toThrow()
-      // 另一通道有独立配额
-      expect(() => repository.recordProcessEvent({
-        channelId: '2',
-        turn: 'turn-a',
-        block: { kind: 'thinking', id: 'th-x', text: '另一通道', status: 'running' }
-      })).not.toThrow()
-    } finally {
-      repository.close()
-    }
-  })
 
   it('upserts presence with patch semantics and clears the reply gate with null', () => {
     const repository = fixture()

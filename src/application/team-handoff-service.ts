@@ -35,6 +35,9 @@ export class TeamHandoffService {
     const source = team.members.find((member) => member.slot.id === sourceSlotId.trim())
     if (!source?.binding) throw new TaskPoolError('handoff_source_missing', '待交接角色没有有效运行绑定')
     if (source.runtime?.online) throw new TaskPoolError('handoff_source_online', '当前 Agent 仍在线，无需交接')
+    const originalLead = team.members.find((member) => member.role.templateKey === 'lead')
+    const effectiveLeadSlotId = run.actingLeadSlotId ?? originalLead?.slot.id
+    const sourceIsEffectiveLead = source.slot.id === effectiveLeadSlotId
 
     const pool = this.tasks.getSnapshot()
     const busySessions = new Set([
@@ -53,25 +56,31 @@ export class TeamHandoffService {
       .filter((member) => member.slot.id !== source.slot.id && member.binding && member.runtime?.online)
       .map((member) => {
         const binding = member.binding!
-        const blockers = [
+        const mode = sourceIsEffectiveLead ? 'lead_authority' as const : 'role_rebind' as const
+        const blockers = (sourceIsEffectiveLead ? [
+          binding.launchStatus !== 'acknowledged' ? 'Agent 尚未完成本轮确认' : '',
+          failoverSessions.has(binding.agentSessionId) ? 'Agent 已处于另一场接替中' : ''
+        ] : [
           !member.runtime?.waiting ? 'Agent 正在执行，尚未待命' : '',
           member.runtime?.queueDepth ? `通道队列还有 ${member.runtime.queueDepth} 条消息` : '',
           binding.launchStatus !== 'acknowledged' ? 'Agent 尚未完成本轮确认' : '',
           busySessions.has(binding.agentSessionId) ? 'Agent 仍持有执行任务或验收' : '',
           failoverSessions.has(binding.agentSessionId) ? 'Agent 已处于另一场接替中' : '',
-          member.role.templateKey === 'lead' && source.role.templateKey !== 'lead'
-            ? '不能挪走当前唯一主控' : ''
-        ].filter(Boolean)
+          member.role.templateKey === 'lead' ? '不能挪走当前唯一主控' : ''
+        ]).filter(Boolean)
         return {
           agentSessionId: binding.agentSessionId,
           kind: 'member',
+          mode,
           channelId: binding.channelId,
           slotId: member.slot.id,
           roleName: member.role.name,
           avatarId: member.slot.avatarId,
           eligible: blockers.length === 0,
           blocker: blockers[0],
-          impact: `${member.role.name}席将转为离线空缺`
+          impact: sourceIsEffectiveLead
+            ? `保留${member.role.name}职责与现有任务，同时接管唯一主控权限`
+            : `${member.role.name}席将转为离线空缺`
         }
       })
     const standbyCandidates: TeamHandoffCandidate[] = team.standbyChannels
@@ -85,6 +94,7 @@ export class TeamHandoffService {
         return {
           agentSessionId: channel.agentSessionId!,
           kind: 'standby',
+          mode: 'role_rebind',
           channelId: channel.channelId,
           roleName: channel.displayName,
           eligible: blockers.length === 0,
@@ -110,6 +120,9 @@ export class TeamHandoffService {
     if (!candidate.eligible) throw new TaskPoolError('handoff_candidate_ineligible', candidate.blocker || '候选 Agent 当前不可交接')
     const team = this.team.getSnapshot()
     const source = team.members.find((member) => member.slot.id === options.sourceSlotId)!
+    if (candidate.mode === 'lead_authority' && candidate.slotId) {
+      return this.executeLeadAuthority(source, candidate.slotId, candidate.agentSessionId, candidate.channelId)
+    }
     const replacement = candidate.kind === 'standby'
       ? team.standbyChannels.find((channel) => channel.agentSessionId === candidate.agentSessionId)!
       : team.runtimeChannels.find((channel) => channel.agentSessionId === candidate.agentSessionId)!
@@ -117,6 +130,53 @@ export class TeamHandoffService {
       ? `用户手动交接：${candidate.roleName} 接替 ${source.role.name}`
       : `用户手动交接：${candidate.roleName} · CH-${candidate.channelId} 迁移为 ${source.role.name}；${candidate.impact}`
     return this.execute(source, replacement, this.now(), reason, 'manual', candidate.slotId)
+  }
+
+  private executeLeadAuthority(
+    source: TeamMemberView,
+    targetSlotId: string,
+    targetAgentSessionId: string,
+    targetChannelId: string
+  ): ManualTeamHandoffResult {
+    const binding = source.binding
+    if (!binding) throw new TaskPoolError('handoff_binding_missing', '原主控运行绑定不存在')
+    const at = this.now()
+    this.repository.setActingLead({ runId: binding.runId, slotId: targetSlotId, at })
+    const recoveredTaskIds = this.tasks.recoverAgentWork({
+      fromAgentSessionId: binding.agentSessionId,
+      toAgentSessionId: targetAgentSessionId,
+      targetSlotId
+    })
+    const checkpoint = this.continuity.getSnapshot().checkpoints.at(-1)
+    const collaboration = this.collaboration.loadRun(binding.runId)
+    const pending = collaboration.messageOrder
+      .map((id) => collaboration.messages[id])
+      .filter((message) => message && (
+        (message.recipient.type === 'agent' && message.recipient.slotId === source.slot.id && message.receipt.readAt === undefined)
+        || (message.sender.type === 'agent' && message.sender.slotId === source.slot.id && message.receipt.respondedAt === undefined)
+      ))
+      .slice(-20)
+    const message = this.collaboration.createMessage({
+      runId: binding.runId,
+      sender: { type: 'operator' },
+      recipient: { type: 'agent', slotId: targetSlotId },
+      kind: 'notice',
+      subject: '用户手动交接主控权限',
+      content: [
+        `【拾光真实主控交接】CH-${targetChannelId} 已成为当前 TeamRun 的唯一有效主控；原主控权限已撤销。`,
+        checkpoint ? `连续性检查点：${checkpoint.id}` : '',
+        recoveredTaskIds.length ? `已迁移/重排任务：${recoveredTaskIds.join('、')}` : '原主控没有活动任务需要迁移。',
+        pending.length ? `原主控待处理消息：\n${pending.map((item) => `- ${item!.id}｜${item!.content.slice(0, 500)}`).join('\n')}` : '原主控没有待处理消息。',
+        '请调用 team_check_in 刷新权限，再调用 team_get_context 与 team_list_board 核对接管状态。'
+      ].filter(Boolean).join('\n'),
+      clientMessageId: `manual-lead-authority:${binding.runId}:${targetSlotId}:${at}`
+    })
+    return {
+      mode: 'lead_authority',
+      messageId: message.id,
+      actingLeadSlotId: targetSlotId,
+      recoveredTaskIds
+    }
   }
 
   automatic(member: TeamMemberView, standby: TeamRuntimeChannelView, detectedAt: number): ManualTeamHandoffResult {
@@ -195,7 +255,7 @@ export class TeamHandoffService {
         at: this.now()
       })
       const failover = this.repository.listFailovers(binding.runId).find((record) => record.id === failoverId)!
-      return { failover, messageId: message.id, vacatedSlotId: donorSlotId }
+      return { mode: 'role_rebind', failover, messageId: message.id, vacatedSlotId: donorSlotId }
     } catch (error) {
       try {
         const existing = this.repository.listFailovers(binding.runId).find((record) => record.id === failoverId)

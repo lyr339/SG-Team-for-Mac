@@ -647,6 +647,71 @@ export class TaskPoolAggregate {
     return [...transferred]
   }
 
+  /**
+   * 主控接管专用：目标空闲则直接迁移 lease；目标已有工作时，把原主控工作
+   * 安全退回可领取状态并定向到新主控，避免双 lease 或任务永久挂在死会话上。
+   */
+  recoverAgentWork(input: {
+    fromAgentSessionId: string
+    toAgentSessionId: string
+    targetSlotId: string
+    ttlMs?: number
+  }): string[] {
+    const from = input.fromAgentSessionId.trim()
+    const to = input.toAgentSessionId.trim()
+    const targetSlotId = input.targetSlotId.trim()
+    if (!from || !to || !targetSlotId || from === to) {
+      throw new TaskPoolError('invalid_handover', '主控接管身份无效')
+    }
+    if (!this.hasActiveAttempt(to) && !this.hasActiveReview(to)) {
+      return this.transferAgentWork({
+        fromAgentSessionId: from,
+        toAgentSessionId: to,
+        slotId: targetSlotId,
+        ttlMs: input.ttlMs
+      })
+    }
+    const at = this.now()
+    const recovered = new Set<string>()
+    for (const attempt of Object.values(this.state.attempts)) {
+      if (attempt.agentSessionId !== from || !['leased', 'running'].includes(attempt.status)) continue
+      const task = this.state.tasks[attempt.taskId]
+      if (!task || task.currentAttemptId !== attempt.id) continue
+      attempt.status = 'cancelled'
+      attempt.error = 'lead_handoff_requeued'
+      attempt.completedAt = at
+      attempt.updatedAt = at
+      attempt.leaseToken = undefined
+      attempt.leaseExpiresAt = undefined
+      task.assigneeSessionId = undefined
+      task.currentAttemptId = undefined
+      task.currentReviewId = undefined
+      task.targetSlotId = targetSlotId
+      task.status = task.attemptCount < task.maxAttempts ? 'queued' : 'failed'
+      task.progress = 0
+      task.failureReason = '原主控离线，任务已交由新主控重新领取'
+      task.updatedAt = at
+      this.note('lease.handoff_requeued', task.id, attempt.id, to, `from=${from}`)
+      recovered.add(task.id)
+    }
+    for (const review of Object.values(this.state.reviews)) {
+      if (review.reviewerSessionId !== from || review.status !== 'leased') continue
+      const task = this.state.tasks[review.taskId]
+      if (!task || task.currentReviewId !== review.id || task.status !== 'review') continue
+      review.status = 'queued'
+      review.reviewerSessionId = undefined
+      review.reviewerSlotId = undefined
+      review.leaseToken = undefined
+      review.leaseExpiresAt = undefined
+      review.updatedAt = at
+      task.updatedAt = at
+      this.note('review.handoff_requeued', task.id, review.attemptId, to, `from=${from}`)
+      recovered.add(task.id)
+    }
+    if (recovered.size) this.bumpRevision()
+    return [...recovered]
+  }
+
   reclaimExpired(): string[] {
     const at = this.now()
     const reclaimed = new Set<string>()

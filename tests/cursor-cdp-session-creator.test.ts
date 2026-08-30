@@ -21,6 +21,7 @@ interface FakeWindow {
   bridgeReady: boolean
   scope: string
   createResult?: unknown
+  runtimeResult?: unknown
 }
 
 function createCreator(windows: Record<string, FakeWindow>, options: { failTargets?: boolean } = {}) {
@@ -38,6 +39,9 @@ function createCreator(windows: Record<string, FakeWindow>, options: { failTarge
       if (!win) throw new Error('unknown target')
       if (expression.includes('__qtBatchWorkspaceScopeId') && expression.includes('document.title')) {
         return { bridge: win.bridgeReady, scope: win.scope, title: win.title }
+      }
+      if (expression.includes('bridge.getStatus') && expression.includes('rows.push')) {
+        return win.runtimeResult ?? { ok: true, rows: [] }
       }
       // 创建表达式
       if (!win.bridgeReady) return { ok: false, error: 'bridge_not_ready' }
@@ -81,14 +85,49 @@ describe('CursorCdpSessionCreator.createAgentSession', () => {
     const { creator, evaluatedExpressions } = createCreator({
       only: { title: 'ws', bridgeReady: true, scope: '', createResult: { ok: true, composerId: 'composer-real' } }
     })
-    const result = await creator.createAgentSession({ channelId: '2', name: 'CH-2 · 群枢会话', prompt: '开场白', workspacePath: WS_PATH })
+    const result = await creator.createAgentSession({ channelId: '2', name: 'CH-2 · 拾光会话', prompt: '开场白', workspacePath: WS_PATH })
     expect(result).toEqual({ ok: true, message: '会话已创建并提交开场提示词', composerId: 'composer-real' })
     const createExpression = evaluatedExpressions.find((expression) => expression.includes('createAgent'))
     expect(createExpression).toBeDefined()
-    expect(createExpression).toContain('"CH-2 · 群枢会话"')
+    expect(createExpression).toContain('"CH-2 · 拾光会话"')
     expect(createExpression).toContain('"开场白"')
     expect(createExpression).toContain('autoSubmit: false')
     expect(createExpression).toContain('submitByComposerId')
+  })
+
+  it('creates a Composer with an independent per-session modelConfig before submitting', async () => {
+    const { creator, evaluatedExpressions } = createCreator({
+      only: { title: 'ws', bridgeReady: true, scope: '', createResult: { ok: true, composerId: 'composer-model' } }
+    })
+    const result = await creator.createAgentSession({
+      channelId: '2', name: 'CH-2', prompt: '开始',
+      modelSelection: {
+        modelId: 'claude-opus-5', displayName: 'Claude Opus 5', maxMode: true,
+        parameters: [
+          { id: 'thinking', value: 'true' },
+          { id: 'context', value: '1m' },
+          { id: 'effort', value: 'high' }
+        ]
+      }
+    })
+    expect(result).toMatchObject({ ok: true, composerId: 'composer-model', modelId: 'claude-opus-5' })
+    const expression = evaluatedExpressions.find((candidate) => candidate.includes('MODEL_CONFIG')) ?? ''
+    expect(expression).toContain('window.__qtComposerService')
+    expect(expression).toContain('service.createComposer')
+    expect(expression).toContain('partialState')
+    expect(expression).not.toContain('partialState: { unifiedMode: \'agent\', name: NAME, modelConfig: MODEL_CONFIG }')
+    expect(expression).toContain('setModelConfigForComposer')
+    expect(expression).toContain('await Promise.resolve(modelService.setModelConfigForComposer')
+    expect(expression).toContain('updateGlobalConfig: false')
+    expect(expression).toContain('manuallyPersistComposer')
+    expect(expression).toContain('"modelName":"claude-opus-5"')
+    expect(expression).toContain('"maxMode":true')
+    expect(expression).toContain('"thinking","value":"true"')
+    expect(expression).toContain('"context","value":"1m"')
+    expect(expression).toContain('"effort","value":"high"')
+    expect(expression).toContain('max_mode_unconfirmed')
+    expect(expression).toContain('model_parameters_unconfirmed')
+    expect(expression.indexOf('setModelConfigForComposer')).toBeLessThan(expression.indexOf('submitByComposerId'))
   })
 
   it('多窗口按工作区 scope 精确匹配', async () => {
@@ -171,9 +210,10 @@ describe('CursorCdpSessionCreator.createAgentSession', () => {
     })
     await creator.createAgentSession({ channelId: '1', name: 'n', prompt: 'p' })
     const createExpression = evaluatedExpressions.find((expression) => expression.includes('createAgent')) ?? ''
-    // 回归钉：submit 只短等回执，未了结时以 getStatus().lastHumanText 前缀比对作为受理证据
-    expect(createExpression).toContain('ACK_MS')
-    expect(createExpression).toContain('Promise.race')
+    // 回归钉：submit 不了结时以 getStatus().lastHumanText 前缀比对作为受理证据；
+    // 提交后立即进入融合核验循环（不等固定 ACK 窗口），5s 总窗口兜底
+    expect(createExpression).toContain('OVERALL_MS')
+    expect(createExpression).toContain('Date.now() < deadline')
     expect(createExpression).toContain('getStatus')
     expect(createExpression).toContain('lastHumanText')
     expect(createExpression).toContain('submitAsync')
@@ -204,5 +244,121 @@ describe('CursorCdpSessionCreator.createAgentSession', () => {
     const createExpression = evaluatedExpressions.find((expression) => expression.includes('createAgent')) ?? ''
     expect(createExpression).toContain(JSON.stringify(tricky))
     expect(createExpression).toContain(JSON.stringify('n`'))
+  })
+})
+
+describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
+  it('returns exact stopped evidence from the live Cursor bridge', async () => {
+    const { creator, evaluatedExpressions } = createCreator({
+      only: {
+        title: 'qingtian — Cursor',
+        bridgeReady: true,
+        scope: WS_SCOPE,
+        runtimeResult: {
+          ok: true,
+          rows: [{
+            composerId: 'composer-dead',
+            state: 'stopped',
+            detail: 'Cursor Agent 已因错误终止',
+            observedAt: 10_000,
+            isGenerating: true,
+            responseId: 'bubble-live',
+            responseText: '正在实时生成回答'
+          }]
+        }
+      }
+    })
+    const result = await creator.inspectComposerRuntime(WS_PATH, ['composer-dead'])
+    expect(result['composer-dead']).toMatchObject({
+      state: 'stopped', observedAt: 10_000,
+      isGenerating: true, responseId: 'bubble-live', responseText: '正在实时生成回答'
+    })
+    expect(evaluatedExpressions.some((expression) => expression.includes('bridge.getStatus'))).toBe(true)
+    expect(evaluatedExpressions.some((expression) => expression.includes('lastAiText'))).toBe(true)
+    expect(evaluatedExpressions.some((expression) => expression.includes('lastAiBubbleId'))).toBe(true)
+  })
+
+  it('解析过程流并过滤内部协议调用（对齐转录侧噪音过滤）', async () => {
+    const { creator } = createCreator({
+      only: {
+        title: 'qingtian — Cursor',
+        bridgeReady: true,
+        scope: WS_SCOPE,
+        runtimeResult: {
+          ok: true,
+          rows: [{
+            composerId: 'composer-live',
+            state: 'active',
+            detail: 'Cursor 实时状态确认 Agent 正在执行',
+            observedAt: 10_000,
+            isGenerating: true,
+            responseId: 'bubble-live',
+            responseText: '回答',
+            process: {
+              items: [
+                { kind: 'thinking', id: 'cursor-th:b1', text: '先读配置', status: 'running' },
+                { kind: 'tool', id: 'cursor:b-read', toolName: 'read_file_v2', toolKind: 'read', summary: '/p/a.json', status: 'done' },
+                // 内部协议调用：必须过滤（持续对话模式 check_messages 每秒一次，会刷屏）
+                { kind: 'tool', id: 'cursor:b-check', toolName: 'mcp-SG Team-check_messages', toolKind: 'mcp', summary: '', status: 'running' },
+                { kind: 'tool', id: 'cursor:b-reply', toolName: 'mcp-SG Team-record_reply', toolKind: 'mcp', summary: '', status: 'done' },
+                { kind: 'tool', id: 'cursor:b-team', toolName: 'mcp-SG Team-team_check_in', toolKind: 'mcp', summary: '', status: 'done' },
+                { kind: 'tool', id: 'cursor:b-plain', toolName: 'team_plan_tasks', toolKind: 'mcp', summary: '', status: 'done' }
+              ],
+              todos: [
+                { content: '读取配置', status: 'completed' },
+                { content: '验证配置', status: 'in_progress' }
+              ],
+              generatingBubbleCount: 1
+            }
+          }]
+        }
+      }
+    })
+    const result = await creator.inspectComposerRuntime(WS_PATH, ['composer-live'])
+    const evidence = result['composer-live']
+    expect(evidence).toBeDefined()
+    expect(evidence?.process).toMatchObject({
+      items: [
+        { kind: 'thinking', id: 'cursor-th:b1', text: '先读配置', status: 'running' },
+        { kind: 'tool', id: 'cursor:b-read', toolName: 'read_file_v2', toolKind: 'read' }
+      ],
+      todos: [
+        { content: '读取配置', status: 'completed' },
+        { content: '验证配置', status: 'in_progress' }
+      ],
+      generatingBubbleCount: 1
+    })
+    const toolNames = evidence?.process?.items.flatMap((item) => item.kind === 'tool' ? [item.toolName] : []) ?? []
+    expect(toolNames).toEqual(['read_file_v2'])
+  })
+
+  it('纯内部协议调用回合 → process 为 undefined（不产生噪音卡）', async () => {
+    const { creator } = createCreator({
+      only: {
+        title: 'qingtian — Cursor',
+        bridgeReady: true,
+        scope: WS_SCOPE,
+        runtimeResult: {
+          ok: true,
+          rows: [{
+            composerId: 'composer-quiet',
+            state: 'active',
+            detail: '生成中',
+            observedAt: 10_000,
+            isGenerating: true,
+            responseId: 'bubble-live',
+            responseText: '回答',
+            process: {
+              items: [
+                { kind: 'tool', id: 'cursor:b-check', toolName: 'mcp-SG Team-check_messages', toolKind: 'mcp', summary: '', status: 'running' }
+              ],
+              generatingBubbleCount: 1
+            }
+          }]
+        }
+      }
+    })
+    const result = await creator.inspectComposerRuntime(WS_PATH, ['composer-quiet'])
+    expect(result['composer-quiet']?.process).toBeUndefined()
   })
 })

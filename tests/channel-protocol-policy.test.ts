@@ -11,13 +11,13 @@ describe('channel protocol policy text', () => {
   it('does not instruct agents to record a reply when they only keep polling', () => {
     const instruction = buildChannelWaitInstruction({
       channelId: '1',
-      communicationServerName: 'qunshu'
+      communicationServerName: 'SG Team'
     })
 
     expect(instruction).toContain('工具返回后的静默待命动作')
-    expect(instruction).toContain('直接调用 qunshu.check_messages')
+    expect(instruction).toContain('直接调用 SG Team.check_messages')
     expect(instruction).toContain('不要向用户输出可见文字')
-    expect(instruction).not.toContain('先用 qunshu.record_reply')
+    expect(instruction).not.toContain('先用 SG Team.record_reply')
   })
 
   it('keeps first and later delivery suffixes explicit about silent keepalive handling', () => {

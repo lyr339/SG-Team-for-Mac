@@ -34,5 +34,11 @@ export function shareSnapshotStructure(previous: DesktopSnapshot, incoming: Desk
         previous.liveProcess?.[channelId] === state ? previous.liveProcess[channelId]! : state
       ]))
     : incoming.liveProcess
-  return { ...incoming, sessions, conversations, liveProcess }
+  const liveAgentResponses: DesktopSnapshot['liveAgentResponses'] = incoming.liveAgentResponses
+    ? Object.fromEntries(Object.entries(incoming.liveAgentResponses).map(([channelId, state]) => [
+        channelId,
+        previous.liveAgentResponses?.[channelId] === state ? previous.liveAgentResponses[channelId]! : state
+      ]))
+    : incoming.liveAgentResponses
+  return { ...incoming, sessions, conversations, liveProcess, liveAgentResponses }
 }

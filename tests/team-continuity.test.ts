@@ -119,7 +119,7 @@ function fixture() {
   }
 }
 
-describe('Qunshu automatic continuity', () => {
+describe('SG Team automatic continuity', () => {
   it('deduplicates automatic checkpoints and captures deterministic active work', () => {
     const data = fixture()
     try {
@@ -166,7 +166,7 @@ describe('Qunshu automatic continuity', () => {
       expect(restore.members.every((member) => member.state === 'queued')).toBe(true)
       const collaborationState = data.collaboration.loadRun(data.bundle.run.id)
       const restoreMessages = restore.members.map((member) => collaborationState.messages[member.messageId!]!)
-      expect(restoreMessages.every((message) => message.content.includes('群枢恢复胶囊'))).toBe(true)
+      expect(restoreMessages.every((message) => message.content.includes('拾光恢复胶囊'))).toBe(true)
       expect(restoreMessages.find((message) => (
         message.recipient.type === 'agent'
         && message.recipient.slotId === data.bundle.slots[1]!.id

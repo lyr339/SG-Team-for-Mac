@@ -1,3 +1,4 @@
+import { numberOf, type SqliteRow } from '../sqlite/rows'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -37,14 +38,6 @@ const NOTIFICATION_RESULTS = new Set<TeamMessageNotificationState>([
   'failed'
 ])
 const CLIENT_MESSAGE_ID = /^[a-zA-Z0-9:_-]{8,200}$/
-
-type SqliteRow = Record<string, string | number | bigint | null>
-
-function numberOf(value: unknown): number {
-  if (typeof value === 'bigint') return Number(value)
-  const number = Number(value)
-  return Number.isFinite(number) ? number : 0
-}
 
 function optionalNumber(value: unknown): number | undefined {
   return value === null || value === undefined ? undefined : numberOf(value)
@@ -222,6 +215,7 @@ export class SqliteTeamCollaborationRepository implements TeamCollaborationRepos
     }
     const slotId = String(row.slot_id)
     const actingLeadSlotId = optionalString(row.acting_lead_slot_id)
+    const roleTemplateKey = String(row.template_key)
     return {
       agentSessionId: identity.agentSessionId,
       workspaceId: String(row.workspace_id),
@@ -229,32 +223,40 @@ export class SqliteTeamCollaborationRepository implements TeamCollaborationRepos
       slotId,
       channelId: String(row.channel_id),
       roleKey: String(row.role_key),
-      roleTemplateKey: String(row.template_key),
+      roleTemplateKey,
       roleName: String(row.role_name),
       capabilities: [...identity.capabilities],
       skills: assignedSkillsOf(row.skills_json),
-      isActingLead: actingLeadSlotId === slotId
+      isActingLead: actingLeadSlotId === slotId,
+      isEffectiveLead: actingLeadSlotId ? actingLeadSlotId === slotId : roleTemplateKey === 'lead'
     }
   }
 
   listRunMembers(runId: string): TeamMemberDirectoryEntry[] {
     return (this.database.prepare(`
       SELECT s.id AS slot_id, r.role_key, r.template_key, r.name AS role_name,
-        r.capabilities_json, r.skills_json, b.channel_id
+        r.capabilities_json, r.skills_json, b.channel_id, tr.acting_lead_slot_id
       FROM agent_slots s
       JOIN team_roles r ON r.id = s.role_id
+      JOIN team_runs tr ON tr.id = s.run_id
       LEFT JOIN runtime_bindings b ON b.slot_id = s.id AND b.run_id = s.run_id
       WHERE s.run_id = ?
       ORDER BY s.slot_order ASC, s.id ASC
-    `).all(runId.trim()) as SqliteRow[]).map((row) => ({
-      slotId: String(row.slot_id),
-      roleKey: String(row.role_key),
-      roleTemplateKey: String(row.template_key),
-      roleName: String(row.role_name),
-      channelId: optionalString(row.channel_id),
-      capabilities: stringArrayOf(row.capabilities_json),
-      skills: assignedSkillsOf(row.skills_json)
-    }))
+    `).all(runId.trim()) as SqliteRow[]).map((row) => {
+      const slotId = String(row.slot_id)
+      const actingLeadSlotId = optionalString(row.acting_lead_slot_id)
+      const roleTemplateKey = String(row.template_key)
+      return {
+        slotId,
+        roleKey: String(row.role_key),
+        roleTemplateKey,
+        roleName: String(row.role_name),
+        channelId: optionalString(row.channel_id),
+        capabilities: stringArrayOf(row.capabilities_json),
+        skills: assignedSkillsOf(row.skills_json),
+        isEffectiveLead: actingLeadSlotId ? actingLeadSlotId === slotId : roleTemplateKey === 'lead'
+      }
+    })
   }
 
   clearRun(runId: string, at = Date.now()): boolean {

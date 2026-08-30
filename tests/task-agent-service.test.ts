@@ -101,7 +101,7 @@ describe('TaskAgentService', () => {
       agentSessionId: '../../escape',
       runId: 'run-1',
       capabilities: []
-    }, allowAllAgents)).toThrowError(/SESSION_ID 无效/)
+    }, allowAllAgents)).toThrowError(/agentSessionId）无效/)
   })
 
   it('re-checks authorization on every operation so a revoked process stops immediately', () => {

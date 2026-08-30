@@ -5,6 +5,7 @@ import type { TeamContinuityService } from './team-continuity-service'
 import type { TaskPoolService } from './task-pool-service'
 import { TeamHandoffService } from './team-handoff-service'
 import type { ManualTeamHandoffInput, ManualTeamHandoffResult, TeamHandoffOptions } from '../domain/team-handoff'
+import { hasConfirmedRuntimeStop, hasInFlightExecution } from '../domain/channel-message'
 
 const DEFAULT_OFFLINE_GRACE_MS = 15_000
 const DEFAULT_ALL_OFFLINE_GRACE_MS = 20_000
@@ -67,7 +68,7 @@ export class TeamFailoverService {
 
   manualHandoff(input: ManualTeamHandoffInput): ManualTeamHandoffResult {
     const result = this.handoffs.manual(input)
-    this.unrecoverableBindings.delete(result.failover.fromAgentSessionId)
+    if (result.failover) this.unrecoverableBindings.delete(result.failover.fromAgentSessionId)
     this.suspectedSince.delete(input.sourceSlotId)
     return result
   }
@@ -110,8 +111,28 @@ export class TeamFailoverService {
       this.reconcileLeadFailover(snapshot)
       if (!snapshot.preflight.bridgeConnected) return
 
-      const liveRegisteredChannels = snapshot.runtimeChannels.filter((channel) => channel.registered && channel.online)
+      const inFlightChannels = new Set(snapshot.members.flatMap((member) => {
+        const channelId = member.binding?.channelId ?? member.slot.channelId
+        return channelId && hasInFlightExecution(member.runtime) ? [channelId] : []
+      }))
+      // processing/need_reply_sync 是已取走消息后的执行租约。长任务期间 MCP
+      // 心跳陈旧属正常，不能因此把整轮判成“全部离线”并结束。
+      const liveRegisteredChannels = snapshot.runtimeChannels.filter((channel) => (
+        channel.registered && (channel.online || inFlightChannels.has(channel.channelId))
+      ))
       if (liveRegisteredChannels.length === 0) {
+        const hadActivatedSession = snapshot.members.some((member) => (
+          member.binding?.acknowledgedAt !== undefined || member.binding?.lastCheckInAt !== undefined
+        ))
+        // 尚未有任何 Agent 签到时属于首次启动/创建失败，不是“一次性会话已用完”。
+        // 保留 launching/attention 让用户修复或重试，避免 20s 内误收尾新团队。
+        if (!hadActivatedSession) {
+          this.allOfflineSince = undefined
+          return
+        }
+        // 团队会话是一次性的：全部注册通道离线且没有 processing / need_reply_sync
+        // 在途租约时，本轮已经结束。普通 suspected 只影响单席自动接替，不应让 0 在线
+        // 的一次性 TeamRun 永久保留 running，更不能继续显示“协作执行中”。
         const at = this.now()
         this.allOfflineSince ??= at
         if (at - this.allOfflineSince >= this.allOfflineGraceMs) {
@@ -137,9 +158,16 @@ export class TeamFailoverService {
         .map((record) => record.slotId))
       for (const member of snapshot.members) {
         if (!member.binding) continue
-        if (member.runtime?.online) {
+        // runtime 缺失只是“尚无证据”；执行相位则是明确的在途工作。两者都不能
+        // 进入自动接替计时，避免应用启动抖动或长任务触发错误换席。
+        if (!member.runtime) continue
+        if (member.runtime.online || hasInFlightExecution(member.runtime)) {
           this.suspectedSince.delete(member.slot.id)
           this.unrecoverableBindings.delete(member.binding.agentSessionId)
+          continue
+        }
+        if (!hasConfirmedRuntimeStop(member.runtime)) {
+          this.suspectedSince.delete(member.slot.id)
           continue
         }
         if (this.unrecoverableBindings.has(member.binding.agentSessionId)) continue
@@ -178,8 +206,14 @@ export class TeamFailoverService {
     const actingLeadSlotId = run.actingLeadSlotId
     const effectiveLeadSlotId = actingLeadSlotId ?? lead.slot.id
     const effectiveLead = snapshot.members.find((member) => member.slot.id === effectiveLeadSlotId)
-    if (!effectiveLead?.binding) return
-    if (effectiveLead.runtime?.online) {
+    if (!effectiveLead?.binding || !effectiveLead.runtime) return
+    // 忙碌主控可能数分钟不碰 MCP，也无法及时处理 team_ping；只要仍持有执行租约
+    // 且没有 cursor_stopped 正面终止证据，就绝不触发自动主控转移。
+    if (effectiveLead.runtime.online || hasInFlightExecution(effectiveLead.runtime)) {
+      this.suspectedSince.delete(effectiveLead.slot.id)
+      return
+    }
+    if (!hasConfirmedRuntimeStop(effectiveLead.runtime)) {
       this.suspectedSince.delete(effectiveLead.slot.id)
       return
     }
@@ -201,13 +235,20 @@ export class TeamFailoverService {
     if (successor?.binding) {
       // 成员接管：设置 actingLead，保留原 slot 绑定
       this.repository.setActingLead({ runId: run.id, slotId: successor.slot.id, at: now })
+      const recoveredTaskIds = this.tasks.recoverAgentWork({
+        fromAgentSessionId: effectiveLead.binding.agentSessionId,
+        toAgentSessionId: successor.binding.agentSessionId,
+        targetSlotId: successor.slot.id
+      })
       this.collaboration.createMessage({
         runId: run.id,
         sender: { type: 'operator' },
         recipient: { type: 'agent', slotId: successor.slot.id },
         kind: 'notice',
         subject: '自动接管主控权限',
-        content: `【系统自动】主控 ${effectiveLead.role.name} 已离线超过宽限期，您已被自动指定为临时主控。请立即调用 team_check_in 确认，并使用 team_transfer_lead 或 team_clear_acting_lead 管理主控权限。`,
+        content: `【系统自动】主控 ${effectiveLead.role.name} 已离线超过宽限期，您已被自动指定为临时主控。` +
+          `${recoveredTaskIds.length ? `已迁移/重排任务：${recoveredTaskIds.join('、')}。` : '原主控没有活动任务需要迁移。'}` +
+          '请立即调用 team_check_in 确认，再调用 team_list_board 核对全局任务，并使用 team_transfer_lead 或 team_clear_acting_lead 管理主控权限。',
         clientMessageId: `auto-lead-failover:${run.id}:${now}`
       })
       this.suspectedSince.delete(effectiveLead.slot.id)

@@ -21,12 +21,17 @@ function activeBindings(team: TeamRuntimeContext): RuntimeBinding[] {
   return team.bindings.filter((binding) => binding.runId === run.id)
 }
 
-function stoppedSession(session: AgentSession, detail: string): AgentSession {
+function stoppedSession(
+  session: AgentSession,
+  detail: string,
+  evidence: 'stopped' | 'suspected' = 'stopped'
+): AgentSession {
   return {
     ...session,
     status: 'offline',
     online: false,
     connected: false,
+    runtimeEvidence: evidence,
     waiting: false,
     connectionPhase: '',
     healthEvidence: [...session.healthEvidence, detail]
@@ -46,6 +51,7 @@ function transportAlive(session: AgentSession): boolean {
 function unverifiedSession(session: AgentSession, detail: string): AgentSession {
   return {
     ...session,
+    runtimeEvidence: transportAlive(session) ? 'active' : session.runtimeEvidence,
     healthEvidence: [...session.healthEvidence, detail]
   }
 }
@@ -78,7 +84,7 @@ export function verifyAgentRuntime(
         if (!bindingByChannel.has(session.channelId)) return session
         return transportAlive(session)
           ? unverifiedSession(session, `遥测不可用，绑定状态未验证（传输层活性正常）${telemetry.issue ? `：${telemetry.issue}` : ''}`)
-          : stoppedSession(session, telemetry.issue || 'Cursor 本机遥测不可用，无法验证 Agent 在线')
+          : stoppedSession(session, telemetry.issue || 'Cursor 本机遥测不可用，无法验证 Agent 在线', 'suspected')
       })
     }
   }
@@ -101,7 +107,7 @@ export function verifyAgentRuntime(
       if (!requiresCursorEvidence) return session
       return transportAlive(session)
         ? unverifiedSession(session, '尚未绑定可验证的 Cursor 会话（传输层活性正常，按通道活性保持在线）')
-        : stoppedSession(session, 'TeamRun 已开始，但当前通道尚未绑定可验证的 Cursor 会话')
+        : stoppedSession(session, 'TeamRun 已开始，但当前通道尚未绑定可验证的 Cursor 会话', 'suspected')
     }
     const composer = composerById.get(binding.composerId)
     if (!composer) return stoppedSession(session, '已绑定的 Cursor 会话已不存在')
@@ -118,15 +124,16 @@ export function verifyAgentRuntime(
             status: 'running',
             online: true,
             connected: true,
+            runtimeEvidence: 'active',
             waiting: false,
             healthEvidence: [...session.healthEvidence, `${activity.detail}；MCP 心跳新鲜，宽限期内保持在线（未验证）`]
           }
         }
-        return stoppedSession(session, `${activity.detail}；MCP 心跳已过期，宽限不再保持在线`)
+        return stoppedSession(session, `${activity.detail}；MCP 心跳已过期，宽限不再保持在线`, 'suspected')
       }
       return transportAlive(session)
         ? unverifiedSession(session, `${activity?.detail || '缺少可验证的 Cursor Agent 活性证据'}（传输层活性正常，按通道活性保持在线）`)
-        : stoppedSession(session, activity?.detail || '缺少可验证的 Cursor Agent 活性证据')
+        : stoppedSession(session, activity?.detail || '缺少可验证的 Cursor Agent 活性证据', 'suspected')
     }
     if (activity.channelId && activity.channelId !== session.channelId) {
       return stoppedSession(session, `Cursor 会话活性属于 CH-${activity.channelId}，当前通道拒绝复用`)
@@ -144,13 +151,14 @@ export function verifyAgentRuntime(
             `${activity.detail}；通道 presence 为实时处理态，等待记录差异按转录落盘时序差处理（保持在线）`
           )
         }
-        return stoppedSession(session, 'Cursor 会话等待记录与当前通道状态不一致')
+        return stoppedSession(session, 'Cursor 会话等待记录与当前通道状态不一致', 'suspected')
       }
       return {
         ...session,
         status: 'waiting',
         online: true,
         connected: true,
+        runtimeEvidence: 'active',
         waiting: true,
         healthEvidence: [...session.healthEvidence, activity.detail]
       }
@@ -164,7 +172,9 @@ export function verifyAgentRuntime(
       status: 'running',
       online: true,
       connected: true,
+      runtimeEvidence: 'active',
       waiting: false,
+      lastAgentActivityAt: activity.observedAt ?? session.lastAgentActivityAt,
       healthEvidence: [...session.healthEvidence, transport ? activity.detail : `${activity.detail}（通道租约陈旧，按会话活性证据保持在线）`]
     }
   })

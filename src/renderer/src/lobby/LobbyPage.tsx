@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { TeamControlSnapshot, TeamRunStatus } from '../../../domain/team-control'
+import { isAgentOnDuty } from '../../../domain/channel-message'
 import type { TeamCollaborationSnapshot } from '../../../domain/team-collaboration'
-import type { AgentLaunchPlan } from '../../../domain/agent-launch'
+import type { AgentLaunchPlan, AgentLaunchRequest } from '../../../domain/agent-launch'
+import type { CursorModelOption, CursorModelSelection } from '../../../domain/cursor-model'
 import type { CdpAutoHealEvent } from '../../../domain/cursor-cdp'
 import type { McpInstallationResult } from '../../../shared/desktop-api'
 import { BrandMark } from '../BrandMark'
-import { TeamResiliencePanel } from '../team/TeamResiliencePanel'
-import { teamDashboardPhase, unresolvedDashboardGates } from '../team/team-dashboard-view'
+import { cursorModelSelectionFromOption, normalizeCursorModelSelection } from '../cursor-model-selection'
+import { teamDashboardPhase, teamRuntimePresence, unresolvedDashboardGates } from '../team/team-dashboard-view'
 import { LobbyHero, type LobbyHeroStep } from './LobbyHero'
 import { LobbySessionLaunchTile } from './LobbySessionLaunchTile'
 import { LobbySummaryTile } from './LobbySummaryTile'
@@ -29,7 +31,9 @@ interface LobbyPageProps {
   autoStartOnGoalSave?: boolean
   mcpReloadRequired?: boolean
   agentLaunchPlan?: AgentLaunchPlan
-  onLaunchAgentSessions: (channelIds: string[]) => Promise<AgentLaunchPlan>
+  cursorModels: CursorModelOption[]
+  onLaunchAgentSessions: (requests: AgentLaunchRequest[]) => Promise<AgentLaunchPlan>
+  onPersistModelSelection?: (channelId: string, selection: CursorModelSelection) => Promise<TeamControlSnapshot>
   onEnableCursorCdp?: () => Promise<{ ok: boolean; message: string; suggestAutoHeal?: boolean }>
   cdpAutoHealEnabled?: boolean
   cdpAutoHealEvent?: CdpAutoHealEvent
@@ -67,7 +71,9 @@ export function LobbyPage({
   autoStartOnGoalSave = false,
   mcpReloadRequired = false,
   agentLaunchPlan,
+  cursorModels,
   onLaunchAgentSessions,
+  onPersistModelSelection,
   onEnableCursorCdp,
   cdpAutoHealEnabled = false,
   cdpAutoHealEvent,
@@ -80,6 +86,9 @@ export function LobbyPage({
   const [busy, setBusy] = useState('')
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [launchModels, setLaunchModels] = useState<{ runId?: string; byChannel: Record<string, CursorModelSelection> }>({
+    byChannel: {}
+  })
 
   useEffect(() => {
     if (externalNotice) setNotice(externalNotice)
@@ -90,6 +99,41 @@ export function LobbyPage({
     const timer = setTimeout(() => setNotice(''), 6_000)
     return () => clearTimeout(timer)
   }, [notice])
+
+  const pendingSessionChannels = team.members
+    .filter((member) => member.binding?.channelId && !isAgentOnDuty(member.runtime))
+    .map((member) => member.binding!.channelId)
+  const defaultCursorModel = cursorModels.find((model) => model.selected) ?? cursorModels[0]
+  const launchSelectionByChannel = useMemo(() => {
+    const persisted = new Map(team.members.flatMap((member) => {
+      const channelId = member.binding?.channelId ?? member.slot.channelId
+      return channelId && member.slot.modelSelection
+        ? [[channelId, member.slot.modelSelection] as const]
+        : []
+    }))
+    const fallback = cursorModelSelectionFromOption(defaultCursorModel)
+    return Object.fromEntries(pendingSessionChannels.flatMap((channelId) => {
+      const candidate = launchModels.runId === activeRun?.id
+        ? launchModels.byChannel[channelId] ?? persisted.get(channelId) ?? fallback
+        : persisted.get(channelId) ?? fallback
+      const candidateOption = candidate
+        ? cursorModels.find((model) => model.modelId === candidate.modelId)
+        : undefined
+      const selection = candidate && candidateOption
+        ? normalizeCursorModelSelection(candidate, candidateOption)
+        : fallback
+      return selection ? [[channelId, selection] as const] : []
+    }))
+  }, [activeRun?.id, cursorModels, defaultCursorModel, launchModels, pendingSessionChannels, team.members])
+  const launchRequests: AgentLaunchRequest[] = pendingSessionChannels.map((channelId) => ({
+    channelId,
+    modelSelection: launchSelectionByChannel[channelId]
+  }))
+
+  useEffect(() => {
+    if (!activeRun?.id || launchModels.runId === activeRun.id) return
+    setLaunchModels({ runId: activeRun.id, byChannel: {} })
+  }, [activeRun?.id, launchModels.runId])
 
   const run = async <Result,>(name: string, action: () => Promise<Result>): Promise<Result | undefined> => {
     setBusy(name)
@@ -126,17 +170,16 @@ export function LobbyPage({
   const runIsActive = phase === 'active'
   const unresolvedGates = unresolvedDashboardGates(team)
   const goalLocked = ['launching', 'running', 'attention', 'paused', 'completed'].includes(activeRun.status)
-  const pendingSessionChannels = team.members
-    .filter((member) => member.binding?.channelId && !(member.runtime?.online && member.runtime?.waiting))
-    .map((member) => member.binding!.channelId)
-
   // 一键化：启动后自动为未待命通道创建会话；CDP 缺失时引导一次确认。
   const autoCreateSessions = async (): Promise<void> => {
-    const channels = pendingSessionChannels
-    if (!channels.length) return
-    const plan = await onLaunchAgentSessions(channels)
+    if (!launchRequests.length) return
+    const plan = await onLaunchAgentSessions(launchRequests)
     if (plan.state === 'done') {
       setNotice('Agent 会话已自动创建并待命，团队进入执行。')
+    } else if (plan.items.some((item) => item.code === 'runtime_account_mismatch')) {
+      setNotice('会话发起已暂停：请在弹窗中处理 Cursor 登录账号问题后自动继续。')
+    } else if (plan.items.some((item) => item.code === 'membership_blocked')) {
+      setNotice('会话发起已暂停：当前账号为 Free 档位，请先在账号管线执行「处理」，再于弹窗刷新档位继续。')
     } else if (plan.items.some((item) => item.code === 'cdp_unavailable')) {
       setNotice('会话创建需要 Cursor 调试端口：点击「重启 Cursor 并启用会话创建」（一次性），完成后重试一键创建。')
     } else {
@@ -152,7 +195,7 @@ export function LobbyPage({
     }
     if (team.preflight.mcpInstalled && !mcpReloadRequired) {
       setNotice(team.preflight.blockers[0]
-        || '请在 Cursor 手动发起对应 Agent 会话；群枢检测到待命后会自动接管。')
+        || '请在 Cursor 手动发起对应 Agent 会话；拾光检测到待命后会自动接管。')
       return
     }
     const prepared = await onInstallMcp()
@@ -167,7 +210,7 @@ export function LobbyPage({
       return
     }
     setNotice(prepared.snapshot.preflight.blockers[0]
-      || '请在 Cursor 手动发起对应 Agent 会话；群枢检测到待命后会自动接管。')
+      || '请在 Cursor 手动发起对应 Agent 会话；拾光检测到待命后会自动接管。')
   }
   const primaryLabel = mcpReloadRequired
     ? '重载 Cursor 后继续'
@@ -183,26 +226,37 @@ export function LobbyPage({
       : !team.preflight.mcpInstalled
         ? '写入本工程 .cursor/mcp.json，约 10 秒'
         : '检测各通道待命状态，自动接管手动发起的会话'
+  const runtimePresence = teamRuntimePresence(team)
+  const activeRunDisconnected = runIsActive && runtimePresence !== 'online'
   const runStateLabel = runIsLaunching
     ? '启动确认中'
+    : activeRunDisconnected
+      ? runtimePresence === 'in_flight_unverified' ? '长任务中 · 连接待确认' : '全部 Agent 离线'
     : runIsActive
       ? activeRun.status === 'attention' ? '团队需处理' : '协作执行中'
       : activeRun.status === 'paused'
         ? '团队已暂停'
         : undefined
   const runStateKind = runIsLaunching ? 'launching' as const
+    : activeRunDisconnected ? 'offline' as const
     : runIsActive ? 'active' as const
     : activeRun.status === 'paused' ? 'paused' as const
     : undefined
+  const runStateHint = activeRunDisconnected
+    ? runtimePresence === 'in_flight_unverified'
+      ? 'Agent 上次处于执行阶段；等待 Cursor 恢复连接或提供明确停止证据'
+      : '当前没有在线 Agent；可在下方重新创建会话，恢复后自动接管'
+    : undefined
 
   const allMembersWaiting = team.members.length > 0 && team.members.every((member) => (
-    member.runtime?.online && member.runtime?.waiting
+    isAgentOnDuty(member.runtime)
   ))
   const flowSteps = lobbyFlowStepsFor({ goal: activeRun.goal, status: activeRun.status, allMembersWaiting })
 
   const showSessionLaunch = pendingSessionChannels.length > 0
     && activeRun.status !== 'completed'
     && activeRun.status !== 'paused'
+    && !(runIsActive && runtimePresence !== 'online')
 
   return (
     <div className="lobby-page">
@@ -221,6 +275,8 @@ export function LobbyPage({
           primaryHint={primaryHint}
           runStateLabel={runStateLabel}
           runStateKind={runStateKind}
+          runStateHint={runStateHint}
+          allowCreateNextRun={activeRunDisconnected && runtimePresence === 'offline'}
           onSaveGoal={async (goal) => {
             await run('goal', async () => {
               const updated = await onUpdateGoal(goal)
@@ -249,19 +305,33 @@ export function LobbyPage({
             {showSessionLaunch ? (
               <LobbySessionLaunchTile
                 pendingChannels={pendingSessionChannels}
+                cursorModels={cursorModels}
+                selections={launchSelectionByChannel}
                 isPrelaunch={runIsPrelaunch}
                 plan={agentLaunchPlan}
                 busy={Boolean(busy)}
                 cdpAutoHealEnabled={cdpAutoHealEnabled}
                 cdpAutoHealEvent={cdpAutoHealEvent}
                 onLaunch={() => void run('agent-launch', async () => {
-                  const plan = await onLaunchAgentSessions(pendingSessionChannels)
+                  const plan = await onLaunchAgentSessions(launchRequests)
                   if (plan.state === 'done') {
                     setNotice('会话已全部就绪，可以启动团队。')
                   } else {
                     setError(plan.items.find((item) => item.stage === 'failed')?.message || '部分会话创建失败')
                   }
                 })}
+                onModelSave={async (channelId, selection) => {
+                  // 保存成功后才提交本地状态；失败时弹层保持打开并显示错误，
+                  // 避免 UI 看似已保存、实际启动仍读取旧配置。
+                  if (onPersistModelSelection) await onPersistModelSelection(channelId, selection)
+                  setLaunchModels((current) => {
+                    if (current.runId && current.runId !== activeRun.id) return current
+                    return {
+                      runId: activeRun.id,
+                      byChannel: { ...current.byChannel, [channelId]: structuredClone(selection) }
+                    }
+                  })
+                }}
                 onEnableCdp={onEnableCursorCdp ? () => void run('enable-cdp', async () => {
                   const result = await onEnableCursorCdp()
                   if (result.ok) {
@@ -281,8 +351,6 @@ export function LobbyPage({
                 onCancelCountdown={onCancelCdpAutoHealCountdown ? () => void onCancelCdpAutoHealCountdown() : undefined}
               />
             ) : null}
-
-            <TeamResiliencePanel team={team} />
           </aside>
 
           <main className="lobby-workbench__main" aria-label="账号与自动化">

@@ -1,16 +1,14 @@
 import { memo } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
 import {
-  badgeTone,
   contextPercent,
   contextTone,
-  executionBadges,
   formatContextUsage,
-  formatRelativeTimeCompact,
   modelDisplayName,
   statusLabel
 } from './format'
 import { AgentAvatar } from './AgentAvatar'
+import { modelProviderClass, modelProviderLabel } from './model-provider'
 
 interface SessionRailCardProps {
   session: AgentSession
@@ -27,23 +25,6 @@ function stateTone(session: AgentSession): 'waiting' | 'active' | 'attention' | 
   return 'attention'
 }
 
-/** 消息摘要：优先取 Cursor 工作过程最新条目，其次当前任务，再次会话标题。 */
-function sessionDigest(session: AgentSession): { text: string; live: boolean } | undefined {
-  const entries = session.workEntries
-  if (entries?.length) {
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const entry = entries[index]!
-      const text = entry.text.replace(/\s+/g, ' ').trim()
-      if (text) return { text, live: entry.kind === 'tool' && entry.status === 'running' }
-    }
-  }
-  const task = session.currentTask.trim()
-  if (task) return { text: task, live: false }
-  const title = session.composerTitle?.trim()
-  if (title) return { text: title, live: false }
-  return undefined
-}
-
 function SessionRailCardView({
   session,
   selected,
@@ -52,16 +33,13 @@ function SessionRailCardView({
   const telemetryDetail = session.telemetry?.detail || '尚未接入 Cursor 本机遥测'
   const runtimeKnown = Boolean(session.modelName || session.executionProfile)
   const runtimeName = modelDisplayName(session.executionProfile, session.modelName)
-  const badges = executionBadges(session.executionProfile, session.modelName)
   const state = session.online
     ? statusLabel(session.status)
     : '已离线'
   const tone = stateTone(session)
-  const digest = sessionDigest(session)
   const percent = contextPercent(session.contextUsage)
+  const displayedPercent = percent === undefined ? undefined : Math.round(percent * 10) / 10
   const sky = contextTone(percent)
-  const activityLabel = formatRelativeTimeCompact(session.lastSeenAt ?? session.lastAgentActivityAt)
-  const hasMetrics = percent !== undefined || Boolean(session.changes) || session.queueDepth > 0 || Boolean(activityLabel)
 
   return (
     <button
@@ -75,57 +53,44 @@ function SessionRailCardView({
             <AgentAvatar
               avatarId={session.avatarId}
               name={session.displayName}
-              crowned={session.roleTemplateKey === 'lead'}
+              crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'}
               online={session.online}
               size="sm"
             />
             <span className="rail-session-card__identity">
               <strong>{session.displayName}</strong>
-              <small>{session.roleName} · CH-{session.channelId}</small>
             </span>
           </span>
-          <em className={`rail-session-card__state is-${tone}`}><i aria-hidden="true" />{state}</em>
+          <em className={`rail-session-card__state is-${tone}`}><i aria-hidden="true" /><span>{state}</span></em>
         </span>
 
-        {digest ? (
-          <span className={`rail-session-card__digest ${digest.live ? 'is-live' : ''}`} title={digest.text}>
-            <span>{digest.text}</span>
+        <span className="rail-session-card__metrics">
+          <span
+            className={`rail-metric rail-metric--context ${sky ? `is-${sky}` : ''} ${percent === undefined ? 'is-unknown' : ''}`}
+            title={percent === undefined ? '上下文用量待读取' : `上下文 ${formatContextUsage(session.contextUsage)}`}
+          >
+            <i className="rail-metric__track"><b style={{ width: `${displayedPercent ?? 0}%` }} /></i>
+            {displayedPercent === undefined ? '—' : `${Math.round(displayedPercent)}%`}
           </span>
-        ) : null}
-
-        {hasMetrics ? (
-          <span className="rail-session-card__metrics">
-            {percent !== undefined ? (
-              <span
-                className={`rail-metric rail-metric--context ${sky ? `is-${sky}` : ''}`}
-                title={`上下文 ${formatContextUsage(session.contextUsage)}`}
-              >
-                <i className="rail-metric__track"><b style={{ width: `${percent}%` }} /></i>
-                {Math.round(percent)}%
-              </span>
-            ) : null}
-            {session.changes ? (
-              <span
-                className="rail-metric rail-metric--changes"
-                title={session.changes.files === undefined ? '代码改动 · 文件待统计' : `代码改动 · ${session.changes.files} 文件`}
-              >
-                <b>+{session.changes.additions}</b>
-                <b>−{session.changes.deletions}</b>
-              </span>
-            ) : null}
-            {session.queueDepth > 0 ? (
-              <span className="rail-metric rail-metric--queue" title="排队等待 Agent 处理的消息">排队 {session.queueDepth}</span>
-            ) : null}
-            {activityLabel ? <span className="rail-metric rail-metric--time">{activityLabel}</span> : null}
-          </span>
-        ) : null}
+          {session.changes ? (
+            <span
+              className="rail-metric rail-metric--changes"
+              title={`Cursor 当前 Composer 实时代码变更：新增 ${session.changes.additions} 行，删除 ${session.changes.deletions} 行`}
+              aria-label={`实时变更，新增 ${session.changes.additions} 行，删除 ${session.changes.deletions} 行`}
+            >
+              <b>+{session.changes.additions}</b><em>-{session.changes.deletions}</em>
+            </span>
+          ) : null}
+          {session.queueDepth > 0 ? (
+            <span className="rail-metric rail-metric--queue" title="排队等待 Agent 处理的消息">排队 {session.queueDepth}</span>
+          ) : null}
+        </span>
 
         <span
-          className={`model-badges is-compact ${runtimeKnown ? '' : 'is-muted'}`}
-          title={session.modelName ? runtimeName : `${runtimeName}（Cursor 当前 Composer 运行配置）`}
+          className={`rail-session-card__model ${runtimeKnown ? modelProviderClass(session.executionProfile?.modelId ?? session.modelName, runtimeName) : 'is-muted'}`}
+          title={session.modelName ? `${runtimeName} · ${modelProviderLabel(session.executionProfile?.modelId ?? session.modelName, runtimeName)}` : `${runtimeName}（Cursor 当前 Composer 运行配置）`}
         >
           <b>{runtimeName}</b>
-          {badges.map((badge) => <i key={badge} className={`is-${badgeTone(badge)}`}>{badge}</i>)}
         </span>
       </span>
     </button>

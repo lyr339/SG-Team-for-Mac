@@ -23,8 +23,8 @@ export class TeamMemoryAgentService {
   ) {}
 
   canReview(): boolean {
-    const capabilities = new Set(this.identity.capabilities)
-    return capabilities.has('coordination') || capabilities.has('qa')
+    const agent = this.currentAgent()
+    return agent.isEffectiveLead === true || agent.roleTemplateKey === 'reviewer'
   }
 
   contextBrief(): Record<string, unknown> {
@@ -114,7 +114,7 @@ export class TeamMemoryAgentService {
     note?: string
   }): TeamMemoryItem {
     const agent = this.currentAgent()
-    if (agent.roleTemplateKey !== 'lead' && agent.roleTemplateKey !== 'reviewer') {
+    if (!agent.isEffectiveLead && agent.roleTemplateKey !== 'reviewer') {
       throw new TaskPoolError('memory_reviewer_only', '只有主控协调或质量验证可以审核团队记忆')
     }
     const snapshot = this.repository.load(agent.workspaceId, agent.runId)

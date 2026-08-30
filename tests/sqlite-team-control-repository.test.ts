@@ -56,9 +56,14 @@ describe('SqliteTeamControlRepository', () => {
         workspacePath: '/workspace/configured',
         members: [
           { channelId: '2', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
-          { channelId: '7', roleTemplateKey: 'frontend', avatarId: 'frontend', skills: [{
-            id: 'project:frontend-design', name: 'frontend-design', description: 'UI skill', scope: 'project'
-          }] },
+          {
+            channelId: '7', roleTemplateKey: 'frontend', avatarId: 'frontend',
+            skills: [{ id: 'project:frontend-design', name: 'frontend-design', description: 'UI skill', scope: 'project' }],
+            modelSelection: {
+              modelId: 'gpt-5.3-codex', displayName: 'Codex 5.3', maxMode: false,
+              parameters: [{ id: 'reasoning', value: 'high' }]
+            }
+          },
           { channelId: '19', roleTemplateKey: 'reviewer', avatarId: 'reviewer', skills: [] }
         ],
         now: 100
@@ -72,6 +77,10 @@ describe('SqliteTeamControlRepository', () => {
       expect(state.slots.map((slot) => [slot.channelId, slot.avatarId])).toEqual([
         ['2', 'lead'], ['7', 'frontend'], ['19', 'reviewer']
       ])
+      expect(state.slots.find((slot) => slot.channelId === '7')?.modelSelection).toEqual({
+        modelId: 'gpt-5.3-codex', displayName: 'Codex 5.3', maxMode: false,
+        parameters: [{ id: 'reasoning', value: 'high' }]
+      })
     } finally {
       repository.close()
     }

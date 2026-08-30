@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { TeamControlService, type TeamControlBridge } from '../src/application/team-control-service'
 import type { DesktopSnapshot, SendMessageInput } from '../src/shared/desktop-api'
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
@@ -73,7 +73,7 @@ class FakeBridge implements TeamControlBridge {
     for (const listener of this.listeners) listener(this.getSnapshot())
   }
 
-  setAllOffline(): void {
+  setAllOffline(connectionPhase = 'offline'): void {
     this.snapshot = {
       ...this.snapshot,
       sessions: this.snapshot.sessions.map((session) => ({
@@ -81,7 +81,8 @@ class FakeBridge implements TeamControlBridge {
         online: false,
         connected: false,
         waiting: false,
-        status: 'offline'
+        status: 'offline',
+        connectionPhase
       })),
       updatedAt: this.snapshot.updatedAt + 1
     }
@@ -91,7 +92,7 @@ class FakeBridge implements TeamControlBridge {
 
 function desktopSnapshot(waiting = true): DesktopSnapshot {
   return {
-    connection: { state: 'connected', endpoint: 'qunshu://local-channel-runtime', attempt: 0, lastError: '' },
+    connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: ['1', '2'].map((channelId) => ({
       id: `qingtian-channel:${channelId}`,
       channelId,
@@ -143,6 +144,25 @@ function fixture(waiting = true) {
 }
 
 describe('TeamControlService', () => {
+  it('reuses assembled team state until the repository revision changes', () => {
+    const { repository, service } = fixture()
+    const load = vi.spyOn(repository, 'loadTeamControl')
+    try {
+      service.getSnapshot()
+      service.getSnapshot()
+      service.getActiveRunId()
+      expect(load).not.toHaveBeenCalled()
+
+      const runId = service.getActiveRunId()!
+      repository.updateRunGoal(runId, '外部进程写入的新目标')
+      expect(service.getSnapshot().activeRun?.goal).toBe('外部进程写入的新目标')
+      expect(load).toHaveBeenCalledTimes(1)
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
   it('clears stale collaboration state for a prelaunch run on startup', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-service-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
@@ -248,6 +268,51 @@ describe('TeamControlService', () => {
       expect(second.id).toMatch(/^team-run:alpha:run-/)
       expect(second.id).not.toBe(first.id)
       expect(bridge.conversationScopes.map((scope) => scope.runId)).toContain(second.id)
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
+  it('persists per-channel model selection to the slot and reads it back after reopen', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-slot-model-')), 'control.sqlite3')
+    const repository = new SqliteTeamControlRepository(path)
+    const bridge = new FakeBridge(desktopSnapshot())
+    const service = new TeamControlService(repository, bridge, 100)
+    try {
+      service.configureWorkspace({
+        workspaceId: 'alpha',
+        workspaceName: 'alpha',
+        workspacePath: '/workspace/alpha',
+        members: [
+          { channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] },
+          { channelId: '2', roleTemplateKey: 'builder', avatarId: 'architect', skills: [] }
+        ]
+      })
+      service.setSlotModelSelection('2', {
+        modelId: 'claude-opus-5',
+        displayName: 'Claude Opus 5',
+        parameters: [{ id: 'effort', value: 'max' }, { id: 'context', value: '1m' }],
+        maxMode: true
+      })
+      const selection = {
+        modelId: 'claude-opus-5',
+        displayName: 'Claude Opus 5',
+        parameters: [{ id: 'effort', value: 'high' }, { id: 'context', value: '1m' }],
+        maxMode: true
+      }
+      service.setSlotModelSelection('2', selection)
+      expect(service.getSnapshot().members.find((member) => member.slot.channelId === '2')?.slot.modelSelection)
+        .toEqual(selection)
+
+      // 重启回读：新仓库实例重装配同一库，选定值仍一一对应
+      const reopened = new SqliteTeamControlRepository(path)
+      try {
+        const slot = reopened.loadTeamControl().slots.find((candidate) => candidate.channelId === '2')
+        expect(slot?.modelSelection).toEqual(selection)
+      } finally {
+        reopened.close()
+      }
     } finally {
       service.dispose()
       repository.close()
@@ -420,12 +485,41 @@ describe('TeamControlService', () => {
         const channelId = message.channelId
         const binding = launchedBindings.find((value) => value.channelId === channelId)
         return Boolean(binding && message.text.includes(
-          `[[QINGTIAN_TEAM_BIND:${binding.composerBindingKey}:CH-${channelId}]]`
+          `[[SG_TEAM_BIND:${binding.composerBindingKey}:CH-${channelId}]]`
         ))
       })).toBe(true)
       expect(launched.activeRun?.status).toBe('launching')
       expect(launched.bindings.every((binding) => binding.launchStatus === 'delivered')).toBe(true)
       expect(launched.members.every((member) => member.readiness === 'launching')).toBe(true)
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
+  it('settles a failed session creation out of launching without damaging successful channels', async () => {
+    const { repository, service } = fixture(true)
+    try {
+      service.ensureRunLaunched()
+      const before = service.getSnapshot()
+      expect(before.activeRun?.status).toBe('launching')
+
+      service.settleAgentSessionLaunch({
+        id: 'failed-launch-plan',
+        state: 'failed',
+        startedAt: 100,
+        finishedAt: 200,
+        items: [
+          { channelId: '1', stage: 'failed', message: 'Cursor 会话未启动' },
+          { channelId: '2', stage: 'done', message: '会话已就绪', composerId: 'composer-2' }
+        ]
+      })
+
+      const settled = service.getSnapshot()
+      expect(settled.activeRun?.status).toBe('attention')
+      expect(settled.bindings.find((binding) => binding.channelId === '1')?.launchStatus).toBe('failed')
+      expect(settled.bindings.find((binding) => binding.channelId === '1')?.launchDetail).toBe('Cursor 会话未启动')
+      expect(settled.bindings.find((binding) => binding.channelId === '2')?.launchStatus).toBe('not_started')
     } finally {
       service.dispose()
       repository.close()
@@ -479,6 +573,50 @@ describe('TeamControlService', () => {
       expect(next.members.some((member) => member.slot.id.includes(':main:'))).toBe(false)
       expect(bridge.conversationScopes.at(-1)).toMatchObject({ runId: next.activeRun?.id })
       expect(bridge.getSnapshot().conversations).toEqual({})
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
+  it('lets the operator explicitly end an offline run and start fresh', async () => {
+    const { repository, bridge, service } = fixture(true)
+    try {
+      await service.launch()
+      const previous = service.getSnapshot().activeRun!
+      for (const binding of service.getSnapshot().bindings) {
+        repository.recordAgentCheckIn({
+          agentSessionId: binding.agentSessionId,
+          runId: binding.runId,
+          capabilities: []
+        }, 'ready')
+      }
+      bridge.setAllOffline()
+
+      const next = service.createNextRun()
+      expect(next.activeRun).toMatchObject({ status: 'draft', goal: '' })
+      expect(next.activeRun?.id).not.toBe(previous.id)
+      expect(next.runs.find((run) => run.id === previous.id)?.status).toBe('completed')
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
+  it('protects an offline-looking run while an Agent still owns in-flight work', async () => {
+    const { repository, bridge, service } = fixture(true)
+    try {
+      await service.launch()
+      for (const binding of service.getSnapshot().bindings) {
+        repository.recordAgentCheckIn({
+          agentSessionId: binding.agentSessionId,
+          runId: binding.runId,
+          capabilities: []
+        }, 'ready')
+      }
+      bridge.setAllOffline('processing')
+      expect(() => service.createNextRun()).toThrowError(/执行中的 Agent/)
+      expect(service.getSnapshot().activeRun?.status).toBe('running')
     } finally {
       service.dispose()
       repository.close()

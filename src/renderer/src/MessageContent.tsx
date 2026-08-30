@@ -1,5 +1,6 @@
 import { Fragment, useMemo, type ReactNode } from 'react'
 import { normalizeEscapedNewlines } from '../../domain/conversation-entry'
+import { stripDanglingBoldMarkers } from '../../domain/model-output-sanitizer'
 
 export type MessageBlock =
   | { type: 'paragraph'; lines: string[] }
@@ -135,7 +136,7 @@ function inlineContent(text: string, keyPrefix: string): ReactNode[] {
   let tokenIndex = 0
   for (const match of text.matchAll(INLINE_TOKEN)) {
     const at = match.index ?? 0
-    if (at > cursor) nodes.push(text.slice(cursor, at))
+    if (at > cursor) nodes.push(stripDanglingBoldMarkers(text.slice(cursor, at)))
     const token = match[0]
     if (token.charCodeAt(0) === 96) {
       nodes.push(<code key={keyPrefix + '-code-' + tokenIndex}>{token.slice(1, -1)}</code>)
@@ -145,7 +146,9 @@ function inlineContent(text: string, keyPrefix: string): ReactNode[] {
     tokenIndex += 1
     cursor = at + token.length
   }
-  if (cursor < text.length) nodes.push(text.slice(cursor))
+  // 兜底：未配对的 **（模型输出被截断/工具标记泄漏的残留）不字面显示；
+  // 路径通配 **\/*.ts 等合法字面由 strip 内部启发式保留。
+  if (cursor < text.length) nodes.push(stripDanglingBoldMarkers(text.slice(cursor)))
   return nodes
 }
 
@@ -159,7 +162,7 @@ function linesContent(lines: string[], keyPrefix: string): ReactNode {
 }
 
 export function messagePlainText(text: string): string {
-  return normalizeMessageText(text)
+  return stripDanglingBoldMarkers(normalizeMessageText(text))
     .replace(/\x60{3}[\s\S]*?\x60{3}/g, ' [代码] ')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\x60([^\x60]+)\x60/g, '$1')

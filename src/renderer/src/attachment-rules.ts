@@ -1,9 +1,14 @@
+import {
+  CHANNEL_ATTACHMENT_MAX_COUNT,
+  CHANNEL_ATTACHMENT_MAX_FILE_BYTES,
+  CHANNEL_ATTACHMENT_MAX_TOTAL_BYTES
+} from '../../domain/channel-message'
 import { formatFileSize } from './format'
 
-/** 附件防护限值：与后端 domain/channel-message 协议定稿一致（8 个 / 单文件 2MB / 合计 8MB）。 */
-export const MAX_ATTACHMENTS = 8
-export const MAX_ATTACHMENT_FILE_BYTES = 2 * 1024 * 1024
-export const MAX_ATTACHMENT_TOTAL_BYTES = 8 * 1024 * 1024
+/** 附件防护限值：唯一出口在 domain/channel-message（协议定稿 8 个 / 单文件 2MB / 合计 8MB）。 */
+export const MAX_ATTACHMENTS = CHANNEL_ATTACHMENT_MAX_COUNT
+export const MAX_ATTACHMENT_FILE_BYTES = CHANNEL_ATTACHMENT_MAX_FILE_BYTES
+export const MAX_ATTACHMENT_TOTAL_BYTES = CHANNEL_ATTACHMENT_MAX_TOTAL_BYTES
 
 export interface AttachmentCandidate {
   name: string

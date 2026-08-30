@@ -41,18 +41,7 @@ type ToolContentBlock = { type: string; text?: string; data?: string; mimeType?:
 
 const ch = { channel_id: '1' }
 
-describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
-  it('exposes the four communication tools with plugin-compatible names', async () => {
-    const { client, close } = await fixture()
-    try {
-      const tools = (await client.listTools()).tools.map((tool) => tool.name)
-      for (const name of ['check_messages', 'qingtian', 'record_reply', 'wait_messages']) {
-        expect(tools).toContain(name)
-      }
-    } finally {
-      await close()
-    }
-  })
+describe('SG Team unified MCP (通信三工具契约)', () => {
 
   it('delivers a queued user message with first-delivery protocol suffix and turn note', async () => {
     const { repository, client, close } = await fixture()
@@ -63,7 +52,7 @@ describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
       const text = textOf(result)
       expect(text).toContain('帮我审查这个模块')
       expect(text).toContain('持续对话协议')
-      expect(text).toContain('qunshu-ch-1')
+      expect(text).toContain('SG Team · CH-1')
       expect(text).toContain('[轮次 #1 · 队列剩余 0 条]')
       // 投递后置守门：未 record_reply 前不得再取新消息
       repository.enqueueOutbound('1', '第二条', 2_000)
@@ -106,7 +95,7 @@ describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
   it('delivers silent internal notifications without user-reply protocol or sync gate', async () => {
     const { repository, client, close } = await fixture()
     try {
-      repository.enqueueOutbound('1', '【群枢内部协作通知】消息 ID：team-message:1', 1_000, undefined, true)
+      repository.enqueueOutbound('1', '【拾光内部协作通知】消息 ID：team-message:1', 1_000, undefined, true)
       const first = await client.callTool({ name: 'check_messages', arguments: { ...ch } })
       expect(first.isError).not.toBe(true)
       const text = textOf(first)
@@ -116,7 +105,7 @@ describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
       expect(text).not.toContain('真实用户消息处理完后进入 qingtian 待命')
       expect(repository.getPresence('1')?.pendingReplySyncSince).toBeUndefined()
 
-      repository.enqueueOutbound('1', '【群枢内部协作通知】消息 ID：team-message:2', 2_000, undefined, true)
+      repository.enqueueOutbound('1', '【拾光内部协作通知】消息 ID：team-message:2', 2_000, undefined, true)
       const second = await client.callTool({ name: 'check_messages', arguments: { ...ch } })
       expect(second.isError).not.toBe(true)
       expect(textOf(second)).toContain('team-message:2')
@@ -125,127 +114,9 @@ describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
     }
   })
 
-  it('record_reply accepts structured process blocks and archives them with the reply', async () => {
-    const { repository, client, close } = await fixture()
-    try {
-      repository.enqueueOutbound('1', '实现功能', 1_000)
-      await client.callTool({ name: 'check_messages', arguments: { ...ch } })
-      const recorded = await client.callTool({
-        name: 'record_reply',
-        arguments: {
-          ...ch,
-          content: '实现完成',
-          process: [
-            { kind: 'thinking', id: 'th-1', text: '先改仓储层', status: 'done' },
-            {
-              kind: 'tool',
-              id: 'tool-1',
-              toolName: 'StrReplace',
-              toolKind: 'edit',
-              summary: 'src/domain/channel-message.ts',
-              input: { path: 'src/domain/channel-message.ts' },
-              status: 'done'
-            },
-            { kind: 'command', id: 'cmd-1', command: 'npm test', output: '12 passed', exitCode: 0, status: 'done' }
-          ]
-        }
-      })
-      expect(recorded.isError).not.toBe(true)
-      expect(recorded.structuredContent).toMatchObject({
-        ok: true,
-        entry: { type: 'agent_reply', channelId: '1', processBlocks: 3 }
-      })
-      const [reply] = repository.listUnconsumedReplies()
-      expect(reply?.process).toHaveLength(3)
-      expect(reply?.process?.[2]).toMatchObject({ kind: 'command', command: 'npm test', exitCode: 0 })
-    } finally {
-      await close()
-    }
-  })
 
-  it('record_reply rejects malformed process blocks through schema validation', async () => {
-    const { client, close } = await fixture()
-    try {
-      const result = await client.callTool({
-        name: 'record_reply',
-        arguments: {
-          ...ch,
-          content: '带过程回复',
-          process: [{ kind: 'tool', id: 'x', status: 'done' }]
-        }
-      })
-      expect(result.isError).toBe(true)
-    } finally {
-      await close()
-    }
-  })
 
-  it('record_process upserts blocks by id and record_reply with the same turn archives the stream', async () => {
-    const { repository, client, close } = await fixture()
-    try {
-      const running = await client.callTool({
-        name: 'record_process',
-        arguments: {
-          ...ch,
-          turn: 'turn-mcp-1',
-          block: { kind: 'tool', id: 'tool-1', toolName: 'Shell', toolKind: 'command', summary: 'npm test', status: 'running' }
-        }
-      })
-      expect(running.isError).not.toBe(true)
-      expect(running.structuredContent).toMatchObject({
-        ok: true,
-        entry: { type: 'process_event', channelId: '1', turn: 'turn-mcp-1', blockId: 'tool-1', status: 'running' }
-      })
-      expect(repository.listLiveProcessEvents('1')).toHaveLength(1)
 
-      // 同 id 再报 done：upsert 翻转，行数不增
-      const done = await client.callTool({
-        name: 'record_process',
-        arguments: {
-          ...ch,
-          turn: 'turn-mcp-1',
-          block: { kind: 'tool', id: 'tool-1', toolName: 'Shell', toolKind: 'command', summary: 'npm test', status: 'done' }
-        }
-      })
-      expect(done.isError).not.toBe(true)
-      const live = repository.listLiveProcessEvents('1')
-      expect(live).toHaveLength(1)
-      expect(live[0]?.block).toMatchObject({ status: 'done' })
-
-      // record_reply 带同 turn 归档：live 消失，回复携带 turn
-      await client.callTool({
-        name: 'record_reply',
-        arguments: { ...ch, content: '完成', turn: 'turn-mcp-1' }
-      })
-      expect(repository.listLiveProcessEvents('1')).toHaveLength(0)
-      expect(repository.listProcessEventsForTurn('1', 'turn-mcp-1')).toHaveLength(1)
-      expect(repository.listUnconsumedReplies()[0]?.turn).toBe('turn-mcp-1')
-    } finally {
-      await close()
-    }
-  })
-
-  it('record_process rejects malformed blocks and invalid turns through schema validation', async () => {
-    const { client, close } = await fixture()
-    try {
-      const badBlock = await client.callTool({
-        name: 'record_process',
-        arguments: { ...ch, turn: 'turn-x', block: { kind: 'tool', id: 'b1', status: 'done' } }
-      })
-      expect(badBlock.isError).toBe(true)
-      const badTurn = await client.callTool({
-        name: 'record_process',
-        arguments: {
-          ...ch,
-          turn: '',
-          block: { kind: 'thinking', id: 't', text: 'x', status: 'running' }
-        }
-      })
-      expect(badTurn.isError).toBe(true)
-    } finally {
-      await close()
-    }
-  })
 
   it('delivers an attachment manifest with fallback paths for unreadable payloads', async () => {
     const { repository, client, close } = await fixture()
@@ -284,10 +155,13 @@ describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
       const content = result.content as ToolContentBlock[]
       const image = content.find((block) => block.type === 'image')
       const text = textOf(result)
-      expect(content[0]).toMatchObject({ type: 'text', text: '请识别这张截图' })
-      expect(content[1]).toMatchObject({ type: 'image', data: pngBase64, mimeType: 'image/png' })
-      expect(content[2]?.text).toContain('1 个图片附件作为本次 MCP image 内容块直接附加')
-      expect(content.at(-1)?.text).toContain('持续对话协议')
+      // 投递形态对齐 qingtian-v2 插件：全部文本合并为单个前导块，图片固定末尾
+      expect(content[0]?.type).toBe('text')
+      expect(content[0]?.text).toContain('请识别这张截图')
+      expect(content[0]?.text).toContain('1 个图片附件作为本次 MCP image 内容块直接附加')
+      expect(content[0]?.text).toContain('必须改用下方路径读取原图后再判断')
+      expect(content[0]?.text).toContain('持续对话协议')
+      expect(content.at(-1)).toMatchObject({ type: 'image', data: pngBase64, mimeType: 'image/png' })
       expect(text).toContain('请识别这张截图')
       expect(text).toContain('1 个图片附件作为本次 MCP image 内容块直接附加')
       expect(image).toMatchObject({ type: 'image', data: pngBase64, mimeType: 'image/png' })
@@ -353,7 +227,7 @@ describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
       const text = textOf(second)
       expect(text).toContain('第二条')
       expect(text).not.toContain('持续对话协议')
-      expect(text).toContain('qingtian/check_messages')
+      expect(text).toContain('check_messages 静默待命')
     } finally {
       await close()
     }
@@ -363,11 +237,11 @@ describe('Qunshu unified MCP (通信四工具兼容契约)', () => {
     const { client, close } = await fixture()
     try {
       const result = await client.callTool(
-        { name: 'qingtian', arguments: { ...ch } },
+        { name: 'check_messages', arguments: { ...ch } },
         { timeout: 15_000 }
       )
       expect(result.isError).not.toBe(true)
-      expect(textOf(result)).toMatch(/<qingtian_keepalive n="1"\s*\/>/)
+      expect(textOf(result)).toMatch(/<sg_team_keepalive n="1"\s*\/>/)
     } finally {
       await close()
     }

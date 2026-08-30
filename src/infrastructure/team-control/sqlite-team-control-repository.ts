@@ -1,6 +1,7 @@
+import { numberOf, type SqliteRow } from '../sqlite/rows'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import type {
   AgentAuthorizationIdentity,
   AgentRegistration,
@@ -20,6 +21,7 @@ import type {
   WorkspaceTeamBundle
 } from '../../domain/team-control'
 import type { AssignedAgentSkill } from '../../domain/agent-skill'
+import type { CursorModelSelection } from '../../domain/cursor-model'
 import { TaskPoolError } from '../../domain/task-pool'
 import type { ComposerBindingMethod } from '../../domain/cursor-telemetry'
 import type {
@@ -38,14 +40,6 @@ const COMPOSER_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/
 const COMPOSER_BINDING_KEY_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
 const COMPOSER_BINDING_METHODS = new Set<ComposerBindingMethod>(['launch_marker', 'channel_marker'])
 
-type SqliteRow = Record<string, string | number | bigint | null>
-
-function numberOf(value: unknown): number {
-  if (typeof value === 'bigint') return Number(value)
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
 function optionalNumber(value: unknown): number | undefined {
   return value === null || value === undefined ? undefined : numberOf(value)
 }
@@ -59,6 +53,22 @@ function stringArrayOf(value: unknown): string[] {
   const parsed = JSON.parse(value)
   if (!Array.isArray(parsed)) throw new Error('团队能力字段不是合法 JSON 数组')
   return parsed.map(String).filter(Boolean)
+}
+
+function effectiveCapabilities(row: SqliteRow): string[] {
+  const base = new Set(stringArrayOf(row.capabilities_json))
+  const lead = new Set(stringArrayOf(row.lead_capabilities_json))
+  const slotId = String(row.slot_id)
+  const actingLeadSlotId = optionalString(row.acting_lead_slot_id)
+  const templateKey = String(row.template_key ?? '')
+  if (actingLeadSlotId) {
+    if (slotId === actingLeadSlotId) {
+      for (const capability of lead) base.add(capability)
+    } else if (templateKey === 'lead') {
+      for (const capability of lead) base.delete(capability)
+    }
+  }
+  return [...base]
 }
 
 function assignedSkillsOf(value: unknown): AssignedAgentSkill[] {
@@ -77,6 +87,32 @@ function assignedSkillsOf(value: unknown): AssignedAgentSkill[] {
       scope
     }]
   })
+}
+
+function cursorModelSelectionOf(value: unknown): CursorModelSelection | undefined {
+  if (typeof value !== 'string' || !value) return undefined
+  let parsed: unknown
+  try { parsed = JSON.parse(value) } catch { return undefined }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+  const raw = parsed as Record<string, unknown>
+  if (typeof raw.modelId !== 'string' || !raw.modelId.trim() || raw.modelId.length > 160) return undefined
+  const displayName = typeof raw.displayName === 'string' && raw.displayName.trim()
+    ? raw.displayName.trim().slice(0, 160)
+    : raw.modelId.trim()
+  const parameters = Array.isArray(raw.parameters) ? raw.parameters.slice(0, 32).flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const parameter = item as Record<string, unknown>
+    return typeof parameter.id === 'string' && parameter.id.trim()
+      && typeof parameter.value === 'string' && parameter.value.length <= 160
+      ? [{ id: parameter.id.trim().slice(0, 80), value: parameter.value }]
+      : []
+  }) : []
+  return {
+    modelId: raw.modelId.trim(),
+    displayName,
+    parameters,
+    maxMode: raw.maxMode === true
+  }
 }
 
 function tableHasColumn(database: DatabaseSync, table: string, column: string): boolean {
@@ -112,6 +148,7 @@ function failoverFromRow(row: SqliteRow): TeamFailoverRecord {
 
 export class SqliteTeamControlRepository implements TeamControlRepository {
   private readonly database: DatabaseSync
+  private readonly revisionStatement: StatementSync
 
   constructor(readonly path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
@@ -121,6 +158,15 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     this.database.exec('PRAGMA synchronous = NORMAL')
     this.database.exec('PRAGMA busy_timeout = 5000')
     this.migrate()
+    this.revisionStatement = this.database.prepare(
+      'SELECT revision FROM team_control_meta WHERE id = 1'
+    )
+  }
+
+  revision(): number {
+    const row = this.revisionStatement.get() as SqliteRow | undefined
+    if (!row) throw new Error('团队控制数据库缺少 meta 行')
+    return numberOf(row.revision)
   }
 
   loadTeamControl(): TeamControlState {
@@ -170,6 +216,12 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       order: numberOf(row.role_order)
     }))
 
+    const modelSelectionBySlot = new Map((this.database.prepare(
+      'SELECT slot_id, selection_json FROM agent_slot_model_selections'
+    ).all() as SqliteRow[]).flatMap((row) => {
+      const selection = cursorModelSelectionOf(row.selection_json)
+      return selection ? [[String(row.slot_id), selection] as const] : []
+    }))
     const slots = (this.database.prepare(
       'SELECT * FROM agent_slots ORDER BY slot_order ASC, id ASC'
     ).all() as SqliteRow[]).map((row): AgentSlot => ({
@@ -178,6 +230,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       roleId: String(row.role_id),
       name: String(row.name),
       avatarId: String(row.avatar_id),
+      modelSelection: modelSelectionBySlot.get(String(row.id)),
       channelId: optionalString(row.channel_id),
       order: numberOf(row.slot_order),
       createdAt: numberOf(row.created_at),
@@ -220,14 +273,28 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     }
   }
 
+  /** 单槽模型选定持久化：lobby 逐会话配置的保存出口；slot_id 幂等 upsert。 */
+  setSlotModelSelection(slotId: string, selection: CursorModelSelection, updatedAt = Date.now()): void {
+    this.database.prepare(`
+      INSERT INTO agent_slot_model_selections (slot_id, selection_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(slot_id) DO UPDATE SET
+        selection_json = excluded.selection_json,
+        updated_at = excluded.updated_at
+    `).run(slotId, JSON.stringify(selection), updatedAt)
+    this.bumpRevision()
+  }
+
   upsertWorkspaceTeam(bundle: WorkspaceTeamBundle): void {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       const { workspace, run } = bundle
       const existingSlots = this.database.prepare(`
-        SELECT s.id, s.channel_id, s.avatar_id, r.template_key, r.capabilities_json, r.skills_json
+        SELECT s.id, s.channel_id, s.avatar_id, r.template_key, r.capabilities_json, r.skills_json,
+          ms.selection_json AS model_selection_json
         FROM agent_slots s
         JOIN team_roles r ON r.id = s.role_id
+        LEFT JOIN agent_slot_model_selections ms ON ms.slot_id = s.id
         WHERE s.run_id = ? ORDER BY s.slot_order ASC
       `).all(run.id) as SqliteRow[]
       const desiredTopology = new Map(bundle.slots.map((slot) => {
@@ -237,7 +304,8 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
           avatarId: slot.avatarId,
           templateKey: role.templateKey,
           capabilities: JSON.stringify(role.capabilities),
-          skills: JSON.stringify(role.skills)
+          skills: JSON.stringify(role.skills),
+          modelSelection: slot.modelSelection ? JSON.stringify(slot.modelSelection) : null
         }] as const
       }))
       const topologyChanged = existingSlots.length > 0 && (
@@ -250,6 +318,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
             || desired.templateKey !== String(slot.template_key)
             || desired.capabilities !== String(slot.capabilities_json)
             || desired.skills !== String(slot.skills_json)
+            || desired.modelSelection !== slot.model_selection_json
         })
       )
       this.database.prepare(`
@@ -346,6 +415,17 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
           slot.createdAt,
           slot.updatedAt
         )
+        if (slot.modelSelection) {
+          this.database.prepare(`
+            INSERT INTO agent_slot_model_selections (slot_id, selection_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(slot_id) DO UPDATE SET
+              selection_json = excluded.selection_json,
+              updated_at = excluded.updated_at
+          `).run(slot.id, JSON.stringify(slot.modelSelection), slot.updatedAt)
+        } else {
+          this.database.prepare('DELETE FROM agent_slot_model_selections WHERE slot_id = ?').run(slot.id)
+        }
       }
 
       const roleIds = bundle.roles.map((role) => role.id)
@@ -610,12 +690,15 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     const normalizedIdentityKey = identityKey.trim()
     const normalizedRunId = runId.trim()
     const row = this.database.prepare(`
-      SELECT ar.agent_session_id, ar.run_id, b.slot_id, r.capabilities_json
+      SELECT ar.agent_session_id, ar.run_id, b.slot_id, r.template_key, r.capabilities_json,
+        tr.acting_lead_slot_id, lead.capabilities_json AS lead_capabilities_json
       FROM agent_registrations ar
       JOIN runtime_bindings b
         ON b.agent_session_id = ar.agent_session_id AND b.run_id = ar.run_id
       JOIN agent_slots s ON s.id = b.slot_id AND s.run_id = b.run_id
       JOIN team_roles r ON r.id = s.role_id AND r.run_id = b.run_id
+      JOIN team_runs tr ON tr.id = b.run_id
+      LEFT JOIN team_roles lead ON lead.run_id = b.run_id AND lead.template_key = 'lead'
       WHERE (ar.runtime_id = ? OR ar.agent_session_id = ?)
         AND (? = '' OR ar.run_id = ?) AND ar.revoked_at IS NULL
       ORDER BY ar.installed_at DESC LIMIT 1
@@ -637,7 +720,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       agentSessionId: String(row.agent_session_id),
       runId: String(row.run_id),
       slotId: String(row.slot_id),
-      capabilities: stringArrayOf(row.capabilities_json)
+      capabilities: effectiveCapabilities(row)
     }
   }
 
@@ -659,12 +742,15 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       throw new TaskPoolError('agent_not_authorized', '当前没有活动 TeamRun，通道身份无法解析')
     }
     const row = this.database.prepare(`
-      SELECT ar.agent_session_id, ar.run_id, b.slot_id, r.capabilities_json
+      SELECT ar.agent_session_id, ar.run_id, b.slot_id, r.template_key, r.capabilities_json,
+        tr.acting_lead_slot_id, lead.capabilities_json AS lead_capabilities_json
       FROM agent_registrations ar
       JOIN runtime_bindings b
         ON b.agent_session_id = ar.agent_session_id AND b.run_id = ar.run_id
       JOIN agent_slots s ON s.id = b.slot_id AND s.run_id = b.run_id
       JOIN team_roles r ON r.id = s.role_id AND r.run_id = b.run_id
+      JOIN team_runs tr ON tr.id = b.run_id
+      LEFT JOIN team_roles lead ON lead.run_id = b.run_id AND lead.template_key = 'lead'
       WHERE ar.run_id = ? AND ar.channel_id = ? AND ar.revoked_at IS NULL
       ORDER BY ar.installed_at DESC LIMIT 1
     `).get(activeRun.id, normalizedChannelId) as SqliteRow | undefined
@@ -684,7 +770,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       agentSessionId: String(row.agent_session_id),
       runId: String(row.run_id),
       slotId: String(row.slot_id),
-      capabilities: stringArrayOf(row.capabilities_json)
+      capabilities: effectiveCapabilities(row)
     }
   }
 
@@ -1340,6 +1426,12 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         channel_id TEXT,
         slot_order INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_slot_model_selections (
+        slot_id TEXT PRIMARY KEY REFERENCES agent_slots(id) ON DELETE CASCADE,
+        selection_json TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
 

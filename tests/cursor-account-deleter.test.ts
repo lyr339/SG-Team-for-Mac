@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CursorAccountDeleter } from '../src/infrastructure/cursor/cursor-account-deleter'
+import { CursorAccountDeleter, parseRetryAfterSec } from '../src/infrastructure/cursor/cursor-account-deleter'
 
 interface FakeCall {
   url: string
@@ -13,6 +13,10 @@ function createDeleter(options: {
   csrfToken?: string
   deleteStatus?: number
   deleteBody?: unknown
+  /** 原始响应体（优先于 deleteBody，用于构造非 JSON 响应）。 */
+  deleteRawBody?: string
+  /** 删除响应的额外响应头（如 Retry-After）。 */
+  deleteHeaders?: Record<string, string>
 }) {
   const calls: FakeCall[] = []
   const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
@@ -26,8 +30,8 @@ function createDeleter(options: {
     }
     if (target.endsWith('/api/dashboard/delete-account')) {
       const status = options.deleteStatus ?? 200
-      const body = options.deleteBody ?? {}
-      return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+      const raw = options.deleteRawBody ?? JSON.stringify(options.deleteBody ?? {})
+      return new Response(raw, { status, headers: { 'Content-Type': 'application/json', ...options.deleteHeaders } })
     }
     return new Response('not found', { status: 404 })
   }) as typeof fetch
@@ -109,5 +113,101 @@ describe('CursorAccountDeleter', () => {
     const result = await deleter.deleteAccount('  ')
     expect(result.ok).toBe(false)
     expect(calls).toHaveLength(0)
+  })
+
+  it('429 + Retry-After → 标记 rateLimited，诊断含状态码/Retry-After/响应体', async () => {
+    const { deleter } = createDeleter({
+      csrfToken: 'c',
+      deleteStatus: 429,
+      deleteHeaders: { 'Retry-After': '20' },
+      deleteBody: { error: { message: 'Try again later' } }
+    })
+    const result = await deleter.deleteAccount('token')
+    expect(result.ok).toBe(false)
+    expect(result.rateLimited).toBe(true)
+    expect(result.status).toBe(429)
+    expect(result.retryAfterSec).toBe(20)
+    expect(result.authExpired).toBeUndefined()
+    // 「官网删除账号失败：」前缀被 UI 依赖，必须保留
+    expect(result.message.startsWith('官网删除账号失败：')).toBe(true)
+    expect(result.message).toContain('HTTP 429')
+    expect(result.message).toContain('Retry-After 20s')
+    expect(result.message).toContain('Try again later')
+  })
+
+  it('正文含 "Try again later"（无 429/Retry-After）→ 仍识别为限流', async () => {
+    const { deleter } = createDeleter({
+      csrfToken: 'c',
+      deleteStatus: 400,
+      deleteBody: { error: { message: 'Try again later' } }
+    })
+    const result = await deleter.deleteAccount('token')
+    expect(result.ok).toBe(false)
+    expect(result.rateLimited).toBe(true)
+    expect(result.status).toBe(400)
+    expect(result.retryAfterSec).toBeUndefined()
+  })
+
+  it('5xx + Retry-After（HTTP-date）→ 标记 rateLimited 并解析秒数', async () => {
+    const { deleter } = createDeleter({
+      csrfToken: 'c',
+      deleteStatus: 503,
+      deleteHeaders: { 'Retry-After': new Date(Date.now() + 30_000).toUTCString() },
+      deleteRawBody: 'Service Unavailable'
+    })
+    const result = await deleter.deleteAccount('token')
+    expect(result.ok).toBe(false)
+    expect(result.rateLimited).toBe(true)
+    expect(result.status).toBe(503)
+    expect(result.retryAfterSec).toBeGreaterThan(0)
+    expect(result.retryAfterSec).toBeLessThanOrEqual(30)
+    expect(result.message).toContain('Service Unavailable')
+  })
+
+  it('403 封锁（无限流信号）→ 仍判 authExpired，不误标 rateLimited', async () => {
+    const { deleter } = createDeleter({ csrfToken: 'c', deleteStatus: 403, deleteBody: { error: { message: 'Forbidden' } } })
+    const result = await deleter.deleteAccount('token')
+    expect(result.ok).toBe(false)
+    expect(result.authExpired).toBe(true)
+    expect(result.rateLimited).toBeUndefined()
+    expect(result.status).toBe(403)
+  })
+
+  it('响应体截断 ≤160 字符（超长 HTML 错误页）', async () => {
+    const { deleter } = createDeleter({
+      csrfToken: 'c',
+      deleteStatus: 502,
+      deleteRawBody: `<html>${'x'.repeat(400)}</html>`
+    })
+    const result = await deleter.deleteAccount('token')
+    expect(result.ok).toBe(false)
+    expect(result.rateLimited).toBeUndefined()
+    expect(result.message).toContain('HTTP 502')
+    const snippet = result.message.split('：').pop() ?? ''
+    expect(snippet.length).toBeLessThanOrEqual(160)
+    expect(snippet.startsWith('<html>')).toBe(true)
+  })
+})
+
+describe('parseRetryAfterSec', () => {
+  it('解析非负整数秒', () => {
+    expect(parseRetryAfterSec('20', 0)).toBe(20)
+    expect(parseRetryAfterSec('0', 0)).toBe(0)
+    expect(parseRetryAfterSec(' 120 ', 0)).toBe(120)
+  })
+
+  it('解析 HTTP-date 并按当前时间折算', () => {
+    const now = Date.parse('2026-08-27T05:00:00Z')
+    expect(parseRetryAfterSec('Thu, 27 Aug 2026 05:00:45 GMT', now)).toBe(45)
+    // 过去的日期钳到 0
+    expect(parseRetryAfterSec('Thu, 27 Aug 2026 04:59:00 GMT', now)).toBe(0)
+  })
+
+  it('非法/缺失输入返回 undefined', () => {
+    expect(parseRetryAfterSec(null, 0)).toBeUndefined()
+    expect(parseRetryAfterSec(undefined, 0)).toBeUndefined()
+    expect(parseRetryAfterSec('', 0)).toBeUndefined()
+    expect(parseRetryAfterSec('later', 0)).toBeUndefined()
+    expect(parseRetryAfterSec(';;;', 0)).toBeUndefined()
   })
 })

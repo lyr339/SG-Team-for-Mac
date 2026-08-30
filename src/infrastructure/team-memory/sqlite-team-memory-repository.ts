@@ -1,3 +1,4 @@
+import { numberOf, type SqliteRow } from '../sqlite/rows'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname, isAbsolute, normalize } from 'node:path'
@@ -28,14 +29,6 @@ const MEMORY_KINDS = new Set<TeamMemoryKind>(['decision', 'constraint', 'fact', 
 const MEMORY_SCOPES = new Set<TeamMemoryScope>(['run', 'project'])
 const MEMORY_STATUSES = new Set<TeamMemoryStatus>(['proposed', 'accepted', 'superseded', 'rejected'])
 const SOURCE_TYPES = new Set<TeamMemorySourceType>(['message', 'task', 'file'])
-
-type SqliteRow = Record<string, string | number | bigint | null>
-
-function numberOf(value: unknown): number {
-  if (typeof value === 'bigint') return Number(value)
-  const number = Number(value)
-  return Number.isFinite(number) ? number : 0
-}
 
 function optionalNumber(value: unknown): number | undefined {
   return value === null || value === undefined ? undefined : numberOf(value)

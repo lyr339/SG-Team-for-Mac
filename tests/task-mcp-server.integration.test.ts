@@ -26,49 +26,7 @@ function createTaskMcpServer(
 
 const allowAllAgents = { assertAgentAuthorized: () => undefined }
 
-describe('Qunshu task MCP', () => {
-  it('keeps a standby runtime fenced until dynamic AgentSlot assignment is available', async () => {
-    const repository = new InMemoryTaskPoolRepository()
-    const [task] = transactTaskPool(repository, (pool) => pool.plan('run-1', [{
-      key: 'standby-takeover', title: '接替后继续任务', requiredCapabilities: ['code']
-    }]))
-    const service = new TaskAgentService(repository, {
-      agentSessionId: 'workspace:standby:1',
-      runId: 'run-1',
-      slotId: 'standby-slot:3',
-      capabilities: ['coordination', 'planning', 'qa', 'code']
-    }, allowAllAgents)
-    let assigned = false
-    const server = createTaskMcpServer(service, undefined, undefined, undefined, {
-      exposeAllRoleTools: true,
-      refreshIdentity: () => {
-        if (!assigned) throw new Error('当前通道处于备用状态，尚未接替任何 AgentSlot')
-        Object.assign(service.identity, { slotId: 'slot-builder', capabilities: ['code'] })
-      }
-    })
-    const client = new Client({ name: 'qingtian-team-test', version: '1.0.0' })
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    await server.connect(serverTransport)
-    await client.connect(clientTransport)
-    try {
-      const toolNames = (await client.listTools()).tools.map((tool) => tool.name)
-      expect(toolNames).toHaveLength(37)
-      expect(toolNames).toContain('record_process')
-      const fenced = await client.callTool({ name: 'team_list_available', arguments: { channel_id: '1' } })
-      expect(fenced).toMatchObject({ isError: true })
-      expect(JSON.stringify(fenced)).toContain('备用状态')
-
-      assigned = true
-      const available = await client.callTool({ name: 'team_list_available', arguments: { channel_id: '1' } })
-      expect(available.isError).not.toBe(true)
-      expect(available.structuredContent).toMatchObject({
-        tasks: [expect.objectContaining({ id: task!.id })]
-      })
-    } finally {
-      await client.close()
-      await server.close()
-    }
-  })
+describe('SG Team task MCP', () => {
 
   it('uses an explicit check-in receipt as the only agent launch acknowledgement', async () => {
     const repository = new InMemoryTaskPoolRepository()
@@ -108,85 +66,6 @@ describe('Qunshu task MCP', () => {
     }
   })
 
-  it('executes the real agent workflow while keeping lease tokens server-side', async () => {
-    const repository = new InMemoryTaskPoolRepository()
-    const [task] = transactTaskPool(repository, (pool) => pool.plan('run-1', [
-      {
-        key: 'bridge',
-        title: '实现 Bridge v1',
-        description: '输出有序事件',
-        acceptance: '重连可续传',
-        requiredCapabilities: ['code']
-      }
-    ]))
-    const service = new TaskAgentService(repository, {
-      agentSessionId: 'workspace:composer-dev:1',
-      runId: 'run-1',
-      capabilities: ['code']
-    }, allowAllAgents)
-    const server = createTaskMcpServer(service, {
-      channelId: '2',
-      communicationServerName: 'qunshu'
-    })
-    const client = new Client({ name: 'qingtian-team-test', version: '1.0.0' })
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-
-    await server.connect(serverTransport)
-    await client.connect(clientTransport)
-    try {
-      const listed = await client.listTools()
-      // S4 单服务器：团队基础工具 + 角色超集 + 协作/记忆 + 通信四工具
-      const names = listed.tools.map((tool) => tool.name)
-      for (const name of [
-        'team_check_in', 'team_list_available', 'team_list_mine', 'team_get_task',
-        'team_claim_task', 'team_start_task', 'team_renew_lease', 'team_report_progress',
-        'team_submit_for_review', 'team_fail_task', 'check_messages', 'record_reply',
-        'qingtian', 'wait_messages'
-      ]) {
-        expect(names).toContain(name)
-      }
-
-      const claim = await client.callTool({ name: 'team_claim_task', arguments: { channel_id: '1', taskId: task!.id } })
-      expect(claim.isError).not.toBe(true)
-      expect(JSON.stringify(claim)).not.toContain('leaseToken')
-
-      await client.callTool({ name: 'team_start_task', arguments: { channel_id: '1', taskId: task!.id } })
-      await client.callTool({
-        name: 'team_report_progress',
-        arguments: { channel_id: '1', taskId: task!.id, progress: 65, summary: '事件流已完成' }
-      })
-      await client.callTool({
-        name: 'team_renew_lease',
-        arguments: { channel_id: '1', taskId: task!.id, ttlSeconds: 120 }
-      })
-      const submit = await client.callTool({
-        name: 'team_submit_for_review',
-        arguments: { channel_id: '1', taskId: task!.id, output: '实现、测试与重连证据' }
-      })
-      expect(submit.isError).not.toBe(true)
-      expect(submit.structuredContent).toMatchObject({
-        nextAction: {
-          type: 'enter_channel_wait',
-          channelId: '1',
-          communicationServer: 'qunshu'
-        }
-      })
-      const submitJson = JSON.stringify(submit.structuredContent)
-      expect(submitJson).toContain('qunshu.check_messages')
-      expect(submitJson).toContain('isRetryable:false')
-      expect(submitJson).toContain('禁止快速、并发或无限重试')
-      expect(submitJson).toContain('工具返回后的静默待命动作')
-      expect(submitJson).not.toContain('先用 qunshu.record_reply')
-      expect(submitJson).not.toContain('保活/超时续期时静默继续')
-      expect(repository.load().tasks[task!.id]).toMatchObject({
-        status: 'review',
-        progress: 100
-      })
-    } finally {
-      await client.close()
-      await server.close()
-    }
-  })
 
   it('directs an idle agent back to the paired communication wait loop', async () => {
     const repository = new InMemoryTaskPoolRepository()
@@ -197,7 +76,7 @@ describe('Qunshu task MCP', () => {
     }, allowAllAgents)
     const server = createTaskMcpServer(service, {
       channelId: '2',
-      communicationServerName: 'qunshu'
+      communicationServerName: 'SG Team'
     })
     const client = new Client({ name: 'qingtian-team-test', version: '1.0.0' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -209,15 +88,15 @@ describe('Qunshu task MCP', () => {
         tasks: [],
         nextAction: {
           type: 'enter_channel_wait',
-          communicationServer: 'qunshu'
+          communicationServer: 'SG Team'
         }
       })
       const claim = await client.callTool({ name: 'team_claim_task', arguments: { channel_id: '1' } })
       expect(claim.structuredContent).toMatchObject({
         assignment: null,
-        nextAction: { communicationServer: 'qunshu' }
+        nextAction: { communicationServer: 'SG Team' }
       })
-      expect(JSON.stringify(claim.structuredContent)).not.toContain('先用 qunshu.record_reply')
+      expect(JSON.stringify(claim.structuredContent)).not.toContain('先用 SG Team.record_reply')
     } finally {
       await client.close()
       await server.close()

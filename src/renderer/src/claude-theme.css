@@ -1,0 +1,111 @@
+/*
+ * Claude / Anthropic canonical theme foundation.
+ * Source: https://claude.com/docs/connectors/building/mcp-apps/design-guidelines
+ * Font source: https://brand.anthropic.com/typography
+ */
+@font-face {
+  font-family: "Anthropic Sans";
+  src: url("./assets/fonts/AnthropicSansVariable.woff2") format("woff2-variations");
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+
+  --font-sans: "Anthropic Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --font-text-xs-size: 12px;
+  --font-text-sm-size: 14px;
+  --font-text-md-size: 16px;
+  --font-text-lg-size: 20px;
+  --font-heading-xs-size: 12px;
+  --font-heading-sm-size: 14px;
+  --font-heading-md-size: 16px;
+  --font-heading-lg-size: 20px;
+  --font-heading-xl-size: 24px;
+  --font-heading-2xl-size: 28px;
+  --font-heading-3xl-size: 36px;
+
+  --font-text-xs-line-height: 1.4;
+  --font-text-sm-line-height: 1.4;
+  --font-text-md-line-height: 1.4;
+  --font-text-lg-line-height: 1.25;
+  --font-heading-xs-line-height: 1.4;
+  --font-heading-sm-line-height: 1.4;
+  --font-heading-md-line-height: 1.4;
+  --font-heading-lg-line-height: 1.25;
+  --font-heading-xl-line-height: 1.25;
+  --font-heading-2xl-line-height: 1.1;
+  --font-heading-3xl-line-height: 1;
+
+  /* 拾光 Orbit 主题：冷中性色承载内容，亮橙只表达焦点与行动。 */
+  --color-background-primary: light-dark(#ffffff, #181d25);
+  --color-background-secondary: light-dark(#f2f5f9, #121720);
+  --color-background-tertiary: light-dark(#edf2f7, #0b1017);
+  --color-background-inverse: light-dark(#171b24, #f7f9fc);
+  --color-background-ghost: light-dark(rgb(255 255 255 / 0), rgb(24 29 37 / 0));
+  --color-background-info: light-dark(#e8f0ff, #1c3157);
+  --color-background-danger: light-dark(#fff0f0, #482428);
+  --color-background-success: light-dark(#eaf7ef, #173b2a);
+  --color-background-warning: light-dark(#fff5e4, #46331a);
+  --color-background-disabled: light-dark(rgb(242 245 249 / 0.7), rgb(24 29 37 / 0.58));
+
+  --color-text-primary: light-dark(#171b24, #f4f7fb);
+  --color-text-secondary: light-dark(#3d4655, #c9d0dc);
+  --color-text-tertiary: light-dark(#6d7788, #929dac);
+  --color-text-inverse: light-dark(#ffffff, #11151c);
+  --color-text-ghost: light-dark(rgb(109 119 136 / 0.55), rgb(146 157 172 / 0.52));
+  --color-text-info: light-dark(#315fca, #8fb1ff);
+  --color-text-danger: light-dark(#b3353f, #ff9299);
+  --color-text-success: light-dark(#237a4a, #75d39b);
+  --color-text-warning: light-dark(#925d14, #efbd6e);
+  --color-text-disabled: light-dark(rgb(23 27 36 / 0.42), rgb(244 247 251 / 0.42));
+
+  --color-border-primary: light-dark(rgb(42 55 75 / 0.34), rgb(200 212 230 / 0.34));
+  --color-border-secondary: light-dark(rgb(42 55 75 / 0.22), rgb(200 212 230 / 0.22));
+  --color-border-tertiary: light-dark(rgb(42 55 75 / 0.12), rgb(200 212 230 / 0.13));
+  --color-border-inverse: light-dark(rgb(255 255 255 / 0.34), rgb(17 21 28 / 0.22));
+  --color-border-ghost: light-dark(rgb(42 55 75 / 0), rgb(200 212 230 / 0));
+  --color-border-info: light-dark(#7d9eea, #567ac8);
+  --color-border-danger: light-dark(#d36a72, #b4545b);
+  --color-border-success: light-dark(#6db18a, #548c69);
+  --color-border-warning: light-dark(#d3a25d, #9b753f);
+  --color-border-disabled: light-dark(rgb(42 55 75 / 0.08), rgb(200 212 230 / 0.08));
+
+  --color-ring-primary: light-dark(rgb(255 107 53 / 0.72), rgb(255 126 82 / 0.72));
+  --color-ring-secondary: light-dark(rgb(77 125 242 / 0.55), rgb(108 145 246 / 0.58));
+  --color-ring-info: rgb(77 125 242 / 0.5);
+  --color-ring-danger: light-dark(rgb(167 61 57 / 0.5), rgb(205 92 88 / 0.5));
+  --color-ring-success: light-dark(rgb(67 116 38 / 0.5), rgb(89 145 48 / 0.5));
+  --color-ring-warning: light-dark(rgb(128 92 31 / 0.5), rgb(168 120 41 / 0.5));
+
+  --border-radius-xs: 4px;
+  --border-radius-sm: 7px;
+  --border-radius-md: 10px;
+  --border-radius-lg: 12px;
+  --border-radius-xl: 16px;
+  --border-radius-full: 9999px;
+  --border-width-regular: 0.5px;
+
+  --shadow-hairline: 0 1px 2px rgb(30 46 68 / 0.06);
+  --shadow-sm: 0 2px 8px rgb(30 46 68 / 0.08), 0 1px 2px rgb(30 46 68 / 0.05);
+  --shadow-md: 0 8px 24px rgb(30 46 68 / 0.11), 0 2px 6px rgb(30 46 68 / 0.06);
+  --shadow-lg: 0 18px 48px rgb(18 31 50 / 0.18), 0 4px 12px rgb(18 31 50 / 0.08);
+
+  /* Anthropic brand accents, reserved for identity and primary actions. */
+  --anthropic-orange: #ff6b35;
+  --anthropic-blue: #4d7df2;
+  --anthropic-green: #37a86b;
+}
+
+html[data-color-mode="light"] { color-scheme: light; }
+html[data-color-mode="dark"] { color-scheme: dark; }
+html[data-color-mode="system"] { color-scheme: light dark; }

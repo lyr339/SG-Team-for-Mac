@@ -1,14 +1,16 @@
 /**
- * 晴天通道消息领域模型（一体化 S1）。
+ * 拾光通道消息领域模型（一体化 S1）。
  *
  * 通道消息队列替代原 qingtian-v2 插件的文件队列（messages.json）：
- * - 出站（用户 → Agent）：群枢主进程 enqueue，内嵌 MCP server 长轮询取出投递
- * - 入站（Agent → 用户）：Agent 调 record_reply 归档，群枢主进程消费进会话时间线
+ * - 出站（用户 → Agent）：拾光主进程 enqueue，内嵌 MCP server 长轮询取出投递
+ * - 入站（Agent → 用户）：Agent 调 record_reply 归档，拾光主进程消费进会话时间线
  * - 活性：MCP server 每次调用刷新 presence，主进程据此投影会话状态
  */
 
 export interface ChannelOutboundMessage {
   id: string
+  /** 所属 TeamRun；用于换轮硬隔离。旧版本迁移行可能缺失。 */
+  runId?: string
   channelId: string
   seq: number
   text: string
@@ -20,7 +22,7 @@ export interface ChannelOutboundMessage {
   silent?: boolean
 }
 
-export const INTERNAL_COLLABORATION_NOTIFICATION_PREFIX = '【群枢内部协作通知】'
+export const INTERNAL_COLLABORATION_NOTIFICATION_PREFIX = '【拾光内部协作通知】'
 
 export function isInternalCollaborationNotificationText(text: string): boolean {
   return text.trimStart().startsWith(INTERNAL_COLLABORATION_NOTIFICATION_PREFIX)
@@ -39,38 +41,11 @@ export interface ChannelInboundReply {
   groupId?: string
   taskId?: string
   files: string[]
-  /** Agent 随回复归档的过程区块（工具调用 / 思考 / 命令执行），透出到会话时间线展示。 */
-  process?: import('./conversation-entry').ProcessBlock[]
-  /** 流式过程回合标识：record_process 上报的 turn，归档后用于从事件表重建 processBlocks。 */
-  turn?: string
   /** false 表示后台/内部同步回复：落库留痕并消费，但不进入用户可见会话时间线。 */
   visible?: boolean
   createdAt: number
   consumedAt?: number
 }
-
-/**
- * 流式过程事件（record_process）：Agent 在回合（turn）内按 block.id upsert
- * 过程区块（running→done 状态翻转），relay 轮询透出为 liveProcess 供前端
- * 实时渲染；record_reply 带同 turn 落地后整批 archived，随后定期清理。
- */
-export interface ChannelProcessEvent {
-  id: string
-  channelId: string
-  turn: string
-  blockId: string
-  seq: number
-  block: import('./conversation-entry').ProcessBlock
-  createdAt: number
-  updatedAt: number
-  archived: boolean
-}
-
-/** 单通道未归档过程事件上限（超出拒绝写入，防止失控堆积）。 */
-export const CHANNEL_PROCESS_EVENTS_MAX_PENDING = 500
-
-/** 已归档过程事件的保留时长：超过即在下一次写入时顺手清理（零额外交互）。 */
-export const CHANNEL_PROCESS_EVENTS_ARCHIVED_TTL_MS = 10 * 60_000
 
 /**
  * 通道活性快照。语义对齐插件 heartbeat/waiting/connection 三文件：
@@ -104,15 +79,61 @@ export const CHANNEL_PRESENCE_STALE_MS = 120_000
  * 「处理中」分相的活性阈值：Agent 取走消息后进入 processing/need_reply_sync，
  * 执行长任务（构建/测试/大型改造）期间按协议不调用任何 MCP 工具，presence
  * 自然停刷——这是证据缺失，不是死亡证据，不能用 120s 心跳窗口误判离线。
- * 该分相放宽到 30 分钟；真死检测由遥测层正面矛盾证据（composer 消失、
- * 转录僵尸判定、租约冲突）承担。
+ * 该分相只放宽到 5 分钟，与 Cursor 遥测的长任务宽限一致。超过窗口后，
+ * 必须由转录增长或有效运行租约等正面证据继续保活；没有新证据就先判离线，
+ * 后续 MCP 调用或 Composer 活动会自动复活。不能把 processing 字段本身当成
+ * 30 分钟存活证明，否则 Agent 已退出后会长期假在线。
  */
-export const CHANNEL_PROCESSING_STALE_MS = 30 * 60_000
+export const CHANNEL_PROCESSING_STALE_MS = 5 * 60_000
 
 /** 连接阶段是否属于「已取走消息、正在处理」（该分相适用宽松活性阈值）。 */
 export function isProcessingPhase(connectionPhase: string): boolean {
   const phase = connectionPhase.toLowerCase()
   return phase.includes('process') || phase.includes('need_reply_sync')
+}
+
+/** Cursor 主进程给出的明确终止相位；与“心跳暂时没刷新”严格区分。 */
+export function isExplicitlyStoppedPhase(connectionPhase: string): boolean {
+  const phase = connectionPhase.toLowerCase()
+  return phase.includes('cursor_stopped') || phase.includes('tool_aborted')
+}
+
+/**
+ * 已取走真实消息的执行租约。
+ *
+ * processing / need_reply_sync 期间 Agent 正在推理、跑命令或生成回复，协议上本来
+ * 就不会持续调用 check_messages，也可能暂时处理不了 team_ping。只要没有
+ * cursor_stopped/tool_aborted 这类正面终止证据，这个相位就必须受保护，不能仅凭
+ * lastSeenAt 超时触发主控接管、角色交接或整轮结束。
+ */
+export function hasInFlightExecution(session: { connectionPhase?: string } | undefined): boolean {
+  const phase = session?.connectionPhase ?? ''
+  return isProcessingPhase(phase) && !isExplicitlyStoppedPhase(phase)
+}
+
+/** 只有正面终止证据才允许自动接管；普通租约超时只能进入 suspected。 */
+export function hasConfirmedRuntimeStop(
+  session: { connectionPhase?: string; runtimeEvidence?: 'active' | 'suspected' | 'stopped' } | undefined
+): boolean {
+  return session?.runtimeEvidence === 'stopped'
+    || isExplicitlyStoppedPhase(session?.connectionPhase ?? '')
+}
+
+/**
+ * 连接阶段是否属于「协议内在岗」：长轮询待命 / 保活间隙 / 处理中 / 等待回复同步。
+ * 大厅与 launcher 的「未待命」判定必须以此为据，不能只认裸 waiting——
+ * waiting 仅在 check_messages 调用栈内为 true，Agent 处理消息、keepalive 推理
+ * 间隙均为 false，裸用会把健康在岗误判成未待命。
+ */
+export function isOnDutyPhase(connectionPhase: string): boolean {
+  const phase = connectionPhase.toLowerCase()
+  return phase.includes('wait') || phase.includes('keepalive') || isProcessingPhase(phase)
+}
+
+/** 会话是否健康在岗（在线且处于协议内相位）。 */
+export function isAgentOnDuty(session: { online: boolean; waiting: boolean; connectionPhase?: string } | undefined): boolean {
+  if (!session?.online) return false
+  return session.waiting || isOnDutyPhase(session.connectionPhase ?? '')
 }
 
 /** check_messages 长轮询间隔（对齐插件 POLL_INTERVAL_MS）。 */
@@ -148,10 +169,12 @@ export const CHANNEL_REPLY_DEDUPE_WINDOW_MS = 5 * 60_000
 export const CHANNEL_OUTBOX_MAX_PENDING = 200
 
 /**
- * 群枢单一 MCP 服务器名（S4）：Cursor 面板只出现一条原生条目，
+ * 拾光单一 MCP 服务器名（S4）：Cursor 面板只出现一条原生条目，
  * 所有工具以 channel_id 参数区分通道。
  */
-export const QUNSHU_MCP_SERVER_NAME = 'qunshu'
+/** Cursor MCP 配置键与握手名称统一显示正式品牌名。 */
+export const SG_TEAM_MCP_SERVER_ID = 'SG Team'
+export const SG_TEAM_MCP_DISPLAY_NAME = 'SG Team'
 /**
  * 合并队首同内容连发（对齐插件 mergeConsecutiveDuplicates 语义）：
  * 队首起连续、内容相同、时间跨度在窗口内的消息合并为一次投递。

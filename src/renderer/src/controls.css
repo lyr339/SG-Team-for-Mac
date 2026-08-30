@@ -1,0 +1,46 @@
+/* 拾光统一表单控件：保留原生 select 语义，仅替换浏览器默认箭头与间距。 */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  /* 文本距左边、箭头距右边统一为 14px；右侧额外预留箭头本身的宽度。 */
+  padding-left: 14px !important;
+  padding-right: 42px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6.25 8 10l4-3.75' stroke='%236D7788' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 14px center !important;
+  background-size: 16px 16px !important;
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+}
+
+select:not([multiple]):hover:not(:disabled) { border-color: var(--accent-border); }
+select:not([multiple]):focus { border-color: var(--accent-border-strong) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--anthropic-orange) 12%, transparent) !important; }
+select:not([multiple]):disabled { cursor: not-allowed; opacity: 0.58; }
+select::-ms-expand { display: none; }
+
+/* 非开关型复选框：统一为亮橙描边方框，保留原生键盘/表单语义。 */
+:where(.cursor-model-dialog, .team-setup-page, .task-page) input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: var(--color-background-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+:where(.cursor-model-dialog, .team-setup-page, .task-page) input[type="checkbox"]:hover:not(:disabled) { border-color: var(--accent); }
+:where(.cursor-model-dialog, .team-setup-page, .task-page) input[type="checkbox"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8.3 2.8 2.8 6.2-6.2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 14px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+:where(.cursor-model-dialog, .team-setup-page, .task-page) input[type="checkbox"]:focus-visible { outline: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--anthropic-orange) 18%, transparent); }

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ChannelMessageService } from '../src/application/channel-message-service'
 import { ChannelMessageRelay } from '../src/application/channel-message-relay'
 import { CHANNEL_PRESENCE_STALE_MS, CHANNEL_PROCESSING_STALE_MS } from '../src/domain/channel-message'
@@ -33,6 +33,28 @@ function baseSnapshot(): DesktopSnapshot {
 }
 
 describe('ChannelMessageRelay', () => {
+
+  it('rejects a delayed dispatcher write from the previous TeamRun after scope switch', () => {
+    const { repository, relay, setNow } = fixture(1_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      relay.resetScope('run-old', 1_000)
+      setNow(10_000)
+      relay.resetScope('run-new', 10_000)
+
+      expect(() => relay.sendMessage({
+        channelId: '1', text: '旧调度器迟到通知', silent: true, scopeRunId: 'run-old'
+      })).toThrowError(/已结束的 TeamRun/)
+      expect(repository.countPendingOutbound('1')).toBe(0)
+      expect(repository.currentScopeRunId()).toBe('run-new')
+    } finally {
+      repository.close()
+    }
+  })
+
+
+
+
   it('routes outbound messages for embedded channels into the SQLite queue', () => {
     const { repository, relay } = fixture()
     try {
@@ -47,6 +69,74 @@ describe('ChannelMessageRelay', () => {
         { role: 'user', text: '开始任务', status: 'complete', source: 'desktop' }
       ])
       expect(snapshot.sessions[0]).toMatchObject({ channelId: '1', deliveryMode: 'queued' })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('emits when presence crosses the stale threshold so the UI flips offline without any data change', () => {
+    vi.useFakeTimers()
+    const { repository, relay, advance } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      repository.touchPresence('1', { lastSeenAt: 10_000, waiting: true, connectionPhase: 'waiting' })
+      // 先让会话进入缓存（在线、等待中）
+      const before = relay.applyTo(baseSnapshot())
+      expect(before.sessions[0]).toMatchObject({ channelId: '1', online: true, status: 'waiting', runtimeEvidence: 'active' })
+
+      let emits = 0
+      const unsubscribe = relay.subscribe(() => { emits += 1 })
+      relay.start(250)
+      // 未越阈值：轮询 tick 不产生 emit
+      advance(60_000)
+      vi.advanceTimersByTime(300)
+      expect(emits).toBe(0)
+      // 越过 waiting 120s 阈值：下一个 tick 必须主动 emit，且快照翻转为离线
+      advance(61_000)
+      vi.advanceTimersByTime(300)
+      expect(emits).toBe(1)
+      const after = relay.applyTo(baseSnapshot())
+      expect(after.sessions[0]).toMatchObject({ online: false, status: 'offline', runtimeEvidence: 'suspected' })
+      // 翻转完成后不再重复 emit
+      vi.advanceTimersByTime(600)
+      expect(emits).toBe(1)
+      unsubscribe()
+    } finally {
+      relay.stop()
+      vi.useRealTimers()
+      repository.close()
+    }
+  })
+
+  it('persists explicit Cursor termination across time and revives only on real MCP activity', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      repository.touchPresence('1', {
+        waiting: false, connectionPhase: 'processing', lastSeenAt: 10_000
+      }, 10_000)
+      expect(relay.applyTo(baseSnapshot()).sessions[0]?.online).toBe(true)
+
+      expect(relay.markCursorStopped('1', 11_000)).toBe(true)
+      setNow(11_100)
+      expect(relay.applyTo(baseSnapshot()).sessions[0]).toMatchObject({
+        status: 'offline', online: false, connected: false, waiting: false,
+        connectionPhase: 'cursor_stopped', runtimeEvidence: 'stopped'
+      })
+
+      // 时间流逝和进程重启读取同一 presence 都不能把明确终态恢复成在线。
+      setNow(12_000)
+      const restarted = new ChannelMessageRelay(repository, () => 12_000)
+      expect(restarted.applyTo(baseSnapshot()).sessions[0]?.online).toBe(false)
+
+      // 只有 Agent 真实重新进入 check_messages 才构成恢复证据。
+      repository.touchPresence('1', {
+        waiting: true, connectionPhase: 'waiting', lastSeenAt: 12_100
+      }, 12_100)
+      setNow(12_100)
+      expect(restarted.applyTo(baseSnapshot()).sessions[0]).toMatchObject({
+        status: 'waiting', online: true, waiting: true
+      })
     } finally {
       repository.close()
     }
@@ -74,7 +164,7 @@ describe('ChannelMessageRelay', () => {
     try {
       repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
       // 系统内部协作通知：即使调用方漏传 silent，也必须静默投递。
-      const accepted = relay.sendMessage({ channelId: '1', text: '【群枢内部协作通知】消息 ID：x' })
+      const accepted = relay.sendMessage({ channelId: '1', text: '【拾光内部协作通知】消息 ID：x' })
       relay.sendMessage({ channelId: '1', text: '用户真实消息' })
       // 两条都进待投递队列（Agent 都能收到）
       expect(repository.listPendingOutbound('1')).toHaveLength(2)
@@ -84,7 +174,7 @@ describe('ChannelMessageRelay', () => {
       expect(snapshot.conversations['1']).toHaveLength(1)
       expect(snapshot.commandReceipts?.[accepted.commandId]).toMatchObject({
         role: 'user',
-        text: '【群枢内部协作通知】消息 ID：x',
+        text: '【拾光内部协作通知】消息 ID：x',
         status: 'complete',
         silent: true
       })
@@ -108,7 +198,7 @@ describe('ChannelMessageRelay', () => {
           'legacy-visible-internal',
           '1',
           1,
-          '【群枢内部协作通知】消息 ID：legacy',
+          '【拾光内部协作通知】消息 ID：legacy',
           1_100,
           1_200
         )
@@ -116,7 +206,7 @@ describe('ChannelMessageRelay', () => {
         legacy.close()
       }
 
-      relay.resetScope(1_000)
+      relay.resetScope('run-a', 1_000)
       expect(relay.applyTo(baseSnapshot()).conversations['1']).toBeUndefined()
     } finally {
       repository.close()
@@ -146,7 +236,7 @@ describe('ChannelMessageRelay', () => {
   it('refuses to send for channels that are not embedded', () => {
     const { repository, relay } = fixture()
     try {
-      expect(() => relay.sendMessage({ channelId: '9', text: 'x' })).toThrowError(/尚未接入群枢内嵌通道/)
+      expect(() => relay.sendMessage({ channelId: '9', text: 'x' })).toThrowError(/尚未接入拾光内嵌通道/)
       expect(() => relay.sendMessage({ channelId: 'abc', text: 'x' })).toThrowError(/通道号无效/)
       repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
       expect(() => relay.sendMessage({ channelId: '1', text: '   ' })).toThrowError(/不能为空/)
@@ -212,28 +302,6 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
-  it('projects archived process blocks onto the conversation entry', () => {
-    const { repository, relay } = fixture()
-    try {
-      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
-      repository.recordReply({
-        channelId: '1',
-        content: '实现完成，测试全绿。',
-        process: [
-          { kind: 'tool', id: 'tool-1', toolName: 'Shell', toolKind: 'command', summary: 'npm test\\n327 passed', status: 'done' },
-          { kind: 'thinking', id: 'th-1', text: '先改仓储再改中继\\n\\n- 再改渲染', status: 'done' }
-        ]
-      }, 500)
-      relay.pollReplies()
-      const snapshot = relay.applyTo(baseSnapshot())
-      const entry = snapshot.conversations['1']?.[0]
-      expect(entry?.processBlocks).toHaveLength(2)
-      expect(entry?.processBlocks?.[0]).toMatchObject({ kind: 'tool', toolName: 'Shell', summary: 'npm test\n327 passed', status: 'done' })
-      expect(entry?.processBlocks?.[1]).toMatchObject({ kind: 'thinking', text: '先改仓储再改中继\n\n- 再改渲染' })
-    } finally {
-      repository.close()
-    }
-  })
 
   it('persists attachments with outbound messages, writes base64 payloads to disk and projects them into the timeline', () => {
     const { repository, relay } = fixture()
@@ -343,104 +411,8 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
-  it('projects live process events into the snapshot and clears them once the reply archives the turn', () => {
-    const { repository, relay } = fixture()
-    try {
-      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
-      repository.touchPresence('1', {
-        pendingReplySyncSince: 50,
-        connectionPhase: 'processing',
-        waiting: false
-      }, 50)
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'tool', id: 'tool-1', toolName: 'Shell', toolKind: 'command', summary: 'npm test\\nwatch', status: 'running' }
-      }, 100)
-      relay.pollReplies()
-      const live = relay.applyTo(baseSnapshot()).liveProcess
-      expect(live?.['1']?.turn).toBe('turn-a')
-      expect(live?.['1']?.blocks).toHaveLength(1)
-      expect(live?.['1']?.blocks[0]).toMatchObject({ id: 'tool-1', summary: 'npm test\nwatch', status: 'running' })
 
-      // 状态翻转实时可见
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'tool', id: 'tool-1', toolName: 'Shell', toolKind: 'command', summary: 'npm test\\nwatch', status: 'done' }
-      }, 200)
-      relay.pollReplies()
-      expect(relay.applyTo(baseSnapshot()).liveProcess?.['1']?.blocks[0]).toMatchObject({ status: 'done' })
 
-      // record_reply 带同 turn 归档：live 消失，时间线条目从已归档事件重建过程块
-      repository.recordReply({ channelId: '1', content: '测试全绿', turn: 'turn-a' }, 300)
-      relay.pollReplies()
-      const snapshot = relay.applyTo(baseSnapshot())
-      expect(snapshot.liveProcess?.['1']).toBeUndefined()
-      expect(snapshot.conversations['1']?.[0]).toMatchObject({ text: '测试全绿' })
-      expect(snapshot.conversations['1']?.[0]?.processBlocks).toHaveLength(1)
-      expect(snapshot.conversations['1']?.[0]?.processBlocks?.[0]).toMatchObject({ id: 'tool-1', summary: 'npm test\nwatch', status: 'done' })
-    } finally {
-      repository.close()
-    }
-  })
-
-  it('does not expose live process events from background-only collaboration turns', () => {
-    const { repository, relay } = fixture()
-    try {
-      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'background-turn',
-        block: { kind: 'thinking', id: 't1', text: '处理团队内部消息', status: 'running' }
-      }, 100)
-      relay.pollReplies()
-      expect(relay.applyTo(baseSnapshot()).liveProcess?.['1']).toBeUndefined()
-
-      repository.touchPresence('1', {
-        pendingReplySyncSince: 150,
-        connectionPhase: 'processing',
-        waiting: false
-      }, 150)
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'user-turn',
-        block: { kind: 'thinking', id: 't2', text: '处理用户消息', status: 'running' }
-      }, 200)
-      relay.pollReplies()
-      expect(relay.applyTo(baseSnapshot()).liveProcess?.['1']).toMatchObject({
-        turn: 'user-turn',
-        blocks: [{ id: 't2', text: '处理用户消息' }]
-      })
-    } finally {
-      repository.close()
-    }
-  })
-
-  it('prefers reply-carried process blocks over turn reconstruction', () => {
-    const { repository, relay } = fixture()
-    try {
-      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'thinking', id: 'th-live', text: '流式块', status: 'running' }
-      }, 100)
-      // reply 直带 process：优先于 turn 重建
-      repository.recordReply({
-        channelId: '1',
-        content: '完成',
-        turn: 'turn-a',
-        process: [{ kind: 'thinking', id: 'th-direct', text: '直带块\\n\\n- 不使用重建块', status: 'done' }]
-      }, 200)
-      relay.pollReplies()
-      const entry = relay.applyTo(baseSnapshot()).conversations['1']?.[0]
-      expect(entry?.processBlocks).toHaveLength(1)
-      expect(entry?.processBlocks?.[0]).toMatchObject({ id: 'th-direct', text: '直带块\n\n- 不使用重建块' })
-    } finally {
-      repository.close()
-    }
-  })
 
   it('shares conversation and session references across unchanged apply rounds (structural sharing)', () => {
     const { repository, relay, setNow } = fixture()
@@ -561,7 +533,7 @@ describe('ChannelMessageRelay', () => {
       repository.touchPresence('1', { waiting: false, connectionPhase: 'processing', lastSeenAt: 1_000 }, 1_000)
       setNow(1_000 + CHANNEL_PROCESSING_STALE_MS + 1)
       const snapshot = relay.applyTo(baseSnapshot())
-      expect(snapshot.sessions[0]).toMatchObject({ status: 'offline', online: false })
+      expect(snapshot.sessions[0]).toMatchObject({ status: 'offline', online: false, runtimeEvidence: 'suspected' })
     } finally {
       repository.close()
     }
@@ -604,7 +576,7 @@ describe('ChannelMessageRelay', () => {
     try {
       repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
       repository.recordReply({ channelId: '1', content: '上一轮的旧回复' }, 1_000)
-      relay.resetScope(10_000)
+      relay.resetScope('run-next', 10_000)
       relay.pollReplies()
       expect(relay.applyTo(baseSnapshot()).conversations['1']).toBeUndefined()
       repository.recordReply({ channelId: '1', content: '新域回复' }, 11_000)
@@ -615,37 +587,6 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
-  it('hydrates current-scope visible conversation history after a relay restart', () => {
-    const { repository, relay, setNow } = fixture()
-    try {
-      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
-      relay.resetScope(1_000)
-      setNow(1_100)
-      relay.sendMessage({ channelId: '1', text: '继续当前任务' })
-      relay.sendMessage({ channelId: '1', text: '内部消息', silent: true })
-      repository.recordProcessEvent({
-        channelId: '1',
-        turn: 'turn-a',
-        block: { kind: 'tool', id: 'tool-1', toolName: 'Shell', toolKind: 'command', summary: 'npm test', status: 'done' }
-      }, 1_200)
-      repository.recordReply({ channelId: '1', content: '已完成验证', turn: 'turn-a' }, 1_300)
-      relay.pollReplies()
-      expect(repository.listUnconsumedReplies()).toHaveLength(0)
-
-      const restarted = new ChannelMessageRelay(repository, () => 1_500)
-      restarted.resetScope(1_000)
-      restarted.pollReplies()
-      const entries = restarted.applyTo(baseSnapshot()).conversations['1']
-      expect(entries?.map((entry) => [entry.role, entry.text])).toEqual([
-        ['user', '继续当前任务'],
-        ['assistant', '已完成验证']
-      ])
-      expect(entries?.[1]?.processBlocks?.[0]).toMatchObject({ id: 'tool-1', status: 'done' })
-      expect(repository.listUnconsumedReplies()).toHaveLength(0)
-    } finally {
-      repository.close()
-    }
-  })
 
   it('does not hydrate previous-scope outbound messages', () => {
     const { repository, relay } = fixture()
@@ -653,7 +594,7 @@ describe('ChannelMessageRelay', () => {
       repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
       repository.enqueueOutbound('1', '上一轮用户消息', 1_000)
       repository.recordReply({ channelId: '1', content: '上一轮回复' }, 1_000)
-      relay.resetScope(10_000)
+      relay.resetScope('run-next', 10_000)
       expect(relay.applyTo(baseSnapshot()).conversations['1']).toBeUndefined()
     } finally {
       repository.close()

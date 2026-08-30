@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { AgentSkillCatalogEntry } from '../../../domain/agent-skill'
+import type { CursorModelSelection } from '../../../domain/cursor-model'
 import type { TeamRoleTemplate } from '../../../domain/team-control'
 import type {
   CreateTeamInput,
@@ -9,6 +10,15 @@ import type {
 } from '../../../shared/desktop-api'
 import { AgentAvatar } from '../AgentAvatar'
 import { ResizableColumns } from '../ResizableColumns'
+import {
+  cursorModelParameterLabel,
+  cursorModelParameterValue,
+  cursorModelSelectionFromOption,
+  fixedCursorModelContext,
+  normalizeCursorModelSelection,
+  withCursorModelMaxMode,
+  withCursorModelParameter
+} from '../cursor-model-selection'
 import { defaultSkillIdsForRole } from './team-skill-defaults'
 
 interface TeamSetupPageProps {
@@ -33,8 +43,22 @@ function defaultRole(index: number): string {
   return 'specialist'
 }
 
+function defaultModelSelection(draft: TeamSetupDraft): CursorModelSelection | undefined {
+  const models = draft.cursorModels ?? []
+  return cursorModelSelectionFromOption(models.find((model) => model.selected) ?? models[0])
+}
+
 function initialMembers(draft: TeamSetupDraft): CreateTeamMemberInput[] {
-  if (draft.initialMembers?.length) return structuredClone(draft.initialMembers)
+  const modelSelection = defaultModelSelection(draft)
+  if (draft.initialMembers?.length) return structuredClone(draft.initialMembers).map((member) => ({
+    ...member,
+    modelSelection: member.modelSelection
+      ? (() => {
+          const option = (draft.cursorModels ?? []).find((model) => model.modelId === member.modelSelection?.modelId)
+          return option ? normalizeCursorModelSelection(member.modelSelection, option) : modelSelection
+        })()
+      : modelSelection
+  }))
   return draft.channels.slice(0, Math.min(3, draft.channels.length)).map((channel, index) => {
     const roleTemplateKey = defaultRole(index)
     const template = templateOf(draft, roleTemplateKey)
@@ -42,7 +66,8 @@ function initialMembers(draft: TeamSetupDraft): CreateTeamMemberInput[] {
       channelId: channel.channelId,
       roleTemplateKey,
       avatarId: draft.avatarIds[index % draft.avatarIds.length] ?? template.avatarId,
-      skillIds: defaultSkillIdsForRole(draft.skills, template)
+      skillIds: defaultSkillIdsForRole(draft.skills, template),
+      modelSelection
     }
   })
 }
@@ -63,7 +88,7 @@ function nextRoleKey(members: CreateTeamMemberInput[]): string {
 function synthesizeChannel(channelId: string): TeamSetupChannel {
   return {
     channelId,
-    displayName: `Qunshu CH-${channelId}`,
+    displayName: `SG Team CH-${channelId}`,
     status: 'offline',
     online: false,
     waiting: false,
@@ -97,6 +122,9 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
   }, [draft.channels, extraChannels])
   const selected = members.find((member) => member.channelId === selectedChannelId) ?? members[0]
   const selectedTemplate = selected ? templateOf(draft, selected.roleTemplateKey) : undefined
+  const selectedModel = selected?.modelSelection
+    ? (draft.cursorModels ?? []).find((model) => model.modelId === selected.modelSelection?.modelId)
+    : undefined
   const leadCount = members.filter((member) => member.roleTemplateKey === 'lead').length
   const reviewerCount = members.filter((member) => member.roleTemplateKey === 'reviewer').length
   const memberValidation = members.length === 0
@@ -110,6 +138,10 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
     () => new Map(allChannels.map((channel) => [channel.channelId, channel])),
     [allChannels]
   )
+  const visibleChannels = members.flatMap((member) => {
+    const channel = channelById.get(member.channelId)
+    return channel ? [channel] : []
+  })
   const validation = memberValidation
   const visibleInstalledSkills = useMemo(() => {
     const query = skillQuery.trim().toLocaleLowerCase('zh-CN')
@@ -136,7 +168,8 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
       channelId,
       roleTemplateKey,
       avatarId,
-      skillIds: defaultSkillIdsForRole(draft.skills, template)
+      skillIds: defaultSkillIdsForRole(draft.skills, template),
+      modelSelection: defaultModelSelection(draft)
     }
   }
 
@@ -199,6 +232,38 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
     }))
   }
 
+  const changeModel = (channelId: string, modelId: string): void => {
+    const option = (draft.cursorModels ?? []).find((model) => model.modelId === modelId)
+    updateMember(channelId, (member) => ({
+      ...member,
+      modelSelection: cursorModelSelectionFromOption(option)
+    }))
+  }
+
+  const changeModelParameter = (channelId: string, parameterId: string, value: string): void => {
+    updateMember(channelId, (member) => {
+      if (!member.modelSelection) return member
+      const option = (draft.cursorModels ?? []).find((model) => model.modelId === member.modelSelection?.modelId)
+      if (!option) return member
+      return {
+        ...member,
+        modelSelection: withCursorModelParameter(member.modelSelection, option, parameterId, value)
+      }
+    })
+  }
+
+  const changeModelMaxMode = (channelId: string, enabled: boolean): void => {
+    updateMember(channelId, (member) => {
+      if (!member.modelSelection) return member
+      const option = (draft.cursorModels ?? []).find((model) => model.modelId === member.modelSelection?.modelId)
+      if (!option) return member
+      return {
+        ...member,
+        modelSelection: withCursorModelMaxMode(member.modelSelection, option, enabled)
+      }
+    })
+  }
+
   const create = async (): Promise<void> => {
     if (validation || busy) return
     setBusy(true)
@@ -227,8 +292,8 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
         storageKey="team.setup"
       >
         <aside className="team-setup-channels">
-          <header><strong>可用通道</strong><span>{allChannels.length}</span></header>
-          <div>{allChannels.map((channel) => {
+          <header><strong>团队通道</strong><span>{members.length}</span></header>
+          <div>{visibleChannels.map((channel) => {
             const member = members.find((candidate) => candidate.channelId === channel.channelId)
             const template = member ? templateOf(draft, member.roleTemplateKey) : undefined
             return (
@@ -289,13 +354,77 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
         </main>
 
         <aside className="team-setup-inspector">
-          <header><strong>角色与技能</strong><span>{selected ? `CH-${selected.channelId}` : '未选择席位'}</span></header>
+          <header><strong>席位配置</strong><span>{selected ? `CH-${selected.channelId}` : '未选择席位'}</span></header>
           {selected && selectedTemplate ? (
             <div className="team-setup-inspector__scroll">
               <section className="team-role-summary">
                 <div><AgentAvatar avatarId={selected.avatarId} name={selectedTemplate.name} crowned={selectedTemplate.key === 'lead'} size="lg" /><span><strong>{selectedTemplate.name}</strong><small>{selectedTemplate.slotName}</small></span></div>
                 <p>{selectedTemplate.mission}</p>
                 <div className="team-role-capabilities">{selectedTemplate.capabilities.map((capability) => <i key={capability}>{capability}</i>)}</div>
+              </section>
+
+              <section className="team-model-picker">
+                <header><strong>Cursor 模型</strong><span>只作用于 CH-{selected.channelId} 新会话</span></header>
+                {(draft.cursorModels ?? []).length ? (
+                  <>
+                    <label className="team-model-picker__select">
+                      <span>模型</span>
+                      <select
+                        aria-label={`CH-${selected.channelId} Cursor 模型`}
+                        value={selected.modelSelection?.modelId ?? ''}
+                        onChange={(event) => changeModel(selected.channelId, event.target.value)}
+                      >
+                        {(draft.cursorModels ?? []).map((model) => (
+                          <option key={model.modelId} value={model.modelId}>
+                            {model.displayName}{model.selected ? ' · Cursor 当前' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {selectedModel?.parameterDefinitions.length ? (
+                      <div className="team-model-picker__parameters">
+                        {selectedModel.parameterDefinitions.map((definition) => {
+                          const current = cursorModelParameterValue(selected.modelSelection, selectedModel, definition)
+                          return (
+                            <label key={definition.id} title={definition.tooltip}>
+                              <span>{cursorModelParameterLabel(definition)}</span>
+                              <select
+                                aria-label={`CH-${selected.channelId} ${cursorModelParameterLabel(definition)}`}
+                                value={current}
+                                onChange={(event) => changeModelParameter(selected.channelId, definition.id, event.target.value)}
+                              >
+                                {definition.values.map((value) => (
+                                  <option key={value.value} value={value.value}>
+                                    {value.displayName}{value.increasesCost ? ' · High Cost' : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+                    {selectedModel?.supportsMaxMode && selected.modelSelection ? (
+                      <label className="team-model-picker__max-mode">
+                        <span>MAX Mode</span>
+                        <input
+                          type="checkbox"
+                          checked={selected.modelSelection.maxMode === true}
+                          onChange={(event) => changeModelMaxMode(selected.channelId, event.target.checked)}
+                        />
+                        <small>{selected.modelSelection.maxMode ? '最大上下文 · High Cost' : '标准上下文'}</small>
+                      </label>
+                    ) : null}
+                    {fixedCursorModelContext(selectedModel, selected.modelSelection) ? (
+                      <div className="team-model-picker__fixed">
+                        <span>上下文</span><b>{fixedCursorModelContext(selectedModel, selected.modelSelection)}</b>
+                      </div>
+                    ) : null}
+                    <p>创建时写入该 Composer 的独立配置，不改变 Cursor 全局模型。</p>
+                  </>
+                ) : (
+                  <p className="is-empty">Cursor 模型目录尚未读取；本次沿用 Cursor 当前选择。</p>
+                )}
               </section>
 
               <section className="team-avatar-picker">
@@ -357,7 +486,7 @@ export function TeamSetupPage({ draft, onCreate, onCancel }: TeamSetupPageProps)
       </ResizableColumns>
 
       <footer className="team-setup-footer">
-        <div><strong>已选 <b>{members.length}</b> / 可用 {allChannels.length}</strong><span className={validation ? 'is-error' : ''}>{validation || (reviewerCount ? '只会创建已选席位；Cursor 会话由你手动发起，群枢自动接管' : '只会创建已选席位；未配置质量角色时，验收异常交给你')}</span></div>
+        <div><strong>团队通道 <b>{members.length}</b></strong><span className={validation ? 'is-error' : ''}>{validation || (reviewerCount ? '每个 Cursor 会话使用各自模型配置' : '未配置质量角色时，验收异常交给你')}</span></div>
         {error ? <em>{error}</em> : null}
         <button onClick={onCancel}>取消</button>
         <button disabled={Boolean(validation) || busy} onClick={() => void create()}>

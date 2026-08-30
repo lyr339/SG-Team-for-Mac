@@ -53,6 +53,16 @@ describe('shareSnapshotStructure', () => {
     expect(merged.conversations['1']).toBe(shared)
   })
 
+  it('实时回答状态按通道保持结构共享', () => {
+    const live = {
+      id: 'bubble-1', channelId: '1', text: '正在生成', status: 'streaming' as const,
+      startedAt: 10, updatedAt: 20
+    }
+    const previous = snapshotOf({ liveAgentResponses: { '1': live } })
+    const incoming = snapshotOf({ liveAgentResponses: { '1': live }, updatedAt: 2 })
+    expect(shareSnapshotStructure(previous, incoming).liveAgentResponses?.['1']).toBe(live)
+  })
+
   it('初始快照（updatedAt=0）与同一对象直接放行', () => {
     const initial = snapshotOf({ updatedAt: 0 })
     const incoming = snapshotOf({ sessions: [sessionOf('1', '任务')], updatedAt: 1 })

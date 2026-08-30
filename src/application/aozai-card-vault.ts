@@ -9,6 +9,8 @@ interface AozaiCardFile {
   updatedAt: number
 }
 
+export const AOZAI_CREDENTIAL_UNREADABLE_MESSAGE = '已保存的奥仔卡密读取失败；应用升级期间系统加密钥匙发生变化，请重新粘贴卡密后验证'
+
 export class AozaiCardVault {
   constructor(
     readonly path: string,
@@ -38,7 +40,11 @@ export class AozaiCardVault {
     this.assertEncryption()
     const card = this.load()
     if (!card) throw new Error('尚未保存奥仔卡密')
-    return this.crypto.decrypt(Buffer.from(card.encryptedCode, 'base64'))
+    try {
+      return this.crypto.decrypt(Buffer.from(card.encryptedCode, 'base64'))
+    } catch {
+      throw new Error(AOZAI_CREDENTIAL_UNREADABLE_MESSAGE)
+    }
   }
 
   clear(): void {

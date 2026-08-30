@@ -1,10 +1,12 @@
 import type { TeamFailoverRecord } from './team-failover'
 
 export type TeamHandoffCandidateKind = 'standby' | 'member'
+export type TeamHandoffMode = 'role_rebind' | 'lead_authority'
 
 export interface TeamHandoffCandidate {
   agentSessionId: string
   kind: TeamHandoffCandidateKind
+  mode: TeamHandoffMode
   channelId: string
   slotId?: string
   roleName: string
@@ -28,7 +30,10 @@ export interface ManualTeamHandoffInput {
 }
 
 export interface ManualTeamHandoffResult {
-  failover: TeamFailoverRecord
+  mode: TeamHandoffMode
+  failover?: TeamFailoverRecord
   messageId: string
   vacatedSlotId?: string
+  actingLeadSlotId?: string
+  recoveredTaskIds?: string[]
 }

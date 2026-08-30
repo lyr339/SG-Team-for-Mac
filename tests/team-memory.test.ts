@@ -62,7 +62,48 @@ function fixture() {
   return { team, tasks, collaboration, memory, bundle, task: task!, message, role, slot, agent }
 }
 
-describe('Qunshu governed memory', () => {
+describe('SG Team governed memory', () => {
+  it('grants run-memory review to the acting lead after real authority transfer', () => {
+    const data = fixture()
+    try {
+      data.team.updateRunGoal(data.bundle.run.id, '验证临时主控记忆权限')
+      data.team.beginLaunch(data.bundle.run.id, 200, 'binding-key-memory-lead')
+      data.team.setActingLead({ runId: data.bundle.run.id, slotId: data.slot('builder').id, at: 300 })
+      const reviewer = data.agent('reviewer')
+      const actingIdentity = data.team.resolveAgentRuntimeIdentity(
+        `alpha:ch-${data.slot('builder').channelId}:generation123`, data.bundle.run.id
+      )
+      const demotedIdentity = data.team.resolveAgentRuntimeIdentity(
+        `alpha:ch-${data.slot('lead').channelId}:generation123`, data.bundle.run.id
+      )
+      const actingLead = new TeamMemoryAgentService(
+        data.memory, data.collaboration, { ...actingIdentity, slotId: actingIdentity.slotId! }
+      )
+      const demotedLead = new TeamMemoryAgentService(
+        data.memory, data.collaboration, { ...demotedIdentity, slotId: demotedIdentity.slotId! }
+      )
+      const proposal = reviewer.propose({
+        scope: 'run', kind: 'decision', title: '交接后的决策', content: '由临时主控审核。',
+        sources: [{ type: 'task', ref: data.task.id, label: '现有任务' }],
+        clientProposalId: 'acting-lead-memory-review'
+      })
+
+      expect(actingLead.canReview()).toBe(true)
+      expect(actingLead.search({ includeProposed: true })).toEqual([
+        expect.objectContaining({ id: proposal.id })
+      ])
+      expect(actingLead.review({ memoryId: proposal.id, decision: 'accept' })).toMatchObject({
+        status: 'accepted', reviewedBy: { type: 'agent', slotId: data.slot('builder').id }
+      })
+      expect(demotedLead.canReview()).toBe(false)
+    } finally {
+      data.memory.close()
+      data.collaboration.close()
+      data.tasks.close()
+      data.team.close()
+    }
+  })
+
   it('keeps a sourced proposal out of context until an independent reviewer accepts it', () => {
     const data = fixture()
     try {

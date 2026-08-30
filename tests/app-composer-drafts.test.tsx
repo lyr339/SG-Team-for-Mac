@@ -30,7 +30,7 @@ function makeSession(channelId: string, displayName: string): AgentSession {
 }
 
 const snapshot: DesktopSnapshot = {
-  connection: { state: 'connected', endpoint: 'qunshu://test', attempt: 0, lastError: '' },
+  connection: { state: 'connected', endpoint: 'shiguang://test', attempt: 0, lastError: '' },
   sessions: [
     makeSession('2', '后端实现 · CH-2'),
     makeSession('5', '专项实现 · CH-5')
@@ -52,6 +52,17 @@ function stubScrollApis(): void {
   // jsdom 未实现元素滚动 API；会话时间线的贴底滚动在测试中置为空操作
   if (!window.Element.prototype.scrollTo) {
     window.Element.prototype.scrollTo = () => {}
+  }
+}
+
+function stubMatchMedia(): void {
+  // jsdom 未实现 matchMedia；App 的 Windows 标题栏主题同步 effect 只需恒亮色桩
+  if (!window.matchMedia) {
+    window.matchMedia = (() => ({
+      matches: false,
+      addEventListener: () => {},
+      removeEventListener: () => {}
+    })) as unknown as typeof window.matchMedia
   }
 }
 
@@ -162,6 +173,7 @@ describe('App 输入框草稿与附件按通道隔离', () => {
     ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     sendMessage.mockClear()
     stubScrollApis()
+    stubMatchMedia()
     installDesktopMock()
     container = document.createElement('div')
     document.body.appendChild(container)
