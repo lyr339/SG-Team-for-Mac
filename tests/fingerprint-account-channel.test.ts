@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { FingerprintAccountChannel } from '../src/infrastructure/cursor/fingerprint/fingerprint-account-channel'
+import { describe, expect, it, vi } from 'vitest'
+import { WebSocketServer } from 'ws'
+import {
+  defaultSocketFactory,
+  FingerprintAccountChannel
+} from '../src/infrastructure/cursor/fingerprint/fingerprint-account-channel'
 import type { FingerprintBrowser } from '../src/infrastructure/cursor/fingerprint/fingerprint-browser'
 
 /**
@@ -543,5 +547,41 @@ describe('FingerprintAccountChannel', () => {
     await harness.channel.prepareRefresh()
     const navigate = harness.socket.sent.find((entry) => entry.method === 'Page.navigate')
     expect(navigate?.params.url).toMatch(/^https:\/\/cursor\.com\/dashboard\?qtdash=\d+$/)
+  })
+})
+
+describe('defaultSocketFactory（生产 ws 装配）', () => {
+  it('握手完成前的发送排队，open 后按 FIFO 到达（Windows 冷启动 readyState 0 回归）', async () => {
+    // 真实 ws 服务端回显 CDP 响应；修复前 ws v8 在 CONNECTING 状态 send 直接抛
+    // "WebSocket is not open: readyState 0 (CONNECTING)"，本用例同步即炸。
+    const server = new WebSocketServer({ port: 0 })
+    const received: string[] = []
+    server.on('connection', (ws) => {
+      ws.on('message', (raw) => {
+        received.push(String(raw))
+        ws.send(JSON.stringify({ id: (JSON.parse(String(raw)) as { id: number }).id, result: {} }))
+      })
+    })
+    const address = server.address() as { port: number }
+    try {
+      const socket = defaultSocketFactory(`ws://127.0.0.1:${address.port}/devtools/browser/test`)
+      const messages: string[] = []
+      socket.onMessage((data) => messages.push(data))
+      const errors: string[] = []
+      socket.onError((error) => errors.push(error.message))
+      // 握手必然未完成（同一同步块内）——两条发送都进队列
+      socket.send(JSON.stringify({ id: 1, method: 'Target.createTarget', params: {} }))
+      socket.send(JSON.stringify({ id: 2, method: 'Page.enable', params: {} }))
+      // open 后冲刷：服务端按序收到两条，且响应回流到 onMessage
+      await vi.waitFor(() => {
+        expect(received.map((entry) => (JSON.parse(entry) as { method: string }).method))
+          .toEqual(['Target.createTarget', 'Page.enable'])
+        expect(messages).toHaveLength(2)
+      })
+      expect(errors).toEqual([])
+      socket.close()
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   })
 })

@@ -133,10 +133,31 @@ interface ChannelSession {
   sessionId: string
 }
 
-function defaultSocketFactory(wsUrl: string): FingerprintCdpSocket {
+/**
+ * 生产 CDP socket 工厂：ws v8 在 CONNECTING 状态 send 直接抛
+ * "WebSocket is not open: readyState 0 (CONNECTING)"——握手完成前的发送必须排队，
+ * open 事件后按 FIFO 冲刷（Roxy 冷启动时 CDP 端点握手耗时可观，首条
+ * Target.createTarget 几乎必然早于 open；Windows 全新装机实测命中）。
+ * 握手失败/连接关闭时队列作废：pending 由 CdpConnection 的 onError/onClose 统一拒绝。
+ */
+export function defaultSocketFactory(wsUrl: string): FingerprintCdpSocket {
   const socket = new WebSocket(wsUrl, { handshakeTimeout: 10_000 })
+  const queuedSends: string[] = []
+  let open = false
+  socket.on('open', () => {
+    open = true
+    for (const data of queuedSends.splice(0)) socket.send(data)
+  })
+  socket.on('close', () => {
+    // 关闭后到达的发送交给 ws 抛 CLOSED 错误（会话已失效的正确语义）
+    queuedSends.splice(0)
+    open = false
+  })
   return {
-    send: (data) => socket.send(data),
+    send: (data) => {
+      if (open) socket.send(data)
+      else queuedSends.push(data)
+    },
     close: () => socket.close(),
     onMessage: (handler) => socket.on('message', (raw) => handler(String(raw))),
     onError: (handler) => socket.on('error', handler),
