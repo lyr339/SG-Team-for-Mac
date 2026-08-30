@@ -35,6 +35,14 @@ describe('theme surface contracts', () => {
     expect(lobby).toMatch(/\.lobby-launch__button\s*\{[^}]*--lobby-launch-button-bg:\s*var\(--accent\)/)
   })
 
+  it('centers the Windows topbar navigation without changing the macOS traffic-light inset', () => {
+    expect(styles).toContain('html[data-platform="darwin"] { --window-control-safe-left: 84px; }')
+    expect(styles).toContain('html[data-platform="win32"] { --window-control-safe-right: 138px; }')
+    expect(styles).toMatch(/\.topbar\s*\{[^}]*padding:\s*0 16px 0 calc\(16px \+ var\(--window-control-safe-left\)\)/)
+    expect(styles).toMatch(/\.topbar__actions\s*\{[^}]*margin-right:\s*var\(--window-control-safe-right\)/)
+    expect(styles).not.toMatch(/\.topbar\s*\{[^}]*padding:[^;}]*--window-control-safe-right/)
+  })
+
   it('defines distinct model-provider identities without reusing status colors', () => {
     for (const provider of ['anthropic', 'openai', 'google', 'xai', 'moonshot', 'zhipu', 'cursor']) {
       expect(styles).toContain(`--provider-${provider}-fg`)

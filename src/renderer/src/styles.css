@@ -324,7 +324,9 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
-  padding: 0 calc(16px + var(--window-control-safe-right)) 0 calc(16px + var(--window-control-safe-left));
+  /* Keep the grid centered in the window. macOS still reserves its left traffic-light inset;
+     Windows reserves the right overlay only on the actions, so it cannot move the middle nav. */
+  padding: 0 16px 0 calc(16px + var(--window-control-safe-left));
   background: color-mix(in srgb, var(--color-background-primary) 84%, transparent);
   border-bottom: 1px solid var(--color-border-tertiary);
   box-shadow: 0 1px 10px rgb(35 52 77 / 0.06);
@@ -365,7 +367,7 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 .topbar-nav button.is-active::after { opacity: 1; transform: scaleX(1); }
 .topbar-nav button svg { width: 16px; height: 16px; }
 
-.topbar__actions { min-width: 0; justify-self: end; display: flex; align-items: center; gap: 8px; overflow: visible; }
+.topbar__actions { min-width: 0; justify-self: end; display: flex; align-items: center; gap: 8px; margin-right: var(--window-control-safe-right); overflow: visible; }
 .appearance-control { position: relative; flex: 0 0 auto; display: grid; place-items: center; }
 .appearance-button {
   width: 36px; height: 36px;
@@ -1290,7 +1292,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 }
 
 @media (max-width: 1050px) {
-  .topbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; padding: 0 calc(12px + var(--window-control-safe-right)) 0 calc(12px + var(--window-control-safe-left)); }
+  .topbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; padding: 0 12px 0 calc(12px + var(--window-control-safe-left)); }
   .desktop-body { grid-template-columns: minmax(0, 1fr); }
   .overview-page__scroll { padding: 14px 18px 28px; }
   .task-page__scroll { padding: 14px 16px 26px; }
@@ -1300,7 +1302,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 }
 
 @media (max-width: 760px) {
-  .topbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; padding: 0 calc(8px + var(--window-control-safe-right)) 0 calc(8px + var(--window-control-safe-left)); }
+  .topbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; padding: 0 8px 0 calc(8px + var(--window-control-safe-left)); }
   .connection-chip__label, .connection-chip__online { display: none; }
   .connection-chip { min-width: 42px; padding: 0 9px; justify-content: center; gap: 6px; }
   .brand strong { display: none; }
