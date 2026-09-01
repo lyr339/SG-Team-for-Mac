@@ -12,7 +12,6 @@ import {
 } from './format'
 import { planAttachmentIntake } from './attachment-rules'
 import { ContextUsagePopover } from './ContextUsagePopover'
-import { SessionUsageStat } from './SessionUsageStat'
 import { modelProviderClass, modelProviderLabel } from './model-provider'
 import { EraseIcon, ExportIcon, HandoffIcon, SessionBindingIcon } from './UiIcons'
 
@@ -389,7 +388,6 @@ export function ComposerWorkbench({
           />
         </div>
         <div className="composer-topbar__right">
-          <SessionUsageStat usage={session.usage} bound={bound} />
           <span className={`composer-binding-status ${bound ? 'is-bound' : 'is-unbound'}`} title={session.telemetry?.detail}>
             <SessionBindingIcon bound={bound} />
             {bound ? 'Cursor 已绑定' : '会话待绑定'}

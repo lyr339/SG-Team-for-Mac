@@ -8,6 +8,7 @@ import { AgentAvatar } from './AgentAvatar'
 import { MessageContent } from './MessageContent'
 import { ProcessTurnCard } from './ProcessTurnCard'
 import { LiveAgentResponse } from './LiveAgentResponse'
+import { SessionUsageStat } from './SessionUsageStat'
 import { suggestedActionsFromText } from './process-turn-view'
 
 interface SessionWorkspaceProps {
@@ -551,6 +552,9 @@ export function SessionWorkspace({
               ? formatRelativeTime(session.lastSeenAt)
               : 'Agent 当前离线'}
           </p>
+        </div>
+        <div className="workspace-header__usage">
+          <SessionUsageStat usage={session.usage} bound={session.telemetry?.state === 'bound'} />
         </div>
       </header>
 

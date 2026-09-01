@@ -16,6 +16,7 @@
 
   --font-sans: "Anthropic Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --font-numeric: "SG Numeric", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 
   --font-weight-normal: 400;
   --font-weight-medium: 500;
