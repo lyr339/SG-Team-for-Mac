@@ -19,6 +19,8 @@ function sessionUsage(value: unknown, composerId: string): CursorSessionUsage | 
   const cacheWriteTokens = finiteNonNegative(row.cacheWriteTokens)
   const estimatedCostUsd = finiteNonNegative(row.estimatedCostUsd)
   const lastTurnAt = finiteNonNegative(row.lastTurnAt)
+  // 请求级采样基线：缺失（事件通道会话/旧版本快照）= undefined，存在则随快照恢复
+  const contextLastUsed = finiteNonNegative(row.contextLastUsed)
   if (
     turns === undefined || inputTokens === undefined || outputTokens === undefined
     || cacheReadTokens === undefined || cacheWriteTokens === undefined
@@ -34,7 +36,8 @@ function sessionUsage(value: unknown, composerId: string): CursorSessionUsage | 
     cacheWriteTokens: Math.floor(cacheWriteTokens),
     estimatedCostUsd,
     pricedModel: row.pricedModel.slice(0, 120),
-    lastTurnAt: Math.floor(lastTurnAt)
+    lastTurnAt: Math.floor(lastTurnAt),
+    ...(contextLastUsed !== undefined ? { contextLastUsed: Math.floor(contextLastUsed) } : {})
   }
 }
 

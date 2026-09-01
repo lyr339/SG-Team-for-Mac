@@ -35,4 +35,25 @@ describe('CursorUsageStore', () => {
     }}))
     expect(store.load('run-1')).toEqual({ valid: expect.objectContaining({ composerId: 'valid', turns: 1 }) })
   })
+
+  it('请求级采样基线随快照往返（跨重启延续），旧版本快照缺字段不受影响', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'shiguang-usage-')), 'usage.json')
+    const store = new CursorUsageStore(path)
+    store.save('run-1', {
+      'sampled': {
+        composerId: 'sampled', turns: 3, inputTokens: 90_000, outputTokens: 0,
+        cacheReadTokens: 0, cacheWriteTokens: 0,
+        estimatedCostUsd: 0.27, pricedModel: 'Claude Sonnet', lastTurnAt: 9_000,
+        contextLastUsed: 31_000
+      },
+      'event-based': {
+        composerId: 'event-based', turns: 1, inputTokens: 1_000, outputTokens: 200,
+        cacheReadTokens: 0, cacheWriteTokens: 0,
+        estimatedCostUsd: 0.006, pricedModel: 'GPT', lastTurnAt: 8_000
+      }
+    })
+    const loaded = store.load('run-1')
+    expect(loaded['sampled']?.contextLastUsed).toBe(31_000)
+    expect(loaded['event-based']?.contextLastUsed).toBeUndefined()
+  })
 })

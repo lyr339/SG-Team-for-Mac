@@ -1,5 +1,6 @@
 import {
   accumulateUsage,
+  applyRequestSample,
   applyTurnUsage,
   type CursorSessionUsage,
   type CursorUsageEvent,
@@ -64,8 +65,10 @@ export class CursorUsageTracker {
   private readonly now: () => number
   private readonly persistSnapshot: (snapshot: CursorUsageSnapshot) => void
   private readonly sessions = new Map<string, CursorSessionUsage>()
-  /** 轮询通道已覆盖的 composer：事件通道对其让位（防双计，见 recordTurnSnapshot）。 */
+  /** 快照通道已覆盖的 composer：事件通道对其让位（防双计）。 */
   private readonly polledComposers = new Set<string>()
+  /** 请求级采样已接管的 composer：快照与事件通道均让位（口径一致，双计防护）。 */
+  private readonly requestSampledComposers = new Set<string>()
   private readonly listeners = new Set<(snapshot: CursorUsageSnapshot) => void>()
   private notifyTimer?: ReturnType<typeof setTimeout>
   private disposed = false
@@ -85,25 +88,30 @@ export class CursorUsageTracker {
   /** 记录一回合用量并调度快照推送（节流合并密集回合）。 */
   record(event: CursorUsageEvent): void {
     if (this.disposed || !this.collecting) return
-    // 轮询通道已接管该 composer（CDP 在场、实时快照更全）：事件只作降级兜底，
-    // 双通道同时记账会重复计数。轮询中断（CDP 退出）后事件自动恢复接管。
-    if (this.polledComposers.has(event.composerId)) return
+    // 轮询/采样通道已接管该 composer（CDP 在场、实时读数更全）：事件只作降级
+    // 兜底，双通道同时记账会重复计数。轮询中断（CDP 退出）后事件自动恢复接管。
+    if (this.polledComposers.has(event.composerId)
+      || this.requestSampledComposers.has(event.composerId)
+      // 基线存在 = 采样曾接管（含跨进程重启恢复的会话），事件通道持续让位
+      || this.sessions.get(event.composerId)?.contextLastUsed !== undefined) return
     const model = this.resolveModelForComposer(event.composerId)
     this.sessions.set(event.composerId, accumulateUsage(
       this.sessions.get(event.composerId),
       event,
       model ?? ''
     ))
-    this.persist()
     this.scheduleNotify()
   }
 
   /**
    * CDP 轮询快照通道（turnTokenUsage 同源值，生成中单调增长）：
-   * 覆盖语义见 domain applyTurnUsage。接管后事件通道对该 composer 让位。
+   * 覆盖语义见 domain applyTurnUsage。接管后事件通道对该 composer 让位；
+   * 请求级采样已接管的 composer 同样让位（口径一致，双通道会重复计费）。
    */
   recordTurnSnapshot(event: CursorUsageEvent): void {
     if (this.disposed || !this.collecting) return
+    if (this.requestSampledComposers.has(event.composerId)
+      || this.sessions.get(event.composerId)?.contextLastUsed !== undefined) return
     const model = this.resolveModelForComposer(event.composerId)
     this.sessions.set(event.composerId, applyTurnUsage(
       this.sessions.get(event.composerId),
@@ -111,7 +119,24 @@ export class CursorUsageTracker {
       model ?? ''
     ))
     this.polledComposers.add(event.composerId)
-    this.persist()
+    this.scheduleNotify()
+  }
+
+  /**
+   * 请求级上下文采样通道（长会话主通道）：contextTokensUsed 随每次模型请求
+   * 刷新，算法见 domain applyRequestSample。接管后快照与事件通道均让位
+   * （单向不可逆，run 切换才重置——基线持久化于快照，跨重启延续不双计）。
+   */
+  recordRequestSample(sample: { composerId: string; used: number; occurredAt: number }): void {
+    if (this.disposed || !this.collecting) return
+    const model = this.resolveModelForComposer(sample.composerId)
+    this.sessions.set(sample.composerId, applyRequestSample(
+      this.sessions.get(sample.composerId),
+      sample,
+      model ?? ''
+    ))
+    this.polledComposers.add(sample.composerId)
+    this.requestSampledComposers.add(sample.composerId)
     this.scheduleNotify()
   }
 
@@ -124,6 +149,7 @@ export class CursorUsageTracker {
     if (this.disposed) return
     this.sessions.clear()
     this.polledComposers.clear()
+    this.requestSampledComposers.clear()
     this.persist()
     this.scheduleNotify()
   }
@@ -161,6 +187,9 @@ export class CursorUsageTracker {
     this.notifyTimer = setTimeout(() => {
       this.notifyTimer = undefined
       if (this.disposed) return
+      // 持久化随通知同拍节流（生产 800ms）：请求级采样在 150ms inspect 循环上
+      // 高频到达，同步落盘必须合并（织梦同款防抖语义，dispose/reset 兜底写盘）。
+      this.persist()
       const snapshot = this.getSnapshot()
       for (const listener of this.listeners) {
         try {

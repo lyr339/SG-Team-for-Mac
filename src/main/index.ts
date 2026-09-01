@@ -276,17 +276,32 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     cursorTelemetry,
     channelMessageRelay,
     cursorCdpCreator,
-    // CDP 轮询捎带的回合用量（turnTokenUsage 同源值）：与 turnEnded 事件通道
-    // 互补，实时性来自 inspect 的既有节流循环 + writeSignal 事件驱动。
+    // CDP 轮询捎带的用量（同一 evidence 两条数据源，分派互斥防双计）：
+    // - contextTokensUsed（请求级采样，长会话主通道）：每次模型请求实时刷新，
+    //   持续对话模式下回合永不结束、turnTokenUsage 恒空，这是唯一活水源；
+    // - 四桶（turnTokenUsage 回合结束窗口）：仅在无 context 读数的会话兜底。
+    // 实时性来自 inspect 的既有节流循环 + writeSignal 事件驱动，零新增开销。
     // 经 ref 间接引用：tracker 在本服务之后创建。
-    (input) => cursorUsageTrackerRef?.recordTurnSnapshot({
-      composerId: input.composerId,
-      inputTokens: input.usage.inputTokens,
-      outputTokens: input.usage.outputTokens,
-      cacheReadTokens: input.usage.cacheReadTokens,
-      cacheWriteTokens: input.usage.cacheWriteTokens,
-      occurredAt: input.observedAt
-    })
+    (input) => {
+      const tracker = cursorUsageTrackerRef
+      if (!tracker) return
+      if (input.usage.contextTokensUsed) {
+        tracker.recordRequestSample({
+          composerId: input.composerId,
+          used: input.usage.contextTokensUsed,
+          occurredAt: input.observedAt
+        })
+        return
+      }
+      tracker.recordTurnSnapshot({
+        composerId: input.composerId,
+        inputTokens: input.usage.inputTokens,
+        outputTokens: input.usage.outputTokens,
+        cacheReadTokens: input.usage.cacheReadTokens,
+        cacheWriteTokens: input.usage.cacheWriteTokens,
+        occurredAt: input.observedAt
+      })
+    }
   )
   desktopSessionService.startWatcher()
   // 过程流事件驱动层：Cursor 模型写入即时推送（写信号触发 inspect），

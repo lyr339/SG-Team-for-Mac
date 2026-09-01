@@ -107,6 +107,70 @@ describe('CursorUsageTracker', () => {
     tracker.dispose()
   })
 
+  it('请求级采样通道：织梦式全额累计 + 快照/事件通道均让位（三通道防双计）', () => {
+    const tracker = buildTracker({ 'composer-1': 'kimi-k3' })
+    // 首样本建基线（零累计）；used 增长 = 新请求全额累计
+    tracker.recordRequestSample({ composerId: 'composer-1', used: 25_000, occurredAt: 1_000 })
+    tracker.recordRequestSample({ composerId: 'composer-1', used: 25_000, occurredAt: 1_500 })
+    tracker.recordRequestSample({ composerId: 'composer-1', used: 30_000, occurredAt: 2_000 })
+    // 采样接管后：快照（turnTokenUsage 窗口）与事件（turnEnded）都让位
+    tracker.recordTurnSnapshot(event({ inputTokens: 30_000, outputTokens: 500 }))
+    tracker.record(event({ inputTokens: 30_000, outputTokens: 500 }))
+    const usage = tracker.getSnapshot()['composer-1']!
+    expect(usage.turns).toBe(1)
+    expect(usage.inputTokens).toBe(30_000)
+    expect(usage.outputTokens).toBe(0)
+    expect(usage.contextLastUsed).toBe(30_000)
+    tracker.dispose()
+  })
+
+  it('跨重启恢复的基线延续采样接管：事件与快照通道继续让位', () => {
+    // 模拟 run 中途进程重启：快照恢复（含 contextLastUsed），内存接管标记丢失
+    const tracker = new CursorUsageTracker({
+      resolveModelForComposer: () => 'kimi-k3',
+      notifyDelayMs: 10,
+      initialSnapshot: {
+        'composer-1': {
+          composerId: 'composer-1', turns: 1, inputTokens: 30_000, outputTokens: 0,
+          cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.09,
+          pricedModel: 'Claude Sonnet', lastTurnAt: 1_000, contextLastUsed: 30_000
+        }
+      }
+    })
+    // 重启后事件先于采样到达（observer binding 早于 inspect 首拍）：基线在场 → 让位
+    tracker.record(event({ inputTokens: 30_000, outputTokens: 500, occurredAt: 2_000 }))
+    tracker.recordTurnSnapshot(event({ inputTokens: 31_000, outputTokens: 600, occurredAt: 2_500 }))
+    // 采样继续：同值零累计、增长全额记账
+    tracker.recordRequestSample({ composerId: 'composer-1', used: 30_000, occurredAt: 3_000 })
+    tracker.recordRequestSample({ composerId: 'composer-1', used: 36_000, occurredAt: 4_000 })
+    const usage = tracker.getSnapshot()['composer-1']!
+    expect(usage.turns).toBe(2)
+    expect(usage.inputTokens).toBe(66_000)
+    expect(usage.outputTokens).toBe(0)
+    tracker.dispose()
+  })
+
+  it('快照通道未被采样接管时保持原有覆盖语义（让位不自我误伤）', () => {
+    const tracker = buildTracker({ 'composer-1': 'claude-sonnet-4-5' })
+    // 连续快照：回合内单调覆盖语义不受请求级让位检查影响
+    tracker.recordTurnSnapshot(event({ inputTokens: 1_000, outputTokens: 100 }))
+    tracker.recordTurnSnapshot(event({ inputTokens: 3_000, outputTokens: 200, occurredAt: 2_000 }))
+    const usage = tracker.getSnapshot()['composer-1']!
+    expect(usage.inputTokens).toBe(3_000)
+    expect(usage.turns).toBe(1)
+    tracker.dispose()
+  })
+
+  it('reset 清除采样接管标记：新 run 重新建立基线', () => {
+    const tracker = buildTracker({ 'composer-1': 'kimi-k3' })
+    tracker.recordRequestSample({ composerId: 'composer-1', used: 30_000, occurredAt: 1_000 })
+    tracker.reset()
+    // reset 后事件通道可重新接管（未被采样标记挡住）
+    tracker.record(event({ inputTokens: 5_000 }))
+    expect(tracker.getSnapshot()['composer-1']?.inputTokens).toBe(5_000)
+    tracker.dispose()
+  })
+
   it('reset 清除轮询接管标记：事件通道可重新接管', () => {
     const tracker = buildTracker({ 'composer-1': 'claude-sonnet-4-5' })
     tracker.recordTurnSnapshot(event({ inputTokens: 5_000, outputTokens: 300 }))

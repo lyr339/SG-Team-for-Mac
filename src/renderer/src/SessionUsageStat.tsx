@@ -115,7 +115,7 @@ export function SessionUsageStat({ usage }: SessionUsageStatProps): React.JSX.El
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={ready
-          ? `真实计费 token ${tokens}，等价 API 费用估算 ${cost}，${usage!.turns} 回合，查看明细`
+          ? `真实计费 token ${tokens}，等价 API 费用估算 ${cost}，${usage!.turns} 次请求，查看明细`
           : '用量待读取'}
         onClick={() => setOpen((value) => !value)}
       >
@@ -148,7 +148,7 @@ export function SessionUsageStat({ usage }: SessionUsageStatProps): React.JSX.El
             <>
               <div className="usage-popover__summary">
                 <b>{tokens} <small>tokens</small></b>
-                <span>{cost} · {usage!.turns} 回合</span>
+                <span>{cost} · {usage!.turns} 次请求</span>
               </div>
               <div className="usage-breakdown-bar" aria-hidden="true">
                 {segments.filter((segment) => segment.tokens > 0).map((segment) => (
@@ -170,7 +170,7 @@ export function SessionUsageStat({ usage }: SessionUsageStatProps): React.JSX.El
               </ul>
               <footer>
                 <span>{usage!.pricedModel}</span>
-                <span>基于当前API定价实时计算</span>
+                <span>输入按请求全额累计 · 基于当前API定价实时估算</span>
               </footer>
             </>
           ) : (

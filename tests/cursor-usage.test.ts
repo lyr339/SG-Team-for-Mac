@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   accumulateUsage,
+  applyRequestSample,
   estimateTurnCostUsd,
   formatCostUsd,
   formatTokenCount,
   priceForModel,
   totalUsageTokens,
+  type CursorSessionUsage,
   type CursorUsageEvent
 } from '../src/domain/cursor-usage'
 
@@ -90,6 +92,78 @@ describe('accumulateUsage', () => {
     // 100 in + 50 out @ sonnet ≈ $0.00105；200 in + 150 out + 5 cw @ gpt-5 ≈ $0.00176
     expect(usage.estimatedCostUsd).toBeGreaterThan(0.0027)
     expect(usage.estimatedCostUsd).toBeLessThan(0.0029)
+  })
+})
+
+describe('applyRequestSample（请求级采样，织梦算法）', () => {
+  const sample = (used: number, occurredAt = 1_000) => ({ composerId: 'comp-1', used, occurredAt })
+
+  it('首样本只建立基线：零累计（监控前的存量上下文不计入本 run）', () => {
+    const usage = applyRequestSample(undefined, sample(25_750), 'kimi-k3')
+    expect(usage.turns).toBe(0)
+    expect(usage.inputTokens).toBe(0)
+    expect(usage.estimatedCostUsd).toBe(0)
+    expect(usage.contextLastUsed).toBe(25_750)
+  })
+
+  it('同值样本零累计（同一请求内的重复采样去重），时间戳仍推进', () => {
+    let usage = applyRequestSample(undefined, sample(25_750, 1_000), 'kimi-k3')
+    usage = applyRequestSample(usage, sample(25_750, 2_000), 'kimi-k3')
+    expect(usage.turns).toBe(0)
+    expect(usage.inputTokens).toBe(0)
+    expect(usage.lastTurnAt).toBe(2_000)
+  })
+
+  it('used 增长 = 新请求：按当时完整上下文全额累计（25K → 30K 记 30K，非增量 5K）', () => {
+    let usage = applyRequestSample(undefined, sample(25_750), 'kimi-k3')
+    usage = applyRequestSample(usage, sample(30_000, 2_000), 'kimi-k3')
+    expect(usage.turns).toBe(1)
+    expect(usage.inputTokens).toBe(30_000)
+    expect(usage.contextLastUsed).toBe(30_000)
+    // 30K × $3/MTok（kimi 未命中价格表 → Sonnet 档估算）= $0.09
+    expect(usage.estimatedCostUsd).toBeCloseTo(0.09, 4)
+  })
+
+  it('回落（上下文压缩）同样是新请求：按压缩后上下文全额计费', () => {
+    let usage = applyRequestSample(undefined, sample(30_000), 'kimi-k3')
+    usage = applyRequestSample(usage, sample(30_000, 2_000), 'kimi-k3')
+    usage = applyRequestSample(usage, sample(18_000, 3_000), 'kimi-k3')
+    usage = applyRequestSample(usage, sample(21_000, 4_000), 'kimi-k3')
+    expect(usage.turns).toBe(2)
+    expect(usage.inputTokens).toBe(18_000 + 21_000)
+  })
+
+  it('连续请求累计 + 模型变化标记混合计价', () => {
+    let usage = applyRequestSample(undefined, sample(25_000), 'claude-sonnet-4-5')
+    usage = applyRequestSample(usage, sample(30_000, 2_000), 'claude-sonnet-4-5')
+    usage = applyRequestSample(usage, sample(35_000, 3_000), 'gpt-5')
+    expect(usage.turns).toBe(2)
+    expect(usage.inputTokens).toBe(65_000)
+    expect(usage.pricedModel).toBe('Mixed models')
+  })
+
+  it('非法样本（负值/NaN）原样返回不记账', () => {
+    let usage = applyRequestSample(undefined, sample(25_000), 'kimi-k3')
+    usage = applyRequestSample(usage, sample(-1, 2_000), 'kimi-k3')
+    usage = applyRequestSample(usage, sample(Number.NaN, 3_000), 'kimi-k3')
+    expect(usage.turns).toBe(0)
+    expect(usage.inputTokens).toBe(0)
+    expect(usage.contextLastUsed).toBe(25_000)
+  })
+
+  it('跨重启基线延续：恢复的 contextLastUsed 使首样本不重复记账', () => {
+    // run 中途进程重启，快照恢复（contextLastUsed=30K 已持久化）；重启后首样本
+    // 与基线同值 → 零累计；后续增长正常记账
+    const restored: CursorSessionUsage = {
+      composerId: 'comp-1', turns: 1, inputTokens: 30_000, outputTokens: 0,
+      cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.09,
+      pricedModel: 'Claude Sonnet', lastTurnAt: 1_000, contextLastUsed: 30_000
+    }
+    let usage = applyRequestSample(restored, sample(30_000, 5_000), 'claude-sonnet-4-5')
+    expect(usage.inputTokens).toBe(30_000)
+    usage = applyRequestSample(usage, sample(36_000, 6_000), 'claude-sonnet-4-5')
+    expect(usage.turns).toBe(2)
+    expect(usage.inputTokens).toBe(66_000)
   })
 })
 

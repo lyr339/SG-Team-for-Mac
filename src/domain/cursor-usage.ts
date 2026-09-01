@@ -35,7 +35,7 @@ export interface CursorUsageEvent {
 /** 当前 TeamRun 内的会话级累积用量（按 composerId 本地持久化）。 */
 export interface CursorSessionUsage {
   composerId: string
-  /** 已完成的回合数。 */
+  /** 已完成的计费请求次数（请求级采样按请求计数；事件通道按回合计数——单通道独占，不混计）。 */
   turns: number
   inputTokens: number
   outputTokens: number
@@ -46,6 +46,11 @@ export interface CursorSessionUsage {
   /** 估算时使用的模型（命中价格表的展示名）。 */
   pricedModel: string
   lastTurnAt: number
+  /**
+   * 请求级采样基线：上次观测到的 contextTokensUsed。持久化于快照——跨进程重启
+   * 基线延续，重启后首样本不会把存量上下文误记一次。undefined = 尚未建立基线。
+   */
+  contextLastUsed?: number
 }
 
 /** composerId → 累积用量。 */
@@ -207,6 +212,55 @@ export function applyTurnUsage(
   }
 }
 
+/**
+ * 请求级上下文采样（长会话实时通道，算法经织梦 Cursor 生产验证）。
+ *
+ * 背景：持续对话模式下回合永不结束（agent 循环 check_messages），turnEnded 及其
+ * turnTokenUsage 永不产生——事件/快照两条通道在长会话里恒为零。而 composerData.
+ * contextTokensUsed 随每次模型请求实时刷新，是唯一可用的请求级活水源。
+ *
+ * 计账语义（Cursor 按请求对完整上下文计费）：
+ * - 首样本：只建立基线，零累计（监控开始前的存量上下文不属于本 run 的账）；
+ * - used 不变：同一请求内的重复采样，零累计；
+ * - used 变化（无论方向，含上下文压缩回落）：新请求发生，按当时完整上下文
+ *   全额累计 input 与成本（无 cache 拆分，全价是上界估算——如实呈现）。
+ * 口径与事件通道一致：turnEnded 的 inputTokens 本就是回合内全部请求的累计
+ * （2026-09-01 事故实测：单回合 input 6.2M，远超 1M 上下文上限，实证口径）。
+ */
+export function applyRequestSample(
+  current: CursorSessionUsage | undefined,
+  sample: { composerId: string; used: number; occurredAt: number },
+  pricedModel: string
+): CursorSessionUsage {
+  const base = current ?? {
+    composerId: sample.composerId,
+    turns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    estimatedCostUsd: 0,
+    pricedModel,
+    lastTurnAt: 0
+  }
+  if (!Number.isFinite(sample.used) || sample.used < 0) return base
+  const touched = {
+    ...base,
+    contextLastUsed: sample.used,
+    lastTurnAt: Math.max(base.lastTurnAt, sample.occurredAt)
+  }
+  // 首样本建基线 / 同值去重：零累计
+  if (base.contextLastUsed === undefined || sample.used === base.contextLastUsed) return touched
+  const price = priceForModel(pricedModel)
+  return {
+    ...touched,
+    turns: base.turns + 1,
+    inputTokens: base.inputTokens + sample.used,
+    estimatedCostUsd: base.estimatedCostUsd + sample.used / 1e6 * price.inputPerM,
+    pricedModel: base.turns > 0 && base.pricedModel !== price.label ? 'Mixed models' : price.label
+  }
+}
+
 /** 展示用：token 数缩写（12.2K / 1.3M / 2.1B）。 */
 export function formatTokenCount(tokens: number): string {
   if (tokens >= 1e9) {
@@ -233,5 +287,9 @@ export function formatCostUsd(costUsd: number): string {
 }
 
 export function cursorUsageDetail(usage: CursorSessionUsage): string {
-  return `本轮 TeamRun 真实计费 token（${usage.pricedModel}，${usage.turns} 回合）：输入 ${usage.inputTokens.toLocaleString()}（含缓存读 ${usage.cacheReadTokens.toLocaleString()}、缓存写 ${usage.cacheWriteTokens.toLocaleString()}）· 输出 ${usage.outputTokens.toLocaleString()}；总计 ${totalUsageTokens(usage).toLocaleString()}；等价 API 成本估算 ${formatCostUsd(usage.estimatedCostUsd)}（基于当前 API 定价实时计算）；团队结束后冻结，下轮启动时清零`
+  const sampleBased = usage.contextLastUsed !== undefined
+  const breakdown = sampleBased
+    ? `输入 ${usage.inputTokens.toLocaleString()}（按请求全额累计）`
+    : `输入 ${usage.inputTokens.toLocaleString()}（含缓存读 ${usage.cacheReadTokens.toLocaleString()}、缓存写 ${usage.cacheWriteTokens.toLocaleString()}）· 输出 ${usage.outputTokens.toLocaleString()}`
+  return `本轮 TeamRun 计费 token（${usage.pricedModel}，${usage.turns} 次请求）：${breakdown}；总计 ${totalUsageTokens(usage).toLocaleString()}；等价 API 成本估算 ${formatCostUsd(usage.estimatedCostUsd)}（基于当前 API 定价实时估算）；团队结束后冻结，下轮启动时清零`
 }

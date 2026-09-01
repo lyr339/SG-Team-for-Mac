@@ -480,23 +480,32 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
           responseId = String(status && (status.lastAiBubbleId || status.chatGenerationUUID) || '');
         }
         // 用量捎带：turnTokenUsage（本回合真实计费，与 turnEnded 事件同源）+
-        // contextTokensUsed/Limit（上下文窗口实时占用）。全为 0 时省略字段，
-        // 保持 evidence 指纹稳定（零会话不触发无谓的快照推送）。
+        // contextTokensUsed/Limit（上下文窗口实时占用）。四桶全零时仍输出 context
+        // 读数——持续对话模式下回合永不结束、四桶恒空，contextTokensUsed 是唯一
+        // 的请求级活水源（每次模型请求实时刷新）；两者皆无才省略，保持 evidence
+        // 指纹稳定（零会话不触发无谓的快照推送）。
         let usage = null;
         try {
           const data = bridge.getComposerData ? bridge.getComposerData(composerId) : undefined;
           const t = data && data.turnTokenUsage;
           const toNum = function (v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+          const ctx = data ? toNum(data.contextTokensUsed) : 0;
           if (t) {
             const i = toNum(t.inputTokens), o = toNum(t.outputTokens),
               r = toNum(t.cacheReadTokens), w = toNum(t.cacheWriteTokens);
-            if (i || o || r || w) {
+            if (i || o || r || w || ctx) {
               usage = {
                 inputTokens: i, outputTokens: o, cacheReadTokens: r, cacheWriteTokens: w,
-                contextTokensUsed: toNum(data.contextTokensUsed) || undefined,
+                contextTokensUsed: ctx || undefined,
                 contextTokenLimit: toNum(data.contextTokenLimit) || undefined
               };
             }
+          } else if (ctx) {
+            usage = {
+              inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+              contextTokensUsed: ctx,
+              contextTokenLimit: toNum(data.contextTokenLimit) || undefined
+            };
           }
         } catch (e) {}
         // 过程块由 sgTeamProcess 写后事件直接推送；这里仅保留状态/正文兜底，
