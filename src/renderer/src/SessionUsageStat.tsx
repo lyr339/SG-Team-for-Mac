@@ -165,7 +165,7 @@ export function SessionUsageStat({ usage, bound = false }: SessionUsageStatProps
               </ul>
               <footer>
                 <span>{usage!.pricedModel}</span>
-                <span>本轮 TeamRun 累计 · 团队结束冻结</span>
+                <span>输入+输出+缓存读/写合计 · 结束后冻结</span>
               </footer>
             </>
           ) : (

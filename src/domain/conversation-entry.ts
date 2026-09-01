@@ -125,6 +125,32 @@ export function conversationTextIdentity(text: string): string {
   return stripRedactionMarkers(normalizeEscapedNewlines(text)).replace(/\s+/g, ' ').trim()
 }
 
+/** 常见图片扩展名 → 规范 MIME（file.type 缺失时的兜底映射）。 */
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  avif: 'image/avif',
+  ico: 'image/x-icon'
+}
+
+/**
+ * 附件 MIME 兜底嗅探：来源端（剪贴板/部分应用的拖放）可能给出空 type 或
+ * 万金油 application/octet-stream——图片会被投递层当成二进制文件塞成 Base64
+ * 文本墙（模型看到乱码，正是「图片被识别成完全不相干内容」的事故形态）。
+ * 扩展名能确认是图片时纠正 MIME；其余情况原样返回。
+ */
+export function sniffedAttachmentMimeType(name: string, mimeType?: string): string {
+  const declared = (mimeType ?? '').trim().toLowerCase()
+  if (declared && declared !== 'application/octet-stream') return declared
+  const extension = name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? ''
+  return IMAGE_MIME_BY_EXTENSION[extension] ?? (declared || 'application/octet-stream')
+}
+
 /** 消息附件 */
 export interface MessageAttachment {
   id: string

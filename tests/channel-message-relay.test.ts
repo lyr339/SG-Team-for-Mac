@@ -543,6 +543,32 @@ describe('ChannelMessageRelay', () => {
   })
 
 
+  it('corrects typeless image attachments to a real image mime before persistence (octet-stream wall guard)', () => {
+    const { repository, relay } = fixture()
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      // 拖放/剪贴板来源常见形态：file.type 为空 → 万金油 octet-stream + .png 扩展名。
+      // 不纠正的话投递层会把它当二进制文件内联成 Base64 文本墙（模型看到乱码）。
+      relay.sendMessage({
+        channelId: '1',
+        text: '看图',
+        attachments: [{ id: 'a1', name: 'clipboard-image-1.png', mimeType: 'application/octet-stream', size: 14, data: Buffer.from('png-bytes-x').toString('base64') }]
+      })
+      const [queued] = repository.listPendingOutbound('1')
+      expect(queued?.attachments?.[0]?.mimeType).toBe('image/png')
+      // 路径引用附件同样受益（大文件不落盘路径）。
+      relay.sendMessage({
+        channelId: '1',
+        text: '路径图',
+        attachments: [{ id: 'a2', name: 'big.jpg', mimeType: '', size: 3, path: '/tmp/big.jpg' }]
+      })
+      const pending = repository.listPendingOutbound('1')
+      expect(pending[1]?.attachments?.[0]?.mimeType).toBe('image/jpeg')
+    } finally {
+      repository.close()
+    }
+  })
+
   it('persists attachments with outbound messages, writes base64 payloads to disk and projects them into the timeline', () => {
     const { repository, relay } = fixture()
     try {

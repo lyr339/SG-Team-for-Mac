@@ -21,12 +21,20 @@ function event(overrides: Partial<CursorUsageEvent> = {}): CursorUsageEvent {
 }
 
 describe('priceForModel', () => {
+  it('未命中价格表时如实显示真实模型名 + 估算档位（跨回合重解析费率一致）', () => {
+    const auto = priceForModel('auto')
+    expect(auto.label).toBe('auto · Sonnet 档估算')
+    expect(auto.inputPerM).toBe(3)
+    expect(priceForModel(auto.label).inputPerM).toBe(auto.inputPerM)
+    expect(priceForModel('composer-2.5').label).toBe('composer-2.5 · Sonnet 档估算')
+  })
+
   it('按子串匹配常用模型并落到默认档', () => {
     expect(priceForModel('claude-sonnet-4-5').label).toBe('Claude Sonnet')
     expect(priceForModel('CLAUDE-OPUS-4-1').label).toBe('Claude Opus')
     expect(priceForModel('gpt-5.1').label).toBe('GPT-5')
     expect(priceForModel('gemini-2.5-pro').label).toBe('Gemini')
-    expect(priceForModel('auto').label).toContain('默认')
+    expect(priceForModel(undefined).label).toBe('默认（Sonnet 档）')
     expect(priceForModel(undefined).label).toContain('默认')
   })
 

@@ -23,9 +23,17 @@ const ATTACHMENT_EXTENSION_WHITELIST = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico', 'avif'
 ])
 
-/** 单文件准入：类型白名单（image/* 或扩展名）+ 单文件大小上限。返回拒绝文案或 undefined。 */
+/** 模型侧无法解码的图片格式（Claude/GPT 仅收 jpeg/png/gif/webp；HEIC 是 macOS 相册默认格式）。 */
+const UNDECODABLE_IMAGE_EXTENSIONS = new Set(['heic', 'heif', 'tiff', 'tif'])
+
+/** 单文件准入：类型白名单（image/* 或扩展名）+ 模型可解码性 + 单文件大小上限。返回拒绝文案或 undefined。 */
 export function attachmentFileRejection(file: AttachmentCandidate): string | undefined {
   const extension = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : ''
+  // 不可解码格式先于白名单判定：无论 file.type 是否缺失，都给出可操作的转换指引
+  // 而不是笼统的「类型不支持」（HEIC 是 macOS 相册默认格式，最常见的踩坑点）。
+  if (UNDECODABLE_IMAGE_EXTENSIONS.has(extension) || /image\/(heic|heif|tiff)/.test(file.type)) {
+    return `「${file.name}」是 ${extension.toUpperCase()} 格式，模型无法解码；请先导出为 PNG/JPG 后再发送`
+  }
   const typeAllowed = file.type.startsWith('image/') || ATTACHMENT_EXTENSION_WHITELIST.has(extension)
   if (!typeAllowed) return `「${file.name}」类型不支持（仅支持图片与常见文本/代码文件）`
   if (file.size > MAX_ATTACHMENT_FILE_BYTES) {

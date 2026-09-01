@@ -912,16 +912,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 .composer-tool { min-height: 32px; display: flex; align-items: center; gap: 5px; padding: 0 9px; color: var(--text-soft); background: transparent; border: 0; border-radius: 8px; font-size: var(--fs-11); font-weight: 600; white-space: nowrap; transition: color 130ms ease, background 130ms ease; }
 .composer-tool:hover:not(:disabled) { color: var(--accent); background: var(--accent-wash); }
 .composer-tool:disabled { color: var(--faint); }
-.composer-topbar .composer-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--line); }
-/* 绑定状态（Orbit 静默状态点）：状态色只落在一枚小圆点上，文字走中性色——
-   色彩承载语义而非装饰；高度与顶栏其它元素对齐。 */
-.composer-binding-status { min-height: 30px; display: inline-flex; align-items: center; gap: 7px; padding: 0 2px; color: var(--color-text-secondary); font-size: var(--fs-10); font-weight: 600; white-space: nowrap; }
-.composer-binding-status i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--color-text-ghost); }
-.composer-binding-status.is-bound { color: var(--color-text-secondary); }
-.composer-binding-status.is-bound i { background: var(--color-text-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-text-success) 14%, transparent); }
-.composer-binding-status.is-unbound { color: var(--color-text-tertiary); }
-.composer-binding-status.is-unbound i { background: var(--color-text-ghost); }
-.composer-queue-status { position: relative; min-height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; color: var(--text-soft); background: var(--canvas); border: 1px solid var(--color-border-secondary); border-radius: 8px; font-size: var(--fs-10); white-space: nowrap; outline: none; }
+.composer-topbar .composer-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--line); }.composer-queue-status { position: relative; min-height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; color: var(--text-soft); background: var(--canvas); border: 1px solid var(--color-border-secondary); border-radius: 8px; font-size: var(--fs-10); white-space: nowrap; outline: none; }
 .composer-queue-status:hover, .composer-queue-status:focus-visible { color: var(--color-text-info); background: var(--color-background-info); border-color: var(--color-border-info); }
 .composer-queue-status > svg { width: 15px; height: 15px; }
 .composer-queue-status > span:first-of-type { display: inline-flex; align-items: baseline; gap: 4px; }
@@ -955,7 +946,6 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 }
 @container composer (max-width: 540px) {
   .composer-topbar__right { gap: 2px; }
-  .composer-binding-status { padding-inline: 7px; }
   .composer-duration { padding-inline: 8px; }
 }
 

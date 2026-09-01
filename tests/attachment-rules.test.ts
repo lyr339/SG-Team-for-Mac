@@ -8,6 +8,17 @@ import {
 const file = (name: string, size: number, type = ''): { name: string; size: number; type: string } => ({ name, size, type })
 
 describe('attachmentFileRejection', () => {
+  it('拒绝模型无法解码的图片格式并给出转换指引', () => {
+    expect(attachmentFileRejection({ name: 'IMG_4032.heic', size: 1_000_000, type: 'image/heic' }))
+      .toMatch(/HEIC 格式，模型无法解码.+导出为 PNG\/JPG/)
+    expect(attachmentFileRejection({ name: 'photo.heif', size: 1_000_000, type: '' }))
+      .toMatch(/HEIF 格式，模型无法解码/)
+    expect(attachmentFileRejection({ name: 'scan.tiff', size: 1_000_000, type: 'image/tiff' }))
+      .toMatch(/TIFF 格式，模型无法解码/)
+    expect(attachmentFileRejection({ name: 'shot.png', size: 1_000_000, type: 'image/png' }))
+      .toBeUndefined()
+  })
+
   it('接受白名单扩展名与图片类型', () => {
     expect(attachmentFileRejection(file('notes.md', 100))).toBeUndefined()
     expect(attachmentFileRejection(file('app.tsx', 100))).toBeUndefined()

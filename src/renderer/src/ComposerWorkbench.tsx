@@ -11,6 +11,7 @@ import {
   statusLabel
 } from './format'
 import { planAttachmentIntake } from './attachment-rules'
+import { sniffedAttachmentMimeType } from '../../domain/conversation-entry'
 import { ContextUsagePopover } from './ContextUsagePopover'
 import { modelProviderClass, modelProviderLabel } from './model-provider'
 import { EraseIcon, ExportIcon, HandoffIcon } from './UiIcons'
@@ -189,13 +190,16 @@ function readFileAsAttachment(file: File, index: number): Promise<MessageAttachm
     reader.onload = () => {
       const data = reader.result as string
       const name = attachmentNameFor(file, index)
+      // file.type 在部分拖放/剪贴板来源下为空或万金油 octet-stream——按扩展名
+      // 嗅探纠正，否则图片会被投递层当成二进制文本墙（模型看到乱码）。
+      const mimeType = sniffedAttachmentMimeType(name, file.type)
       const attachment: MessageAttachment = {
         id: crypto.randomUUID(),
         name,
-        mimeType: file.type || 'application/octet-stream',
+        mimeType,
         size: file.size,
         data: data.split(',')[1] ?? '',
-        previewUrl: file.type.startsWith('image/') ? data : undefined
+        previewUrl: mimeType.startsWith('image/') ? data : undefined
       }
       resolve(attachment)
     }
@@ -244,7 +248,6 @@ export function ComposerWorkbench({
     : profile
       ? `${formatExecutionProfile(profile)}；这是 Cursor 当前 Composer 运行配置，不代表历史回复的底层模型`
       : 'Cursor 当前 Composer 运行配置尚未读取到'
-  const bound = session.telemetry?.state === 'bound'
   const queuedOffline = session.deliveryMode === 'queued' && !session.online
   const projectLabel = projectChipLabel(session, currentProjectName)
   const stateLabel = agentState(session)
@@ -388,10 +391,6 @@ export function ComposerWorkbench({
           />
         </div>
         <div className="composer-topbar__right">
-          <span className={`composer-binding-status ${bound ? 'is-bound' : 'is-unbound'}`} title={session.telemetry?.detail}>
-            <i aria-hidden="true" />
-            {bound ? 'Cursor 已绑定' : '会话待绑定'}
-          </span>
           <QueueStatus session={session} />
           <span className="composer-duration" title={session.online ? '当前 Cursor 会话累计运行时长' : 'Cursor Agent 离线后已截止'}>
             <ClockIcon />

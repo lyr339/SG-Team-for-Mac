@@ -17,6 +17,7 @@ import {
 import {
   conversationTextIdentity,
   normalizeEscapedNewlines,
+  sniffedAttachmentMimeType,
   type ConversationEntry,
   type MessageAttachment
 } from '../domain/conversation-entry'
@@ -219,7 +220,8 @@ export class ChannelMessageRelay {
         String(attachment.name || `附件 ${index + 1}`).replace(/[/\\]/g, '_').slice(0, 120),
         usedNames
       )
-      const mimeType = String(attachment.mimeType || 'application/octet-stream').slice(0, 120)
+      // MIME 兜底嗅探：扩展名可确认图片时纠正空/万金油声明（含路径引用附件）。
+      const mimeType = sniffedAttachmentMimeType(name, String(attachment.mimeType || '')).slice(0, 120)
       const previewUrl = typeof attachment.previewUrl === 'string' && attachment.previewUrl.length <= 4_000_000
         ? attachment.previewUrl
         : undefined

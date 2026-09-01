@@ -70,11 +70,21 @@ const MODEL_PRICES: Array<{ match: string; price: ModelTokenPrice }> = [
 
 const DEFAULT_PRICE: ModelTokenPrice = { label: '默认（Sonnet 档）', inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 }
 
-/** 按模型 id 解析单价表（子串匹配；'auto' 或未知模型走默认档）。 */
+/**
+ * 按模型 id 解析单价表（子串匹配）。
+ * 未命中（'auto'、新模型名、Cursor 内部代号）按 Sonnet 档估算，但标签如实
+ * 显示真实模型名——用户看到的应是「哪个模型在什么口径下估算」，而不是一个
+ * 凭空出现的「默认档」。标签含 'sonnet' 子串，跨回合重解析仍命中同档价格。
+ */
 export function priceForModel(modelId: string | undefined): ModelTokenPrice {
   const id = (modelId ?? '').toLowerCase()
   if (!id) return DEFAULT_PRICE
-  return MODEL_PRICES.find((entry) => id.includes(entry.match))?.price ?? DEFAULT_PRICE
+  const matched = MODEL_PRICES.find((entry) => id.includes(entry.match))?.price
+  if (matched) return matched
+  const trimmed = (modelId ?? '').trim().slice(0, 60)
+  return trimmed
+    ? { ...DEFAULT_PRICE, label: `${trimmed} · Sonnet 档估算` }
+    : DEFAULT_PRICE
 }
 
 /** 单回合费用估算（USD）。 */
