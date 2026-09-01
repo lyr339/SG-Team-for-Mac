@@ -100,8 +100,9 @@ export function SessionSidebar({
                 draggable={filter === 'all'}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = 'move'
-                  // 只传索引：拖拽载荷与会话数据完全解耦
-                  event.dataTransfer.setData('text/plain', String(index))
+                  // 自定义 MIME：拖到外部应用只得到应用名而非裸索引数字；
+                  // 拖拽状态经 React state 传递，dataTransfer 仅作 DnD 协议要求
+                  event.dataTransfer.setData('application/x-shiguang-session', 'reorder')
                   setDragIndex(index)
                 }}
                 onDragEnd={() => {
