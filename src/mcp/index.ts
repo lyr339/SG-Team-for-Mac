@@ -137,6 +137,8 @@ async function serveUnified(databasePath: string): Promise<void> {
         refreshIdentity(channelId)
       } catch (error) {
         // 未注册/未接替属正常待机：保留 standby 身份，由调用时围栏拒绝业务操作。
+        // 注意 run_completed / solo_channel 有意不在容忍名单里——它们必须直接
+        // 传播为工具结果，让模型得到「run 已结束/独立席位」的指引而非笼统报错。
         if (!(error instanceof TaskPoolError)
           || (error.code !== 'standby_not_assigned' && error.code !== 'agent_not_authorized')) {
           throw error

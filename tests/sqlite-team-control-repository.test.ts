@@ -123,6 +123,46 @@ describe('SqliteTeamControlRepository', () => {
     }
   })
 
+  it('degrades to run_completed guidance after the run wraps up instead of a hard auth error (P0-2)', () => {
+    const repository = repositoryFixture()
+    try {
+      const team = bundle('archive', ['1', '2'])
+      repository.upsertWorkspaceTeam(team)
+      repository.recordInstallation({
+        workspaceId: 'archive', runId: team.run.id, generation: 'generation123',
+        agents: team.slots.map((slot) => ({
+          agentSessionId: `archive:ch-${slot.channelId}:generation123`, workspaceId: 'archive',
+          channelId: slot.channelId!, generation: 'generation123', runId: team.run.id,
+          capabilities: team.roles.find((role) => role.id === slot.roleId)!.capabilities
+        }))
+      })
+      expect(repository.resolveChannelAgentIdentity('1')).toMatchObject({ runId: team.run.id })
+      repository.updateRunGoal(team.run.id, '归档语义验证')
+      repository.beginLaunch(team.run.id, 200, 'launch-key-archive')
+      expect(repository.completeRun(team.run.id, 300)).toBe(true)
+
+      // run 收尾撤销注册是轮次归档：曾注册的通道得到「本轮已结束 + 如何恢复」
+      // 的指引，而非 2026-09-01 事故里把 Agent 永久锁死的授权硬错。
+      try {
+        repository.resolveChannelAgentIdentity('1')
+        throw new Error('expected run_completed')
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'run_completed' })
+        expect((error as Error).message).toContain('record_reply')
+        expect((error as Error).message).toContain('check_messages')
+      }
+      // 从未注册到本轮的通道保持普通未注册语义。
+      try {
+        repository.resolveChannelAgentIdentity('9')
+        throw new Error('expected agent_not_authorized')
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'agent_not_authorized' })
+      }
+    } finally {
+      repository.close()
+    }
+  })
+
   it('reconfigures an installed team to the exact selected seats', () => {
     const repository = repositoryFixture()
     try {

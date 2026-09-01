@@ -344,7 +344,7 @@ describe('team_claim_lead（主控离线接管）', () => {
     }
   })
 
-  it('rejects the claim when the run is not active', async () => {
+  it('rejects the claim with run-ended guidance when the run has completed (P0-2)', async () => {
     const data = setup()
     const builder = await data.connect('builder')
     try {
@@ -354,8 +354,12 @@ describe('team_claim_lead（主控离线接管）', () => {
         arguments: { channel_id: '2' }
       })
       expect(result.isError).toBe(true)
-      // run 结束后运行时注册已被撤销，授权围栏先于 run_inactive 拦截
-      expect(result.structuredContent).toMatchObject({ ok: false, code: 'agent_not_authorized' })
+      // run 收尾撤销注册是轮次归档而非授权故障：模型必须得到「本轮已结束 +
+      // 如何恢复」的指引，而不是不可恢复的 agent_not_authorized 硬错
+      // （2026-09-01 事故：Agent 被授权错误永久锁死）。
+      expect(result.structuredContent).toMatchObject({ ok: false, code: 'run_completed' })
+      expect(JSON.stringify(result.structuredContent)).toContain('record_reply')
+      expect(JSON.stringify(result.structuredContent)).toContain('check_messages')
     } finally {
       await builder.client.close()
       data.close()

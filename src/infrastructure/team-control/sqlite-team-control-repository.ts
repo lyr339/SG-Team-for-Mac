@@ -766,6 +766,26 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       ORDER BY ar.installed_at DESC LIMIT 1
     `).get(activeRun.id, normalizedChannelId) as SqliteRow | undefined
     if (!row) {
+      // P0-2：run 收尾撤销注册是「轮次归档」，不是授权故障。曾注册到本轮的
+      // 通道在 run 结束后调用 team_* 工具，必须得到「本轮已结束 + 如何恢复」
+      // 的指引，而不是不可恢复的「未注册」硬错（2026-09-01 事故：Agent 被误判
+      // 离线触发自动收尾后，工具调用全部报授权错误且无法恢复）。run_completed
+      // 经 refreshIdentity 直接传播为工具结果（与 solo_channel 同模式）；
+      // check_messages / record_reply 等通信工具不经身份解析，不受影响。
+      if (activeRun.status === 'completed') {
+        const archived = this.database.prepare(`
+          SELECT 1 FROM agent_registrations
+          WHERE run_id = ? AND channel_id = ?
+        `).get(activeRun.id, normalizedChannelId)
+        if (archived) {
+          throw new TaskPoolError(
+            'run_completed',
+            `本轮 TeamRun 已结束，CH-${normalizedChannelId} 的团队身份已随轮次归档（非授权故障，重试无效）。`
+              + '请停止调用 team_* 工具；如需同步最终结论请用 record_reply，之后用 check_messages 静默待命，'
+              + '新一轮 TeamRun 启动后团队身份会自动恢复。'
+          )
+        }
+      }
       const registered = this.database.prepare(`
         SELECT 1 FROM agent_registrations
         WHERE run_id = ? AND channel_id = ? AND revoked_at IS NULL
