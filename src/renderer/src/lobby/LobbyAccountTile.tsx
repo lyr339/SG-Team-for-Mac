@@ -183,11 +183,12 @@ const ACTIVE_PHASE_STEP: Partial<Record<AccountAutomationPhase, AccountFlowStepK
   countdown: 'countdown',
   processing: 'processing',
   importing: 'deleting',
-  deleting: 'deleting'
+  deleting: 'deleting',
+  cleaning: 'deleting'
 }
 
 export function isActiveAutomationPhase(phase: AccountAutomationPhase): boolean {
-  return phase === 'countdown' || phase === 'processing' || phase === 'importing' || phase === 'deleting'
+  return phase === 'countdown' || phase === 'processing' || phase === 'importing' || phase === 'deleting' || phase === 'cleaning'
 }
 
 /** 由运行相位推导五个流程步骤的状态，纯函数便于 SSR 测试。 */

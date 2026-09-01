@@ -39,6 +39,8 @@ export interface AccountAutomationServiceDeps {
      * （cookie/匿名 id/localStorage——防下一账号被风控关联）。可选（旧宿主无）。
      */
     clearSiteData?: () => Promise<void>
+    /** 删除确认后的完整收尾（指纹宿主：页面卸载 + 关窗 + Roxy 缓存/指纹轮换事务）。 */
+    finalizeDeletedAccount?: () => Promise<void>
     /** 每轮自动化结束后清理通道资源（关窗断连；cookie 保留在 profile）。可选。 */
     dispose?: () => Promise<void>
   }
@@ -169,6 +171,46 @@ export class AccountAutomationService {
     }
   }
 
+  /**
+   * 所有删除成功分支的唯一收口（Profile 事务）：
+   * ① 本地凭据移除；② 浏览器清场事务。分别执行、分别记错，任一失败不阻断
+   * 另一项——账号加固已成功是事实，收尾异常按降级口径呈现（不置 failed，
+   * 不再让用户以为加固失败；旧版曾把清场失败误报成整个流程失败）。
+   */
+  private async finishDeletedAccount(accountId: string, successMessage: string): Promise<void> {
+    let localRemoveError: string | undefined
+    try {
+      this.deps.accounts.remove(accountId)
+    } catch (error) {
+      localRemoveError = error instanceof Error ? error.message : String(error)
+    }
+    const finalizer = this.deps.inBrowserDeleter?.finalizeDeletedAccount
+    const legacyClear = this.deps.inBrowserDeleter?.clearSiteData
+    let cleanupError: string | undefined
+    if (finalizer || legacyClear) {
+      this.setRun({ phase: 'cleaning', message: '账号已加固，正在清理浏览器环境并轮换指纹…' })
+      try {
+        if (finalizer) await finalizer()
+        else await legacyClear?.()
+      } catch (error) {
+        cleanupError = error instanceof Error ? error.message : String(error)
+      }
+    }
+    if (localRemoveError || cleanupError) {
+      const details = [
+        localRemoveError ? `本地记录移除失败：${localRemoveError}` : undefined,
+        cleanupError ? `浏览器清场未完成：${cleanupError}` : undefined
+      ].filter((entry): entry is string => Boolean(entry)).join('；')
+      this.setRun({
+        phase: 'done',
+        message: `${successMessage}；收尾异常（不影响加固结果）：${details.replace(/\s+/g, ' ').slice(0, 200)}`,
+        finishedAt: this.now()
+      })
+      return
+    }
+    this.setRun({ phase: 'done', message: successMessage, finishedAt: this.now() })
+  }
+
   private async execute(planId: string): Promise<void> {
     const mySeq = ++this.runSeq
     this.running = true
@@ -281,11 +323,10 @@ export class AccountAutomationService {
           fast = { kind: 'retry_legacy', message: detail.replace(/\s+/g, ' ').slice(0, 160) }
         }
         if (fast.kind === 'deleted') {
-          this.deps.accounts.remove(account.id)
-          // 账号已消耗：关窗前清空 profile 内 cursor.com 数据（cookie/匿名 id 等），
-          // 防下一账号被风控跨账号关联。失败静默——删除已成功，残留只是卫生问题。
-          await inBrowser.clearSiteData?.().catch(() => undefined)
-          this.setRun({ phase: 'done', message: '自动化完成：已处理、账号已加固（浏览器会话内秒级执行）、本地记录已移除', finishedAt: this.now() })
+          await this.finishDeletedAccount(
+            account.id,
+            '自动化完成：已处理、账号已加固（浏览器会话内秒级执行）、浏览器环境已清场'
+          )
           return
         }
         if (fast.kind === 'not_logged_in') {
@@ -319,9 +360,10 @@ export class AccountAutomationService {
           this.setRun({ phase: 'deleting', message: '新 Token 轮换超时，尝试用当前会话直接加固…' })
           const direct = await this.deleteWithTeamWait(previousToken)
           if (direct.ok) {
-            this.deps.accounts.remove(account.id)
-            await inBrowser.clearSiteData?.().catch(() => undefined)
-            this.setRun({ phase: 'done', message: '自动化完成：已处理、账号已加固（当前会话直接执行）、本地记录已移除', finishedAt: this.now() })
+            await this.finishDeletedAccount(
+              account.id,
+              '自动化完成：已处理、账号已加固（当前会话直接执行）、浏览器环境已清场'
+            )
             return
           }
           const detail = error instanceof Error ? error.message : String(error)
@@ -347,11 +389,10 @@ export class AccountAutomationService {
         return
       }
 
-      this.deps.accounts.remove(account.id)
-      // 同上：账号已删除，关窗前清空站点数据（含 fallback 路径——inBrowser 通道未用时
-      // clearSiteData 也应执行：指纹宿主仍持有该账号的登录态残留）。
-      await this.deps.inBrowserDeleter?.clearSiteData?.().catch(() => undefined)
-      this.setRun({ phase: 'done', message: '自动化完成：已处理、新凭据已用毕、账号已加固、本地记录已移除', finishedAt: this.now() })
+      await this.finishDeletedAccount(
+        account.id,
+        '自动化完成：已处理、新凭据已用毕、账号已加固、浏览器环境已清场'
+      )
     } catch (error) {
       if (this.runSeq !== mySeq) return // 静默让位给新一轮
       const detail = error instanceof Error ? error.message : String(error)

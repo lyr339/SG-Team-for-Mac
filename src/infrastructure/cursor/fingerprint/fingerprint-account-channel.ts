@@ -522,20 +522,83 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
   }
 
   /**
-   * 清空 profile 内 cursor.com 全部站点数据（cookie/localStorage/缓存/Service Worker）。
+   * 页面内站点数据清理（关窗前的尽力而为步骤）。
    *
-   * 时机契约：仅在「官网账号已删除」后调用——此时登录态是死数据，而
-   * cursor_anonymous_id 等指纹面是下一个账号的跨账号关联风险，不清会让
-   * 风控把前后两个账号关联成同一设备。导入后/失败后绝不能清（后续链路
-   * 与重试都依赖会话）。必须在窗口关闭前执行（要 CDP）；清完的代价是
-   * 下次登录重过一次 Cloudflare 挑战——多账号隔离下的合理成本。
-   * 尽力而为：任一 origin 清理失败不抛错（删除已成功，残留只是卫生问题）。
+   * 时机契约：仅在「官网账号已删除」后调用。先导航到 about:blank 卸载页面
+   * （停止运行中的脚本，杜绝清理后立即回写），再清各 origin 站点数据。
+   * 失败静默——真正的清场兜底在 finalizeDeletedAccount 的 Roxy 关窗事务；
+   * 这一步只是减少落盘残留量，降低 Roxy 本地缓存清理的负担。
    */
   async clearSiteData(): Promise<void> {
     const session = await this.ensureSession()
+    try {
+      await session.cdp.send('Page.navigate', { url: 'about:blank' }, session.sessionId)
+      session.cursorPageOpened = false
+    } catch {
+      // 导航失败（页面已死/正在跳转）：继续清理，尽力而为。
+    }
     await Promise.all(SITE_DATA_ORIGINS.map(async (origin) => {
       await session.cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'all' }).catch(() => undefined)
     }))
+  }
+
+  /**
+   * 删除成功后的完整收尾（Profile 事务，2026-09-01 事故复盘后定稿）：
+   *
+   *   ① 页面卸载 + 站点数据尽力清理（仍持有 CDP 时）
+   *   ② 释放 target/CDP
+   *   ③ 关窗（Roxy close——页面脚本停摆，回写竞争物理切断）
+   *   ④ clear_local_cache（本地 profile 文件；兼作关窗后置校验——窗口仍开时明确失败）
+   *   ⑤ clear_server_cache（服务端同步缓存的登录痕迹）
+   *   ⑥ random_env（下一轮全新指纹）
+   *
+   * 旧版（stash）把「活浏览器内清 Cookie + 验收」放在关窗之前：页面脚本与
+   * Roxy 服务端缓存在窗口开着时持续回写，验收恒不通过 → 三次重试全败 →
+   * 流程被误报为失败。正确形态是关窗后让 Roxy 对 profile 做原生清理事务。
+   * ③-⑥ 由 client.finalizeProfile 原子执行；失败重试一次后抛出（不静默：
+   * 残留会让下一账号被风控跨账号关联——但账号加固本身已成功，调用方按
+   * 「收尾异常」分级呈现，不再拦截成功路径）。
+   */
+  async finalizeDeletedAccount(): Promise<void> {
+    // 锚定本轮 profile 身份：清场期间用户切窗/CDP 失效都不影响后续本地 API。
+    const anchor = this.session ?? await this.ensureSession()
+    const { client, profileId } = anchor
+    try {
+      await this.clearSiteData()
+    } catch {
+      // 页面内清理失败不阻断：Roxy 本地缓存清理会覆盖同样的数据面。
+    }
+    await this.releaseSession()
+    if (!client.finalizeProfile) {
+      // 旧客户端无事务能力：退化为仅关窗（保持旧行为，不误报）。
+      await client.closeWindow(profileId).catch(() => undefined)
+      return
+    }
+    let lastError = '未知错误'
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        await client.finalizeProfile(profileId)
+        return
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error)
+        if (attempt < 2) await this.sleep(500)
+      }
+    }
+    throw new Error(`Roxy profile 清场未完成：${lastError.replace(/\s+/g, ' ').slice(0, 160)}`)
+  }
+
+  /** 释放当前 CDP target 与连接（不动 profile 窗口）。 */
+  private async releaseSession(): Promise<void> {
+    const session = this.session
+    this.session = undefined
+    this.lastKnownToken = undefined
+    if (!session) return
+    try {
+      await session.cdp.send('Target.closeTarget', { targetId: session.targetId })
+    } catch {
+      // target 已随页面关闭/窗口退出而失效
+    }
+    session.cdp.close()
   }
 
   /**

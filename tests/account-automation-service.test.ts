@@ -44,6 +44,8 @@ interface HarnessOptions {
   deleteResults?: DeleteResultSpec[]
   /** 秒级通道行为（提供时注入 inBrowserDeleter）。 */
   inBrowser?: FastChannelSpec
+  /** finalizeDeletedAccount 的注入行为（默认成功 noop）。 */
+  finalize?: { error?: string }
   /** Cursor 运行态一致性核对（提供时注入 verifyCursorRuntime）。 */
   verifyCursorRuntime?: { ok: boolean; reason?: string }
 }
@@ -67,6 +69,7 @@ function createHarness(options: HarnessOptions = {}) {
   const fastDeleteCalls: number[] = []
   const disposeCalls: number[] = []
   const clearSiteDataCalls: number[] = []
+  const finalizeCalls: number[] = []
   const runMessages: string[] = []
 
   const service = new AccountAutomationService({
@@ -149,6 +152,10 @@ function createHarness(options: HarnessOptions = {}) {
             },
             clearSiteData: async () => {
               clearSiteDataCalls.push(1)
+            },
+            finalizeDeletedAccount: async () => {
+              finalizeCalls.push(1)
+              if (options.finalize?.error) throw new Error(options.finalize.error)
             }
           }
         }
@@ -182,6 +189,7 @@ function createHarness(options: HarnessOptions = {}) {
     fastDeleteCalls,
     disposeCalls,
     clearSiteDataCalls,
+    finalizeCalls,
     runMessages,
     cleanup: () => rmSync(dir, { recursive: true, force: true })
   }
@@ -199,6 +207,41 @@ async function waitForTerminal(service: AccountAutomationService): Promise<Accou
 describe('AccountAutomationService', () => {
   let cleanup = (): void => {}
   afterEach(() => cleanup())
+
+  it('删除成功后走 finalize 收尾事务；清场异常降级为收尾提示不阻断 done', async () => {
+    const harness = createHarness({
+      inBrowser: { kind: 'deleted' },
+      finalize: { error: 'Roxy profile 清场未完成：本地缓存清理失败' }
+    })
+    try {
+      await harness.service.onAllSessionsTriggered('plan-1')
+      const run = await waitForTerminal(harness.service)
+      // 加固已成功：终态 done（不因清场失败置 failed——旧版曾把收尾异常误报成流程失败）。
+      expect(run.phase).toBe('done')
+      expect(run.message).toContain('浏览器会话内秒级执行')
+      expect(run.message).toContain('收尾异常（不影响加固结果）：浏览器清场未完成：Roxy profile 清场未完成：本地缓存清理失败')
+      expect(harness.finalizeCalls).toHaveLength(1)
+      // 本地记录仍被移除（两项分别执行）。
+      expect(harness.accounts.some((account) => account.removed)).toBe(true)
+    } finally {
+      harness.cleanup()
+    }
+  })
+
+  it('finalize 成功时完整收尾：清场调用一次、消息含环境已清场、不再叠加 legacy clear', async () => {
+    const harness = createHarness({ inBrowser: { kind: 'deleted' } })
+    try {
+      await harness.service.onAllSessionsTriggered('plan-1')
+      const run = await waitForTerminal(harness.service)
+      expect(run.phase).toBe('done')
+      expect(run.message).toBe('自动化完成：已处理、账号已加固（浏览器会话内秒级执行）、浏览器环境已清场')
+      expect(harness.finalizeCalls).toHaveLength(1)
+      // finalize 在场时不走 legacy clearSiteData。
+      expect(harness.clearSiteDataCalls).toHaveLength(0)
+    } finally {
+      harness.cleanup()
+    }
+  })
 
   it('完整链（会话仍有效）：倒计时→奥仔→当前会话直接删官网→移除本地，全程不碰浏览器', async () => {
     const harness = createHarness()
@@ -420,7 +463,7 @@ describe('AccountAutomationService', () => {
     // 一轮结束即清理浏览器通道（关窗断连；cookie 保留在 profile）
     expect(harness.disposeCalls).toHaveLength(1)
     // 账号隔离：删除成功后关窗前清空站点数据（防下一账号被风控关联）
-    expect(harness.clearSiteDataCalls).toHaveLength(1)
+    expect(harness.finalizeCalls).toHaveLength(1)
   })
 
   it('账号隔离：删除成功（fallback 轮换链）→ 同样清空站点数据', async () => {
@@ -432,7 +475,7 @@ describe('AccountAutomationService', () => {
     harness.service.onAllSessionsTriggered('plan-1')
     const run = await waitForTerminal(harness.service)
     expect(run.phase).toBe('done')
-    expect(harness.clearSiteDataCalls).toHaveLength(1)
+    expect(harness.finalizeCalls).toHaveLength(1)
   })
 
   it('账号隔离：未删除（not_logged_in 硬失败）→ 不清站点数据（会话本已失效，清场无意义且掩盖现场）', async () => {
@@ -475,7 +518,7 @@ describe('AccountAutomationService', () => {
     expect(harness.replacedTokens).toHaveLength(0)
     expect(harness.accounts[0]?.removed).toBe(true)
     // 删除成功即账号隔离清场（与秒级/轮换两条完成路径同契约）
-    expect(harness.clearSiteDataCalls).toHaveLength(1)
+    expect(harness.finalizeCalls).toHaveLength(1)
   })
 
   it('轮换超时兜底：旧会话直删亦失效 → 双证据并入失败消息并保留本地记录', async () => {

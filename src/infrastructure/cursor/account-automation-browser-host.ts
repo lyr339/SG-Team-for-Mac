@@ -25,6 +25,12 @@ export interface AccountAutomationBrowserHost {
    * 外部浏览器宿主不实现（mac 旧链路，用户自己的浏览器不代清）。
    */
   clearSiteData?(): Promise<void>
+  /**
+   * 删除确认后的完整收尾事务（指纹宿主专属）：
+   * 页面卸载 → 关窗 → Roxy clear_local_cache / clear_server_cache → random_env。
+   * 在关窗后清理（页面回写源切断）；外部浏览器宿主不实现。
+   */
+  finalizeDeletedAccount?(): Promise<void>
   /** 一轮自动化结束清理（指纹=关窗断连；外部=noop——不能关用户的浏览器）。 */
   dispose(): Promise<void>
 }

@@ -409,6 +409,11 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
       deleteWhenReady: () => resolveAccountBrowserHost().deleteWhenReady(),
       // 账号隔离清场（仅删除成功后由 service 调用；外部宿主无此能力时跳过）
       clearSiteData: () => resolveAccountBrowserHost().clearSiteData?.() ?? Promise.resolve(),
+      // 完整收尾事务（指纹宿主）：页面卸载 → 关窗 → Roxy 缓存清理 → 指纹轮换。
+      finalizeDeletedAccount: () => {
+        const host = resolveAccountBrowserHost()
+        return host.finalizeDeletedAccount?.() ?? host.clearSiteData?.() ?? Promise.resolve()
+      },
       dispose: () => resolveAccountBrowserHost().dispose()
     }
   })

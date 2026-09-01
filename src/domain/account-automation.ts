@@ -57,6 +57,8 @@ export type AccountAutomationPhase =
   | 'processing'
   | 'importing'
   | 'deleting'
+  /** 删除成功后的浏览器环境清场（Roxy 关窗缓存清理 + 指纹轮换）。 */
+  | 'cleaning'
   | 'done'
   | 'failed'
   | 'cancelled'

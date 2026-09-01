@@ -7,6 +7,9 @@
  *   GET  /browser/list_v3     窗口列表（rows: [{dirId, windowName, windowSortNum}]）
  *   POST /browser/open        {dirId, args: []} → {ws, http, coreVersion}
  *   POST /browser/close       {dirId}
+ *   POST /browser/clear_local_cache  {dirIds, type:'all'}
+ *   POST /browser/clear_server_cache {workspaceId, dirIds}
+ *   POST /browser/random_env         {workspaceId, dirId}
  *
  * 鉴权：所有请求带 token 头（客户端 API → API 配置 → API Key）；API 状态须为 Enabled。
  * 响应统一 {code: 0, msg, data}；code !== 0 为业务失败。
@@ -40,6 +43,7 @@ export class RoxyBrowserClient implements FingerprintBrowser {
   private readonly apiKey: string
   private readonly fetchImpl: typeof fetch
   private readonly timeoutMs: number
+  private workspaceId: number | undefined
 
   constructor(options: RoxyBrowserClientOptions) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '')
@@ -81,11 +85,21 @@ export class RoxyBrowserClient implements FingerprintBrowser {
     this.unwrap(response, '健康检查')
   }
 
+  private async resolveWorkspaceId(): Promise<number> {
+    if (this.workspaceId !== undefined) return this.workspaceId
+    const response = await this.request<{ rows?: Array<{ id?: string | number }> }>('/browser/workspace', { method: 'GET' })
+    const raw = this.unwrap(response, 'workspace 列表获取')?.rows?.[0]?.id
+    const workspaceId = Number(raw)
+    if (!Number.isSafeInteger(workspaceId) || workspaceId <= 0) {
+      throw new Error('RoxyBrowser 未返回有效 workspace（请确认账号已登录）')
+    }
+    this.workspaceId = workspaceId
+    return workspaceId
+  }
+
   /** 列出窗口：取首个 workspace 的窗口（name 模糊可选）。 */
   async listWindows(): Promise<FingerprintBrowserWindow[]> {
-    const workspaceResponse = await this.request<{ rows?: Array<{ id?: string | number }> }>('/browser/workspace', { method: 'GET' })
-    const workspaceId = String(this.unwrap(workspaceResponse, 'workspace 列表获取')?.rows?.[0]?.id ?? '')
-    if (!workspaceId) throw new Error('RoxyBrowser 未返回 workspace（请确认账号已登录）')
+    const workspaceId = await this.resolveWorkspaceId()
     const listResponse = await this.request<{ rows?: Array<{ dirId?: string; windowName?: string; windowSortNum?: number }> }>(
       '/browser/list_v3',
       { method: 'GET', query: { workspaceId, page_index: 1, page_size: 15 } }
@@ -122,5 +136,40 @@ export class RoxyBrowserClient implements FingerprintBrowser {
     } catch {
       // 关窗失败不影响主流程；客户端退出/窗口已被手动关闭都会走到这里
     }
+  }
+
+  /**
+   * 账号用毕后的 Roxy profile 原生清场事务（关窗后执行）：
+   * close → clear_local_cache（本地文件）→ clear_server_cache（服务端同步缓存）
+   * → random_env（下一轮全新指纹）。
+   * 在关窗后清理是正确顺序：页面脚本已停，无回写竞争；Roxy 对关闭状态的
+   * profile 做本地文件清理是干净事务（profile 仍打开时 clear_local_cache
+   * 会明确失败——它兼作关窗后置校验）。三步任一失败向上抛，由调用方
+   * 决定如何呈现（不静默：残留会让下一账号被风控跨账号关联）。
+   */
+  async finalizeProfile(profileId: string): Promise<void> {
+    const workspaceId = await this.resolveWorkspaceId()
+    await this.request('/browser/close', { method: 'POST', body: { dirId: profileId } })
+    this.unwrap(
+      await this.request('/browser/clear_local_cache', {
+        method: 'POST',
+        body: { dirIds: [profileId], type: 'all' }
+      }),
+      '本地缓存清理'
+    )
+    this.unwrap(
+      await this.request('/browser/clear_server_cache', {
+        method: 'POST',
+        body: { workspaceId, dirIds: [profileId] }
+      }),
+      '服务端缓存清理'
+    )
+    this.unwrap(
+      await this.request('/browser/random_env', {
+        method: 'POST',
+        body: { workspaceId, dirId: profileId }
+      }),
+      '指纹轮换'
+    )
   }
 }

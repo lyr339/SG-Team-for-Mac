@@ -16,4 +16,6 @@ export interface FingerprintBrowser {
   listWindows(): Promise<FingerprintBrowserWindow[]>
   openWindow(profileId: string): Promise<FingerprintBrowserOpenResult>
   closeWindow(profileId: string): Promise<void>
+  /** 账号用毕后的 profile 清场：清本地/服务端缓存并生成下一轮新指纹（关窗后执行）。 */
+  finalizeProfile?(profileId: string): Promise<void>
 }
