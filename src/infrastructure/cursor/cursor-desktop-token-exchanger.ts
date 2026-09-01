@@ -3,6 +3,15 @@ import { DatabaseSync } from 'node:sqlite'
 
 const APPLICATION_USER_KEY = 'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser'
 
+/**
+ * 兑换端点生产常量（本机 state.vscdb 历史备份实证值）。
+ * applicationUser 键属于账号切换的痕迹清理集（TRACE_DELETE_KEYS）：每次成功切换
+ * 都会删除它，只有 Cursor 正常运行一段时间后才重建。键缺失或损坏时回落到这对
+ * 端点继续兑换——否则上一次成功的切换会永久埋葬下一次切换。
+ */
+const FALLBACK_WEBSITE_URL = 'https://cursor.com'
+const FALLBACK_BACKEND_URL = 'https://api2.cursor.sh'
+
 interface CursorJwtClaims {
   sub?: unknown
   type?: unknown
@@ -155,8 +164,9 @@ export class CursorDesktopTokenExchanger implements CursorDesktopTokenExchangePo
   }
 
   private readCredentials(stateDatabasePath: string): { websiteUrl: string; backendUrl: string } {
-    const database = new DatabaseSync(stateDatabasePath, { readOnly: true, timeout: 2_000 })
+    let database: DatabaseSync | undefined
     try {
+      database = new DatabaseSync(stateDatabasePath, { readOnly: true, timeout: 2_000 })
       const row = database.prepare('SELECT value FROM ItemTable WHERE key = ?').get(APPLICATION_USER_KEY) as { value?: unknown } | undefined
       const text = typeof row?.value === 'string'
         ? row.value
@@ -175,9 +185,15 @@ export class CursorDesktopTokenExchanger implements CursorDesktopTokenExchangePo
       }
       return { websiteUrl, backendUrl }
     } catch {
-      throw new Error('Cursor 本机认证配置缺失，网页 Token 尚未兑换为 IDE 会话')
+      // 兑换只读端点、不写库：任何读取失败（键被痕迹清理删除 / 内容损坏 / 打不开）
+      // 都回落生产端点，让兑换请求本身去给出真实的对错。
+      return { websiteUrl: FALLBACK_WEBSITE_URL, backendUrl: FALLBACK_BACKEND_URL }
     } finally {
-      database.close()
+      try {
+        database?.close()
+      } catch {
+        // ignore
+      }
     }
   }
 }

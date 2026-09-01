@@ -10,22 +10,24 @@ function jwt(input: { sub: string; type: 'web' | 'session'; exp?: number }): str
   return `${encode({ alg: 'HS256' })}.${encode(input)}.signature`
 }
 
-function stateDatabase(root: string): string {
+function stateDatabase(root: string, cursorCreds?: { websiteUrl?: string; backendUrl?: string }): string {
   const path = join(root, 'state.vscdb')
   const database = new DatabaseSync(path)
   database.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value)')
-  database.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run(
-    'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser',
-    JSON.stringify({
-      cursorCreds: {
-        websiteUrl: 'https://cursor.com',
-        backendUrl: 'https://api2.cursor.sh',
-        authClientId: 'desktop-client-id'
-      }
-    })
-  )
+  if (cursorCreds) {
+    database.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run(
+      'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser',
+      JSON.stringify({ cursorCreds })
+    )
+  }
   database.close()
   return path
+}
+
+/** 与生产兜底端点刻意不同：证明 DB 值优先于兜底常量被使用。 */
+const DB_PRIORITY_CREDS = {
+  websiteUrl: 'https://cursor.db-priority.example.com',
+  backendUrl: 'https://api-poll.db-priority.example.com'
 }
 
 describe('CursorDesktopTokenExchanger', () => {
@@ -52,7 +54,7 @@ describe('CursorDesktopTokenExchanger', () => {
   it('type=web 直接确认 PKCE callback 并从 auth/poll 领取同账号 type=session', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cursor-token-exchange-'))
     roots.push(root)
-    const database = stateDatabase(root)
+    const database = stateDatabase(root, DB_PRIORITY_CREDS)
     const web = jwt({ sub: 'auth0|target-user', type: 'web', exp: 2_000_000_000 })
     const session = jwt({ sub: 'auth0|target-user', type: 'session', exp: 2_000_000_000 })
     const fetchImpl = vi.fn().mockImplementation(async (url: string) => (
@@ -73,7 +75,7 @@ describe('CursorDesktopTokenExchanger', () => {
         exchanged: true
       })
     const confirmationUrl = new URL(String(fetchImpl.mock.calls[0]![0]))
-    expect(confirmationUrl.origin + confirmationUrl.pathname).toBe('https://cursor.com/api/auth/loginDeepCallbackControl')
+    expect(confirmationUrl.origin + confirmationUrl.pathname).toBe('https://cursor.db-priority.example.com/api/auth/loginDeepCallbackControl')
     const confirmationInit = fetchImpl.mock.calls[0]![1] as RequestInit
     expect(confirmationInit.method).toBe('POST')
     expect((confirmationInit.headers as Record<string, string>).cookie).toContain(encodeURIComponent(web))
@@ -82,7 +84,7 @@ describe('CursorDesktopTokenExchanger', () => {
       challenge: expect.any(String)
     })
     const pollUrl = new URL(String(fetchImpl.mock.calls[1]![0]))
-    expect(pollUrl.origin + pollUrl.pathname).toBe('https://api2.cursor.sh/auth/poll')
+    expect(pollUrl.origin + pollUrl.pathname).toBe('https://api-poll.db-priority.example.com/auth/poll')
     expect(pollUrl.searchParams.get('uuid')).toBeTruthy()
     expect(pollUrl.searchParams.get('verifier')).toBeTruthy()
   })
@@ -90,7 +92,7 @@ describe('CursorDesktopTokenExchanger', () => {
   it('兑换仍返回 web Token 或账号 subject 改变时拒绝进入切换链', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cursor-token-exchange-invalid-'))
     roots.push(root)
-    const database = stateDatabase(root)
+    const database = stateDatabase(root, DB_PRIORITY_CREDS)
     const web = jwt({ sub: 'auth0|target-user', type: 'web', exp: 2_000_000_000 })
     const returnedWeb = jwt({ sub: 'auth0|target-user', type: 'web', exp: 2_000_000_000 })
     const wrongSession = jwt({ sub: 'auth0|other-user', type: 'session', exp: 2_000_000_000 })
@@ -118,11 +120,34 @@ describe('CursorDesktopTokenExchanger', () => {
   it('服务端 shouldLogout/HTTP 拒绝时保留明确兑换错误', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cursor-token-exchange-reject-'))
     roots.push(root)
-    const database = stateDatabase(root)
+    const database = stateDatabase(root, DB_PRIORITY_CREDS)
     const web = jwt({ sub: 'auth0|target-user', type: 'web', exp: 2_000_000_000 })
     const fetchImpl = vi.fn().mockResolvedValue(new Response('desktop authorization revoked', { status: 401 }))
 
     await expect(new CursorDesktopTokenExchanger({ fetchImpl }).resolve(web, database))
       .rejects.toThrow(/desktop authorization revoked/)
+  })
+
+  it('applicationUser 键缺失（痕迹清理后的常态）时回落生产端点完成兑换', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cursor-token-exchange-fallback-'))
+    roots.push(root)
+    const database = stateDatabase(root)
+    const web = jwt({ sub: 'auth0|target-user', type: 'web', exp: 2_000_000_000 })
+    const session = jwt({ sub: 'auth0|target-user', type: 'session', exp: 2_000_000_000 })
+    const fetchImpl = vi.fn().mockImplementation(async (url: string) => (
+      new URL(String(url)).pathname === '/api/auth/loginDeepCallbackControl'
+        ? new Response('OK', { status: 200 })
+        : new Response(JSON.stringify({ accessToken: session, refreshToken: session }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          })
+    ))
+
+    await expect(new CursorDesktopTokenExchanger({ fetchImpl, now: () => 1_900_000_000_000 })
+      .resolve(web, database)).resolves.toMatchObject({ accessToken: session, exchanged: true })
+    const confirmationUrl = new URL(String(fetchImpl.mock.calls[0]![0]))
+    expect(confirmationUrl.origin).toBe('https://cursor.com')
+    const pollUrl = new URL(String(fetchImpl.mock.calls[1]![0]))
+    expect(pollUrl.origin).toBe('https://api2.cursor.sh')
   })
 })
