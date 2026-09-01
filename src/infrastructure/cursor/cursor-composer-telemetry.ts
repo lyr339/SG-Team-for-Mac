@@ -18,6 +18,7 @@ import type {
   ContextUsageBreakdown
 } from '../../domain/agent-session'
 import { badgesFromParameters, contextTokensFromValue, readableParameterValue } from '../../shared/model-badges'
+import { sanitizeModelDisplayText } from '../../domain/model-output-sanitizer'
 import type {
   CursorModelOption,
   CursorModelParameter,
@@ -36,6 +37,7 @@ import {
   type CursorComposerTelemetry,
   type CursorTelemetrySnapshot
 } from '../../domain/cursor-telemetry'
+import type { ProcessBlock } from '../../domain/conversation-entry'
 
 const COMPOSER_HEADERS_KEY = 'composer.composerHeaders'
 const APPLICATION_USER_KEY = 'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser'
@@ -90,6 +92,8 @@ interface TranscriptSignals {
   channelIds: Set<string>
   lastAction?: TranscriptAction
   modifiedAt?: number
+  lastAssistantText?: string
+  lastAssistantProcess?: ProcessBlock[]
 }
 
 interface CachedTranscriptSignals extends TranscriptSignals {
@@ -739,6 +743,103 @@ function lastTranscriptAction(text: string): TranscriptAction | undefined {
   return undefined
 }
 
+function lastTranscriptAssistantText(text: string): string | undefined {
+  const lines = text.split(/\r?\n/)
+  let lastUserLine = -1
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim()
+    if (!line) continue
+    try {
+      if (recordOf(JSON.parse(line))?.role === 'user') {
+        lastUserLine = index
+        break
+      }
+    } catch { /* 跳过坏行 */ }
+  }
+  for (let index = lines.length - 1; index > lastUserLine; index -= 1) {
+    const line = lines[index]?.trim()
+    if (!line) continue
+    let entry: UnknownRecord | undefined
+    try { entry = recordOf(JSON.parse(line)) } catch { continue }
+    if (entry?.role !== 'assistant') continue
+    const message = recordOf(entry.message)
+    const content = Array.isArray(message?.content) ? message.content : []
+    const pieces = content.flatMap((raw) => {
+      const item = recordOf(raw)
+      const value = item?.type === 'text' && typeof item.text === 'string'
+        ? sanitizeModelDisplayText(item.text.slice(0, 100_000)).text
+        : undefined
+      return value ? [value] : []
+    })
+    if (pieces.length) return pieces.join('\n\n').slice(0, 100_000)
+  }
+  return undefined
+}
+
+/**
+ * Cursor transcript 是 completed 回合在应用重启后的耐久事实源。提取最后一条用户
+ * 消息之后、最终纯文本回复之前的 Assistant 文本与工具调用，恢复图形化过程；实时
+ * 生成期仍由 CDP 原生流优先，转录只负责冷启动兜底。
+ */
+function lastTranscriptAssistantProcess(text: string): ProcessBlock[] | undefined {
+  const entries = text.split(/\r?\n/).flatMap((line, lineIndex) => {
+    try {
+      const value = recordOf(JSON.parse(line))
+      return value ? [{ value, lineIndex }] : []
+    } catch {
+      return []
+    }
+  })
+  let lastUserIndex = -1
+  let lastAssistantIndex = -1
+  for (let index = 0; index < entries.length; index += 1) {
+    if (entries[index]?.value.role === 'user') lastUserIndex = index
+    if (entries[index]?.value.role === 'assistant') lastAssistantIndex = index
+  }
+  if (lastAssistantIndex <= lastUserIndex) return undefined
+  const blocks: ProcessBlock[] = []
+  for (let index = lastUserIndex + 1; index <= lastAssistantIndex && blocks.length < 80; index += 1) {
+    const entry = entries[index]
+    if (!entry || entry.value.role !== 'assistant') continue
+    const message = recordOf(entry.value.message)
+    const content = Array.isArray(message?.content) ? message.content : []
+    const hasTool = content.some((raw) => recordOf(raw)?.type === 'tool_use')
+    for (let itemIndex = 0; itemIndex < content.length && blocks.length < 80; itemIndex += 1) {
+      const item = recordOf(content[itemIndex])
+      if (!item) continue
+      const id = `transcript:${entry.lineIndex}:${itemIndex}`
+      if (item.type === 'text' && typeof item.text === 'string') {
+        // 最后一条无工具 Assistant 文本是最终回复，由 lastAssistantResponse 展示；
+        // 带工具的文本及此前 Assistant 文本才属于 Cursor 过程。
+        if (index === lastAssistantIndex && !hasTool) continue
+        const value = sanitizeModelDisplayText(item.text.slice(0, 100_000)).text
+        if (value) blocks.push({ kind: 'thinking', id, text: value, status: 'done', timingEstimated: true })
+        continue
+      }
+      if (item.type !== 'tool_use') continue
+      const input = recordOf(item.input)
+      const dynamicToolName = boundedString(input?.toolName, 160)
+      const nativeName = boundedString(item.name, 160) ?? 'tool'
+      const toolName = nativeName === 'GetDynamicTools'
+        ? 'get_mcp_tools'
+        : dynamicToolName ?? nativeName
+      const args = recordOf(input?.arguments)
+      const namespace = boundedString(input?.namespace ?? input?.server, 240)
+      blocks.push({
+        kind: 'tool',
+        id,
+        toolName,
+        toolKind: 'mcp',
+        summary: namespace,
+        input: args ?? input,
+        status: 'done',
+        timingEstimated: true
+      })
+    }
+  }
+  return blocks.length ? blocks : undefined
+}
+
 function extractTranscriptSignals(text: string): TranscriptSignals {
   const signals = emptyTranscriptSignals()
   for (const match of text.matchAll(BINDING_MARKER_PATTERN)) {
@@ -753,6 +854,8 @@ function extractTranscriptSignals(text: string): TranscriptSignals {
     signals.channelIds.add(match[1]!)
   }
   signals.lastAction = lastTranscriptAction(text)
+  signals.lastAssistantText = lastTranscriptAssistantText(text)
+  signals.lastAssistantProcess = lastTranscriptAssistantProcess(text)
   return signals
 }
 
@@ -763,6 +866,8 @@ function mergeTranscriptSignals(...values: TranscriptSignals[]): TranscriptSigna
     for (const channelId of value.channelIds) merged.channelIds.add(channelId)
     if (value.lastAction) merged.lastAction = value.lastAction
     if (value.modifiedAt !== undefined) merged.modifiedAt = value.modifiedAt
+    if (value.lastAssistantText) merged.lastAssistantText = value.lastAssistantText
+    if (value.lastAssistantProcess?.length) merged.lastAssistantProcess = value.lastAssistantProcess
   }
   return merged
 }
@@ -1621,6 +1726,16 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
               breakdown: detailUsage.breakdown
             }
           })(),
+          lastAssistantResponse: signals.lastAssistantText && signals.modifiedAt !== undefined
+            ? {
+                id: `transcript:${composer.telemetry.composerId}:${Math.round(signals.modifiedAt)}`,
+                text: signals.lastAssistantText,
+                observedAt: signals.modifiedAt
+              }
+            : undefined,
+          lastAssistantProcess: signals.lastAssistantProcess?.length && signals.modifiedAt !== undefined
+            ? { blocks: signals.lastAssistantProcess, observedAt: signals.modifiedAt }
+            : undefined,
           activity: composer.persistedActivity
             ? { ...composer.persistedActivity, channelId: binding?.channelId }
             : composerActivity(signals, binding?.channelId, lease, now, composer.telemetry.lastUpdatedAt)

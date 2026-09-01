@@ -14,6 +14,7 @@ import type { DesktopSnapshot } from '../src/shared/desktop-api'
 import type { CursorComposerTelemetrySource } from '../src/infrastructure/cursor/cursor-composer-telemetry'
 import { ChannelMessageRelay } from '../src/application/channel-message-relay'
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
+import type { CursorComposerRuntimeEvidence } from '../src/infrastructure/cursor/cursor-cdp-session-creator'
 
 function bridgeSnapshot(): DesktopSnapshot {
   return {
@@ -117,6 +118,11 @@ class FakeBridge implements DesktopSessionTransport {
     for (const listener of this.listeners) listener(this.getSnapshot())
   }
 
+  setConversations(conversations: DesktopSnapshot['conversations']): void {
+    this.snapshot = { ...this.snapshot, conversations, updatedAt: this.snapshot.updatedAt + 1 }
+    for (const listener of this.listeners) listener(this.getSnapshot())
+  }
+
 }
 
 class FakeTeam implements DesktopSessionTeamSource {
@@ -189,6 +195,205 @@ describe('desktop Cursor session enrichment', () => {
       expect(pushedLiveText).toBe('这是 Cursor 正在生成的原生回答')
       expect(service.getSnapshot().conversations['1']).toBeUndefined()
       unsubscribe()
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('keeps a completed native reply visible when record_reply failed and the Cursor Agent went offline', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(teamSnapshot('composer-alpha-123')),
+      { readWorkspace: () => telemetry() }
+    )
+    const update = (service as unknown as {
+      updateLiveAgentResponse(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+    }).updateLiveAgentResponse.bind(service)
+    try {
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'generating', observedAt: 1_000_000,
+        isGenerating: true, responseId: 'reply-unpersisted', responseText: '这条回复尚未通过 record_reply 落库'
+      })
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'done', observedAt: 1_001_000,
+        isGenerating: false, responseId: 'reply-unpersisted', responseText: '这条回复尚未通过 record_reply 落库'
+      })
+      vi.setSystemTime(1_020_000)
+      expect(service.getSnapshot().liveAgentResponses?.['1']).toMatchObject({
+        id: 'reply-unpersisted', status: 'complete', text: '这条回复尚未通过 record_reply 落库'
+      })
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'stopped', detail: 'Cursor offline', observedAt: 1_021_000,
+        isGenerating: false, responseId: 'reply-unpersisted', responseText: '这条回复尚未通过 record_reply 落库'
+      })
+      expect(service.getSnapshot().liveAgentResponses?.['1']?.text).toContain('尚未通过 record_reply')
+    } finally {
+      service.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps CDP completed text authoritative over repeating transcript fallback to prevent flicker', () => {
+    const service = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')), { readWorkspace: () => telemetry() }
+    )
+    const update = (service as unknown as {
+      updateLiveAgentResponse(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+    }).updateLiveAgentResponse.bind(service)
+    try {
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'unknown', detail: 'transcript', observedAt: 1,
+        isGenerating: false, responseId: 'transcript:composer-alpha-123:1', responseText: '转录兜底全文'
+      })
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'unknown', detail: 'cdp', observedAt: 2,
+        isGenerating: false, responseId: 'cursor-bubble-1', responseText: 'Cursor 可见正文\n\n保持原排版'
+      })
+      const ignored = update('1', {
+        composerId: 'composer-alpha-123', state: 'unknown', detail: 'transcript', observedAt: 3,
+        isGenerating: false, responseId: 'transcript:composer-alpha-123:1', responseText: '转录兜底全文'
+      })
+      expect(ignored).toBe(false)
+      expect(service.getSnapshot().liveAgentResponses?.['1']).toMatchObject({
+        id: 'cursor-bubble-1', text: 'Cursor 可见正文\n\n保持原排版', status: 'complete'
+      })
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('hydrates a completed process from Cursor transcript only after the first runtime inspection', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const telemetryWithProcess = {
+      ...telemetry(),
+      composers: [{
+        ...telemetry().composers[0]!,
+        lastAssistantResponse: { id: 'reply-transcript', text: '最终回复', observedAt: 2_000 },
+        lastAssistantProcess: {
+          observedAt: 2_000,
+          blocks: [
+            { kind: 'thinking' as const, id: 'transcript-thought', text: '冷启动恢复过程', status: 'done' as const },
+            { kind: 'tool' as const, id: 'transcript-tool', toolName: 'record_reply', toolKind: 'mcp' as const, status: 'done' as const }
+          ]
+        }
+      }]
+    }
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(active),
+      { readWorkspace: () => telemetryWithProcess },
+      undefined,
+      { inspectComposerRuntime: async () => ({}) }
+    )
+    try {
+      service.refreshTelemetry()
+      expect(service.getSnapshot().liveProcess?.['1']).toBeUndefined()
+      await vi.waitFor(() => {
+        service.refreshTelemetry()
+        expect(service.getSnapshot().liveProcess?.['1']?.blocks.map((block) => block.id)).toEqual([
+          'transcript-thought', 'transcript-tool'
+        ])
+      })
+      expect(service.getSnapshot().liveAgentResponses?.['1']?.text).toBe('最终回复')
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('retains a completed native process until persistence or a newer user turn takes ownership', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    const bridge = new FakeBridge()
+    const service = new DesktopSessionService(
+      bridge,
+      new FakeTeam(teamSnapshot('composer-alpha-123')),
+      { readWorkspace: () => telemetry() }
+    )
+    const update = (service as unknown as {
+      updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+    }).updateLiveCursorProcess.bind(service)
+    try {
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'generating', observedAt: 1_000_000,
+        isGenerating: true,
+        process: {
+          turnId: 'user-retained',
+          items: [{ kind: 'thinking', id: 'thought-retained', text: '不能一闪而过', status: 'running' }],
+          generatingBubbleCount: 1
+        }
+      })
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'unknown', detail: 'done', observedAt: 1_001_000,
+        isGenerating: false
+      })
+
+      vi.setSystemTime(1_061_000)
+      expect(service.getSnapshot().liveProcess?.['1']?.blocks[0]).toMatchObject({
+        id: 'thought-retained', status: 'done'
+      })
+
+      bridge.setConversations({
+        '1': [{
+          id: 'user-next', channelId: '1', role: 'user', text: '下一轮', timestamp: 1_062_000,
+          status: 'complete', source: 'desktop'
+        }]
+      })
+      expect(service.getSnapshot().liveProcess?.['1']).toBeUndefined()
+    } finally {
+      service.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps consecutive native turns FIFO-bound to their exact assistant replies', () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const bridge = new FakeBridge()
+    const service = new DesktopSessionService(
+      bridge,
+      new FakeTeam(active),
+      { readWorkspace: () => telemetry() },
+      undefined,
+      { inspectComposerRuntime: async () => ({}) }
+    )
+    try {
+      service.refreshTelemetry()
+      const base = Date.now()
+      for (const [turnId, blockId, at] of [['user-turn-1', 'tool-turn-1', base], ['user-turn-2', 'tool-turn-2', base + 1_000]] as const) {
+        service.notifyNativeProcessSnapshot({
+          composerId: 'composer-alpha-123', observedAt: at, isGenerating: true,
+          process: {
+            turnId,
+            items: [{ kind: 'tool', id: blockId, toolName: 'read_file', toolKind: 'read', summary: blockId, status: 'running' }],
+            generatingBubbleCount: 1
+          }
+        })
+        service.notifyNativeProcessSnapshot({
+          composerId: 'composer-alpha-123', observedAt: at + 100, isGenerating: false
+        })
+      }
+      bridge.setConversations({
+        '1': [
+          { id: 'reply:one', channelId: '1', role: 'assistant', text: '第一轮', timestamp: base + 200, status: 'complete', source: 'cursor' },
+          { id: 'reply:two', channelId: '1', role: 'assistant', text: '第二轮', timestamp: base + 1_200, status: 'complete', source: 'cursor' }
+        ]
+      })
+      const first = service.getSnapshot().conversations['1']!
+      expect(first[0]).toMatchObject({ turn: 'cursor:user-turn-1', processBlocks: [{ id: 'tool-turn-1' }] })
+      expect(first[1]).toMatchObject({ turn: 'cursor:user-turn-2', processBlocks: [{ id: 'tool-turn-2' }] })
+      const second = service.getSnapshot().conversations['1']!
+      expect(second.map((entry) => entry.processBlocks?.[0]?.id)).toEqual(['tool-turn-1', 'tool-turn-2'])
     } finally {
       service.dispose()
     }

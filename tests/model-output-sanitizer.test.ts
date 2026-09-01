@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   hasToolTokenLeakage,
+  sanitizeModelDisplayText,
   sanitizeModelGeneratedText,
   stripDanglingBoldMarkers,
   stripLineDanglingBoldMarker,
@@ -59,6 +60,13 @@ describe('model-output-sanitizer', () => {
     it('keeps newlines and trims only edge whitespace', () => {
       expect(stripRedactionMarkers('  第一行\n第二行 [REDACTED]  '))
         .toBe('第一行\n第二行')
+    })
+  })
+
+  it('uses one display pipeline for redaction and tool-token leakage', () => {
+    expect(sanitizeModelDisplayText('[REDACTED]').text).toBe('')
+    expect(sanitizeModelDisplayText(`可见正文 [REDACTED] ${SEP}残片`)).toMatchObject({
+      text: '可见正文', leaked: true
     })
   })
 

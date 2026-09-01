@@ -293,6 +293,13 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   // 轮询循环保留为流式粒度与兜底；observer 缺席时整体降级为纯轮询。
   // 用量通道：bundle 补丁在 turnEnded 推真实计费 token → 聚合器 → IPC 推送。
   const streamService = desktopSessionService
+  // 观察器与会话创建共用同一目标解析（团队工作区窗口），避免多窗口时连错；
+  // 定义必须先于 observer 构造（attach 同步段即调用）。
+  const teamControlSnapshotForObserver = teamControlService
+  const activeTeamWorkspacePath = (): string | undefined => {
+    const snapshot = teamControlSnapshotForObserver.getSnapshot()
+    return snapshot.workspaces.find((workspace) => workspace.id === snapshot.activeWorkspaceId)?.path
+  }
   const cursorUsageStore = new CursorUsageStore(join(app.getPath('userData'), 'cursor-usage.json'))
   const initialUsageTeam = teamControlService.getSnapshot()
   let usageRunId = initialUsageTeam.activeRun?.id
@@ -314,16 +321,14 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   })
   cursorUsageTrackerRef = cursorUsageTracker
   cursorStreamObserver = new CursorStreamObserver({
+    fetchPageSocketUrl: () => cursorCdpCreator.resolveWorkbenchSocket(activeTeamWorkspacePath()),
     onWriteSignal: (composerId) => streamService.notifyComposerWriteSignal(composerId),
     onProcessEvent: (event) => streamService.notifyNativeProcessSnapshot(event),
-    onUsageEvent: (event) => cursorUsageTracker.record(event)
+    onUsageEvent: (event) => cursorUsageTracker.record(event),
+    onStatus: (status) => streamService.setNativeProcessStreamStatus(status)
   })
   void cursorStreamObserver.attach()
   const teamControlSnapshotSource = teamControlService
-  const activeTeamWorkspacePath = (): string | undefined => {
-    const snapshot = teamControlSnapshotSource.getSnapshot()
-    return snapshot.workspaces.find((workspace) => workspace.id === snapshot.activeWorkspaceId)?.path
-  }
   // 账号自动化的浏览器宿主双路径（设置里按需切换，契约同构 AccountAutomationBrowserHost）：
   //   fingerprint：RoxyBrowser profile + CDP 直连（过 Cloudflare；preflight 读 token 内存级、
   //                奥仔期间连接保持热、导航刷新等 token 轮换后页内秒级删除）

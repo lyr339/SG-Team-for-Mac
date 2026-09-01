@@ -77,6 +77,17 @@ describe('ProcessBlocks', () => {
     expect(html).not.toContain('\\n')
   })
 
+  it('collapses earlier thoughts and keeps only the latest thought expanded by default', () => {
+    const html = renderToStaticMarkup(<ProcessBlocks blocks={[
+      { kind: 'thinking', id: 'thought-1', text: '较早的长思考', status: 'done' },
+      { kind: 'thinking', id: 'thought-2', text: '当前最新思考', status: 'running' }
+    ]} />)
+    expect(html).not.toContain('较早的长思考')
+    expect(html).toContain('当前最新思考')
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).toContain('aria-expanded="true"')
+  })
+
   it('returns null for an empty block list', () => {
     expect(renderToStaticMarkup(<ProcessBlocks blocks={[]} />)).toBe('')
   })

@@ -45,6 +45,10 @@ export interface ChannelInboundReply {
   visible?: boolean
   createdAt: number
   consumedAt?: number
+  /** 主进程捕获的 Cursor 原生过程（持久绑定到该回复，重启后恢复过程卡）。 */
+  processBlocks?: import('./conversation-entry').ProcessBlock[]
+  processTurn?: string
+  processTruncatedItemCount?: number
 }
 
 /**

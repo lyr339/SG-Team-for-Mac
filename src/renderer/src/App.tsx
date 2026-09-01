@@ -1171,6 +1171,7 @@ export function App(): React.JSX.Element {
           onAttachmentsChange={(attachments) => setComposerAttachments((current) => ({ ...current, [selectedSession.channelId]: attachments }))}
           liveProcess={snapshot.liveProcess?.[selectedSession.channelId]}
           liveAgentResponse={snapshot.liveAgentResponses?.[selectedSession.channelId]}
+          nativeProcessStream={snapshot.nativeProcessStream}
           onSend={async (text, attachments) => {
             await window.qingtianDesktop.sendMessage({ channelId: selectedSession.channelId, text, attachments })
           }}

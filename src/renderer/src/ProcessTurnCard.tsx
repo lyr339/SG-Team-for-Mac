@@ -12,6 +12,7 @@ interface ProcessTurnCardProps {
   compact?: boolean
   title?: string
   live?: boolean
+  truncatedItemCount?: number
 }
 
 function formatDuration(milliseconds?: number): string {
@@ -78,7 +79,8 @@ export function ProcessTurnCard({
   defaultOpen = true,
   compact = false,
   title = '过程记录',
-  live = false
+  live = false,
+  truncatedItemCount = 0
 }: ProcessTurnCardProps): React.JSX.Element | null {
   const model = useMemo(() => buildProcessTurnView({ id, blocks, startedAt, updatedAt }), [id, blocks, startedAt, updatedAt])
   const [open, setOpen] = useState(defaultOpen)
@@ -101,7 +103,8 @@ export function ProcessTurnCard({
     `${model.steps.length} 步`,
     model.toolCount ? `${model.toolCount} 次工具` : '',
     statusText,
-    elapsed ? model.timingEstimated ? `观测 ~${elapsed}` : `累计 ${elapsed}` : ''
+    elapsed ? model.timingEstimated ? `观测 ~${elapsed}` : `累计 ${elapsed}` : '',
+    truncatedItemCount > 0 ? `另有 ${truncatedItemCount} 步已折叠` : ''
   ].filter(Boolean).join(' · ')
 
   const toggleAll = (): void => {
@@ -117,18 +120,27 @@ export function ProcessTurnCard({
           <div className="cursor-native-process__live" role="status"><i />Cursor 实时过程</div>
         ) : null}
         <div className="cursor-native-process__flow">
+          {truncatedItemCount > 0 ? (
+            <div className="cursor-native-process__truncated" role="note">原生回合过长，较早的 {truncatedItemCount} 个步骤已折叠</div>
+          ) : null}
           {model.steps.map((step) => {
             const stepOpen = expanded.has(step.id)
             const hasDetails = Boolean(step.details.length || step.todos?.length)
             const duration = stepDuration(step)
             if (step.kind === 'thinking') {
               return (
-                <article key={step.id} className={`cursor-native-thought is-${step.status}`}>
-                  <header>
+                <article key={step.id} className={`cursor-native-thought is-${step.status} ${stepOpen ? 'is-open' : ''}`}>
+                  <button className="cursor-native-thought__head" onClick={() => setExpanded((current) => {
+                    const next = new Set(current)
+                    if (next.has(step.id)) next.delete(step.id)
+                    else next.add(step.id)
+                    return next
+                  })} aria-expanded={stepOpen}>
                     <strong>Thought</strong>
                     {duration ? <time>for {duration}</time> : step.status === 'running' ? <span><i />thinking</span> : null}
-                  </header>
-                  {step.body ? <MessageContent text={step.body} className="cursor-native-thought__body" /> : null}
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d={stepOpen ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'} fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg>
+                  </button>
+                  {stepOpen && step.body ? <MessageContent text={step.body} className="cursor-native-thought__body" /> : null}
                 </article>
               )
             }
@@ -181,6 +193,7 @@ export function ProcessTurnCard({
       </button>
       {open ? (
         <div className="process-turn__content">
+          {truncatedItemCount > 0 ? <p className="process-turn__truncated">较早的 {truncatedItemCount} 个原生步骤已折叠</p> : null}
           <button className="process-turn__expand-all" onClick={toggleAll}>
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 3 3 3 3-3M5 13l3-3 3 3" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.3"/></svg>
             {expanded.size === model.steps.length ? '收起全部' : '展开全部'}

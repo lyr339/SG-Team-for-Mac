@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import WebSocket from 'ws'
-import { stripRedactionMarkers } from '../../domain/model-output-sanitizer'
+import { sanitizeModelDisplayText } from '../../domain/model-output-sanitizer'
 import type { CursorModelSelection } from '../../domain/cursor-model'
 
 /**
@@ -96,10 +96,14 @@ export interface CursorStreamMessageBlock {
  * 覆盖未自觉走流式上报协议的 Agent。
  */
 export interface CursorProcessStream {
+  /** 当前原生用户 bubble id；作为准确回合边界，避免快速连续对话串流。 */
+  turnId?: string
   /** Cursor fullConversationHeadersOnly 的原始顺序；思考与工具不可分组重排。 */
   items: Array<CursorStreamThinkingBlock | CursorStreamToolBlock | CursorStreamMessageBlock>
   todos?: Array<{ content: string; status: string }>
   generatingBubbleCount: number
+  /** 超长回合超过传输上限时显式披露数量，避免伪装成“全部”。 */
+  truncatedItemCount?: number
 }
 
 export interface CursorComposerRuntimeEvidence {
@@ -401,7 +405,7 @@ function buildCreateExpression(input: {
 })()`
 }
 
-function buildRuntimeInspectionExpression(composerIds: string[]): string {
+export function buildRuntimeInspectionExpression(composerIds: string[]): string {
   const ids = JSON.stringify(composerIds)
   return `(async () => {
     const bridge = window.__qtComposerBridge;
@@ -433,8 +437,48 @@ function buildRuntimeInspectionExpression(composerIds: string[]): string {
           state = 'active';
           detail = 'Cursor 实时状态确认 Agent 正在执行';
         }
-        const responseText = String(status && status.lastAiText || '');
-        const responseId = String(status && (status.lastAiBubbleId || status.chatGenerationUUID) || '');
+        let responseText = '';
+        let responseId = '';
+        let dataInspected = false;
+        try {
+          const data = bridge.getComposerData ? bridge.getComposerData(composerId) : undefined;
+          const headers = data && data.fullConversationHeadersOnly || [];
+          const map = data && data.conversationMap || {};
+          dataInspected = headers.length > 0 || Object.keys(map).length > 0;
+          let lastUser = -1;
+          for (let i = headers.length - 1; i >= 0; i--) if (headers[i] && headers[i].type === 1) { lastUser = i; break; }
+          for (let i = headers.length - 1; i > lastUser; i--) {
+            const header = headers[i];
+            const message = map[header && header.bubbleId] || {};
+            const text = typeof message.text === 'string' ? message.text : '';
+            if (!text.trim()) continue;
+            let laterWork = false;
+            for (let j = i + 1; j < headers.length; j++) {
+              const later = map[headers[j] && headers[j].bubbleId] || {};
+              const thinking = typeof later.thinking === 'string' ? later.thinking : later.thinking && later.thinking.text;
+              const td = later.toolFormerData;
+              const modernArgs = td && td.toolCall && td.toolCall.tool && td.toolCall.tool.value && td.toolCall.tool.value.args;
+              const toolName = String(td && td.name || modernArgs && (modernArgs.toolName || modernArgs.name) || '');
+              const lowerTool = toolName.toLowerCase();
+              const transportNoise = ['check_messages', 'record_reply', 'wait_messages', 'qingtian'].some(item => (
+                lowerTool === item || lowerTool.endsWith('-' + item) || lowerTool.endsWith('_' + item)
+              ));
+              if ((td && !transportNoise) || (typeof thinking === 'string' && thinking.trim()) || (!td && later.capabilityType !== undefined) || later.serviceStatusUpdate) {
+                laterWork = true;
+                break;
+              }
+            }
+            if (!laterWork) {
+              responseText = text;
+              responseId = String(header.bubbleId || '');
+            }
+            break;
+          }
+        } catch (e) {}
+        if (!dataInspected && !responseId && !responseText) {
+          responseText = String(status && status.lastAiText || '');
+          responseId = String(status && (status.lastAiBubbleId || status.chatGenerationUUID) || '');
+        }
         // 用量捎带：turnTokenUsage（本回合真实计费，与 turnEnded 事件同源）+
         // contextTokensUsed/Limit（上下文窗口实时占用）。全为 0 时省略字段，
         // 保持 evidence 指纹稳定（零会话不触发无谓的快照推送）。
@@ -478,33 +522,24 @@ function parseWindowInfo(value: unknown): CursorCdpWindowInfo | undefined {
 const STREAM_TOOL_KINDS = new Set(['command', 'read', 'search', 'edit', 'write', 'browser', 'mcp', 'todo', 'other'])
 
 /**
- * 内部协议工具名单与匹配规则——对齐 cursor-composer-telemetry 的 internalMcpCall：
- * 拾光内部同步通道（check_messages / record_reply / team_* 等）是协议噪音，
- * 不是用户要看的工作过程；转录侧一直过滤它们，CDP 过程流必须同样过滤，
- * 否则持续对话模式下过程卡会被每秒一次的 check_messages 刷屏。
- * toolFormerData.name 形如 'mcp-SG Team-record_reply'。
+ * 内部协议工具名单与匹配规则——只收敛纯传输噪音：
+ * check_messages / record_reply / wait_messages / qingtian（含旧服务器前缀形态）。
+ * team_task / team_run 等会改变用户可见工作状态的工具必须进过程流
+ * （Cursor 原生会话里同样可见）；它们调用频率低，不构成刷屏源。
+ * toolFormerData.name 形如 'mcp-SG Team-record_reply'——后缀匹配同时覆盖裸名形态。
  */
 const INTERNAL_STREAM_TOOL_NAMES = new Set([
   'check_messages',
   'record_reply',
   'wait_messages',
-  'qingtian',
-  'list_available',
-  'list_mine',
-  'get_task',
-  'claim_task',
-  'claim_review',
-  'submit_for_review',
-  'fail_task',
-  'report_status'
+  'qingtian'
 ])
 
 function isInternalStreamTool(toolName: string): boolean {
   const lower = toolName.trim().toLowerCase()
-  if (/^mcp-(qtwx|qingtian|qunshu|sg[_ -]?team)/.test(lower)) return true
-  const bare = lower.replace(/^mcp-[^-]*-/, '')
-  if (INTERNAL_STREAM_TOOL_NAMES.has(bare)) return true
-  return bare.startsWith('team_') || bare.startsWith('qingtian_') || bare.startsWith('qtwx_')
+  return [...INTERNAL_STREAM_TOOL_NAMES].some((name) => (
+    lower === name || lower.endsWith(`-${name}`) || lower.endsWith(`_${name}`)
+  ))
 }
 
 /** 解析页面侧提取的过程流（宽容解析：单块坏数据不影响其余块；内部协议调用过滤）。 */
@@ -515,7 +550,7 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
     for (const item of value.items) {
       if (!isRecord(item) || typeof item.id !== 'string' || !item.id) continue
       if (item.kind === 'thinking') {
-        const text = typeof item.text === 'string' ? stripRedactionMarkers(item.text.slice(0, 4_000)) : ''
+        const text = typeof item.text === 'string' ? sanitizeModelDisplayText(item.text.slice(0, 24_200)).text : ''
         if (!text) continue
         items.push({
           kind: 'thinking',
@@ -529,7 +564,7 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
         continue
       }
       if (item.kind === 'message') {
-        const text = typeof item.text === 'string' ? stripRedactionMarkers(item.text.slice(0, 8_000)) : ''
+        const text = typeof item.text === 'string' ? sanitizeModelDisplayText(item.text.slice(0, 12_200)).text : ''
         if (!text) continue
         items.push({
           kind: 'message',
@@ -556,8 +591,8 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
         summary: typeof item.summary === 'string' ? item.summary.slice(0, 160) : '',
         status,
         input,
-        output: typeof item.output === 'string' && item.output ? item.output.slice(0, 8_000) : undefined,
-        error: typeof item.error === 'string' && item.error ? item.error.slice(0, 4_000) : undefined
+        output: typeof item.output === 'string' && item.output ? item.output.slice(0, 12_200) : undefined,
+        error: typeof item.error === 'string' && item.error ? item.error.slice(0, 8_200) : undefined
       })
     }
   }
@@ -571,11 +606,15 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
     : undefined
   if (!items.length && !todos?.length) return undefined
   return {
-    items: items.slice(-36),
+    turnId: typeof value.turnId === 'string' && value.turnId ? value.turnId.slice(0, 120) : undefined,
+    items: items.slice(-256),
     todos: todos?.length ? todos : undefined,
     generatingBubbleCount: typeof value.generatingBubbleCount === 'number' && value.generatingBubbleCount > 0
       ? Math.min(Math.floor(value.generatingBubbleCount), 32)
-      : 0
+      : 0,
+    truncatedItemCount: typeof value.truncatedItemCount === 'number' && value.truncatedItemCount > 0
+      ? Math.min(Math.floor(value.truncatedItemCount), 100_000)
+      : undefined
   }
 }
 
@@ -752,6 +791,12 @@ export class CursorCdpSessionCreator {
 
     const titles = targets.map((target) => `「${probes.get(target.id)?.title || target.title || target.url}」`).join('、')
     return { error: `检测到 ${targets.length} 个 Cursor 窗口（${titles}），无法确定团队工作区所在窗口；请只保留团队工作区窗口后重试` }
+  }
+
+  /** 与会话创建共用同一目标解析，供过程观察器连接团队工作区窗口。 */
+  async resolveWorkbenchSocket(workspacePath?: string): Promise<string | undefined> {
+    const { target } = await this.resolveTarget(workspacePath)
+    return target?.webSocketDebuggerUrl
   }
 
   /**

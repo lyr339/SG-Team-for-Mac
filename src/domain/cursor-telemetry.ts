@@ -1,4 +1,5 @@
 import type { AgentExecutionProfile, ChangeSummary, ContextUsage } from './agent-session'
+import type { ProcessBlock } from './conversation-entry'
 import type { CursorModelOption } from './cursor-model'
 
 export type CursorTelemetryAvailability = 'available' | 'unavailable' | 'error'
@@ -30,6 +31,10 @@ export interface CursorComposerTelemetry {
   activity?: CursorComposerActivity
   contextUsage?: ContextUsage
   changes?: ChangeSummary
+  /** Cursor 转录中最后一条完整 Assistant 文本；record_reply 失败时作为耐久展示来源。 */
+  lastAssistantResponse?: { id: string; text: string; observedAt: number }
+  /** 同一最终回复之前的 Cursor 原生思考/工具序列；应用重启后恢复过程卡。 */
+  lastAssistantProcess?: { blocks: ProcessBlock[]; observedAt: number }
 }
 
 export interface ComposerBindingCandidate {

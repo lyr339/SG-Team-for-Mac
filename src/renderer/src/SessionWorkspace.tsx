@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
 import type { ConversationEntry, MessageAttachment } from '../../domain/conversation-entry'
-import type { LiveAgentResponseState, LiveProcessState } from '../../shared/desktop-api'
+import type { LiveAgentResponseState, LiveProcessState, NativeProcessStreamStatus } from '../../shared/desktop-api'
 import { formatClock, formatFileSize, formatRelativeTime, statusLabel } from './format'
 import { ComposerWorkbench } from './ComposerWorkbench'
 import { AgentAvatar } from './AgentAvatar'
@@ -25,6 +25,7 @@ interface SessionWorkspaceProps {
   liveProcess?: LiveProcessState
   /** Cursor Composer 原生回复文本（CDP 250ms 增量）。 */
   liveAgentResponse?: LiveAgentResponseState
+  nativeProcessStream?: NativeProcessStreamStatus
 }
 
 /** 同角色且间隔小于该值的连续消息合并成一组（只显示一次头像与名称）。 */
@@ -36,8 +37,7 @@ const MESSAGE_CLAMP_PX = 384
 
 type TimelineItem =
   | { type: 'entry'; key: string; entry: ConversationEntry; timestamp: number; order: number }
-  | { type: 'live-process'; key: string; timestamp: number; order: number }
-  | { type: 'live-response'; key: string; timestamp: number; order: number }
+  | { type: 'live-turn'; key: string; timestamp: number; order: number }
   | { type: 'running-placeholder'; key: string; timestamp: number; order: number }
 
 /**
@@ -129,7 +129,8 @@ export function SessionWorkspace({
   attachments,
   onAttachmentsChange,
   liveProcess,
-  liveAgentResponse
+  liveAgentResponse,
+  nativeProcessStream
 }: SessionWorkspaceProps): React.JSX.Element {
   const [sendError, setSendError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -168,6 +169,9 @@ export function SessionWorkspace({
     && entry.text.trim() === liveAgentResponse.text.trim()
   ))
   const visibleLiveResponse = liveAgentResponse && !finalizedLiveResponse ? liveAgentResponse : undefined
+  // 回合归属与旧过程清理由 DesktopSessionService 统一裁决。渲染层不再用时间差
+  // 猜测过程与回复是否同轮；长任务中最终正文晚于最后一个工具块数分钟很常见。
+  const visibleLiveProcess = liveProcess
   const liveResponseKey = visibleLiveResponse
     ? `${visibleLiveResponse.id}:${visibleLiveResponse.status}:${visibleLiveResponse.text.length}:${visibleLiveResponse.updatedAt}`
     : ''
@@ -176,7 +180,7 @@ export function SessionWorkspace({
   const showRunningPlaceholder = pendingVisibleUser
     && session.online
     && session.status === 'running'
-    && !liveProcess?.blocks.length
+    && !visibleLiveProcess?.blocks.length
     && !visibleLiveResponse
   const timelineItems = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = visibleEntries.map((entry, index) => ({
@@ -186,26 +190,21 @@ export function SessionWorkspace({
       timestamp: entry.timestamp,
       order: index * 10
     }))
-    if (liveProcess?.blocks.length) {
+    if (visibleLiveProcess?.blocks.length || visibleLiveResponse) {
       items.push({
-        type: 'live-process',
-        key: `live-process:${liveProcess.turn}`,
-        timestamp: Math.max(liveProcess.updatedAt, lastVisibleTimestamp + 1),
-        order: Number.MAX_SAFE_INTEGER - 1
+        type: 'live-turn',
+        key: `active-turn:${session.id}`,
+        timestamp: Math.max(
+          visibleLiveProcess?.startedAt ?? visibleLiveResponse!.startedAt,
+          lastVisibleTimestamp + 1
+        ),
+        order: Number.MAX_SAFE_INTEGER
       })
     } else if (showRunningPlaceholder) {
       items.push({
         type: 'running-placeholder',
-        key: `running-placeholder:${session.id}`,
+        key: `active-turn:${session.id}`,
         timestamp: (visibleEntries.at(-1)?.timestamp ?? Date.now()) + 1,
-        order: Number.MAX_SAFE_INTEGER
-      })
-    }
-    if (visibleLiveResponse) {
-      items.push({
-        type: 'live-response',
-        key: `live-response:${visibleLiveResponse.id}`,
-        timestamp: Math.max(visibleLiveResponse.updatedAt, lastVisibleTimestamp + 2),
         order: Number.MAX_SAFE_INTEGER
       })
     }
@@ -214,7 +213,7 @@ export function SessionWorkspace({
       || left.order - right.order
       || left.key.localeCompare(right.key)
     ))
-  }, [visibleEntries, liveProcess, visibleLiveResponse, showRunningPlaceholder, session.id, lastVisibleTimestamp])
+  }, [visibleEntries, visibleLiveProcess, visibleLiveResponse, showRunningPlaceholder, session.id, lastVisibleTimestamp])
   const canSend = (session.online || queuedTransport) && !submitting
   const disconnected = agentOffline && !queuedTransport
   const queuedOffline = agentOffline && queuedTransport
@@ -377,6 +376,7 @@ export function SessionWorkspace({
                 <ProcessTurnCard
                   id={entry.turn ?? `entry:${entry.id}`}
                   blocks={entry.processBlocks}
+                  truncatedItemCount={entry.processTruncatedItemCount}
                   startedAt={entry.processBlocks?.[0]?.startedAt}
                   updatedAt={entry.timestamp}
                   defaultOpen={entry.id === latestAssistantId}
@@ -461,49 +461,40 @@ export function SessionWorkspace({
     )
   }
 
-  const renderLiveProcessRow = (): React.JSX.Element => (
-    <div className="chat-row chat-row--agent live-process-row" key={`live-process:${liveProcess?.turn ?? session.id}`}>
+  const renderLiveTurnRow = (): React.JSX.Element => (
+    <div className="chat-row chat-row--agent live-process-row" key={`active-turn:${session.id}`}>
       <span className="chat-gutter">
         <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
       </span>
       <div className="chat-col">
         <div className="chat-name">
           <strong>Agent</strong>
-          <time>{formatClock(liveProcess?.startedAt ?? Date.now())}</time>
+          <time>{formatClock(visibleLiveProcess?.startedAt ?? visibleLiveResponse?.startedAt ?? Date.now())}</time>
         </div>
         <div className="chat-bubble">
-          <ProcessTurnCard
-            id={liveProcess?.turn ?? `live:${session.id}`}
-            blocks={liveProcess?.blocks}
-            startedAt={liveProcess?.startedAt}
-            updatedAt={liveProcess?.updatedAt ?? Date.now()}
-            defaultOpen
-            compact
-            live
-          />
+          {visibleLiveProcess?.blocks.length ? (
+            <ProcessTurnCard
+              id={visibleLiveProcess.turn}
+              blocks={visibleLiveProcess.blocks}
+              startedAt={visibleLiveProcess.startedAt}
+              updatedAt={visibleLiveProcess.updatedAt}
+              truncatedItemCount={visibleLiveProcess.truncatedItemCount}
+              defaultOpen
+              compact
+              live
+            />
+          ) : null}
+          {visibleLiveResponse ? <LiveAgentResponse response={visibleLiveResponse} /> : null}
         </div>
+        {visibleLiveResponse ? (
+          <div className="chat-tail"><span className="chat-state">{visibleLiveResponse.status === 'streaming' ? 'Cursor 实时生成中' : '正在归档…'}</span></div>
+        ) : null}
       </div>
     </div>
   )
 
-  const renderLiveResponseRow = (): React.JSX.Element => {
-    const response = visibleLiveResponse!
-    return (
-    <div className="chat-row chat-row--agent live-response-row" key={`live-response:${response.id}`}>
-      <span className="chat-gutter">
-        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
-      </span>
-      <div className="chat-col">
-        <div className="chat-name"><strong>Agent</strong><time>{formatClock(response.startedAt)}</time></div>
-        <div className="chat-bubble"><LiveAgentResponse response={response} /></div>
-        <div className="chat-tail"><span className="chat-state">{response.status === 'streaming' ? 'Cursor 实时生成中' : '正在归档…'}</span></div>
-      </div>
-    </div>
-    )
-  }
-
   const renderRunningPlaceholder = (): React.JSX.Element => (
-    <div className="chat-row chat-row--agent live-process-row" key={`running-placeholder:${session.id}`}>
+    <div className="chat-row chat-row--agent live-process-row" key={`active-turn:${session.id}`}>
       <span className="chat-gutter">
         <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
       </span>
@@ -514,7 +505,11 @@ export function SessionWorkspace({
         </div>
         <div className="chat-bubble live-process-idle">
           <span className="typing-indicator"><i /><i /><i /></span>
-          <span className="live-process-idle__hint">过程流就绪后将在此实时展示</span>
+          <span className={`live-process-idle__hint ${nativeProcessStream?.state !== 'connected' ? 'is-warning' : ''}`}>
+            {nativeProcessStream?.state === 'connected'
+              ? '过程流就绪后将在此实时展示'
+              : `原生过程流${nativeProcessStream?.state === 'reconnecting' ? '正在重连' : '当前不可用'}：${nativeProcessStream?.detail ?? '等待 Cursor 调试连接'}`}
+          </span>
         </div>
       </div>
     </div>
@@ -528,8 +523,7 @@ export function SessionWorkspace({
         previousEntry = item.entry
         return rendered
       }
-      if (item.type === 'live-process') return renderLiveProcessRow()
-      if (item.type === 'live-response') return renderLiveResponseRow()
+      if (item.type === 'live-turn') return renderLiveTurnRow()
       return renderRunningPlaceholder()
     })
   }
@@ -551,7 +545,7 @@ export function SessionWorkspace({
             <span className={`status-pill status-pill--${session.status}`}>{statusLabel(session.status)}</span>
           </div>
           <p>
-            {session.composerTitle || session.id} · {session.roleName} · {session.online
+            {session.composerTitle || `SG Team · CH-${session.channelId}`} · {session.roleName} · {session.online
               ? formatRelativeTime(session.lastSeenAt)
               : 'Agent 当前离线'}
           </p>

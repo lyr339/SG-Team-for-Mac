@@ -1,4 +1,4 @@
-import { sanitizeModelGeneratedText } from './model-output-sanitizer'
+import { sanitizeModelDisplayText, sanitizeModelGeneratedText } from './model-output-sanitizer'
 
 export type ConversationRole = 'user' | 'assistant' | 'system' | 'error'
 export type ConversationEntryStatus = 'pending' | 'streaming' | 'complete' | 'failed'
@@ -79,9 +79,9 @@ function normalizeOptionalText(text: string | undefined): string | undefined {
   return text === undefined ? undefined : normalizeEscapedNewlines(text)
 }
 
-/** 模型上报文本统一先净化（工具调用标记泄漏截断）再做转义换行归一。 */
+/** 模型上报文本统一先净化（工具调用标记泄漏截断 + 脱敏占位符剥离）再做转义换行归一。 */
 function sanitizeThenNormalize(text: string): string {
-  return normalizeEscapedNewlines(sanitizeModelGeneratedText(text).text)
+  return normalizeEscapedNewlines(sanitizeModelDisplayText(text).text)
 }
 
 function sanitizeOptionalText(text: string | undefined): string | undefined {
@@ -138,6 +138,8 @@ export interface ConversationEntry {
   error?: string
   /** 助手消息关联的过程区块（工具调用 / 思考 / 命令输出） */
   processBlocks?: ProcessBlock[]
+  /** 原生超长回合因传输上限折叠的步骤数。 */
+  processTruncatedItemCount?: number
   /** 用户消息携带的附件 */
   attachments?: MessageAttachment[]
   /** 静默条目：系统内部协作通知不进入用户时间线，仅通过 DesktopSnapshot.commandReceipts 保留投递回执 */

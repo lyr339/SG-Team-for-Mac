@@ -38,8 +38,9 @@ function renderWorkspace(overrides: {
   session?: Partial<AgentSession>
   entries?: ConversationEntry[]
   currentProjectName?: string
-  liveProcess?: { turn: string; startedAt: number; updatedAt: number; blocks: import('../src/domain/conversation-entry').ProcessBlock[] }
+  liveProcess?: { turn: string; startedAt: number; updatedAt: number; truncatedItemCount?: number; blocks: import('../src/domain/conversation-entry').ProcessBlock[] }
   liveAgentResponse?: import('../src/shared/desktop-api').LiveAgentResponseState
+  nativeProcessStream?: import('../src/shared/desktop-api').NativeProcessStreamStatus
 } = {}): string {
   return renderToStaticMarkup(
     <SessionWorkspace
@@ -54,6 +55,7 @@ function renderWorkspace(overrides: {
       onAttachmentsChange={() => {}}
       liveProcess={overrides.liveProcess}
       liveAgentResponse={overrides.liveAgentResponse}
+      nativeProcessStream={overrides.nativeProcessStream}
     />
   )
 }
@@ -71,6 +73,56 @@ describe('SessionWorkspace', () => {
     expect(html).toContain('live-agent-response')
     expect(html).toContain('Cursor 实时生成中')
     expect(html).not.toContain('live-process-idle')
+  })
+
+  it('discloses when the native Cursor process stream is disconnected', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({ id: 'u-stream', role: 'user', source: 'desktop', text: '继续处理' })],
+      nativeProcessStream: { state: 'reconnecting', detail: '调试端口尚未连接', updatedAt: 1 }
+    })
+    expect(html).toContain('原生过程流正在重连')
+    expect(html).toContain('调试端口尚未连接')
+  })
+
+  it('combines live process and final streaming text into one native-style Agent turn', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      liveProcess: {
+        turn: 'cursor:user-1', startedAt: 1_000, updatedAt: 1_100,
+        blocks: [{ kind: 'tool', id: 'read-1', toolName: 'read_file', toolKind: 'read', summary: 'a.ts', status: 'done' }]
+      },
+      liveAgentResponse: {
+        id: 'answer-1', channelId: '5', text: '统一回合中的最终回答', status: 'streaming',
+        startedAt: 1_050, updatedAt: 1_200
+      }
+    })
+    expect(html.match(/live-process-row/g)).toHaveLength(1)
+    expect(html).toContain('cursor-native-process__flow')
+    expect(html).toContain('live-agent-response')
+    expect(html).not.toContain('live-response-row')
+  })
+
+  it('keeps a long-running turn process beside its final response without a timestamp guess', () => {
+    const html = renderWorkspace({
+      liveProcess: {
+        turn: 'cursor:user-long-running', startedAt: 1_000, updatedAt: 5_000,
+        blocks: [{ kind: 'thinking', id: 'thought-long', text: '长任务完整过程', status: 'done' }]
+      },
+      liveAgentResponse: {
+        id: 'answer-after-long-work', channelId: '5', text: '长任务最终回答', status: 'complete',
+        startedAt: 180_000, updatedAt: 180_100
+      }
+    })
+    expect(html).toContain('长任务完整过程')
+    expect(html).toContain('长任务最终回答')
+    expect(html.match(/live-process-row/g)).toHaveLength(1)
+  })
+
+  it('never renders the legacy qingtian runtime id as a user-facing session label', () => {
+    const html = renderWorkspace({ session: { id: 'qingtian-channel:5', composerTitle: undefined } })
+    expect(html).toContain('SG Team · CH-5')
+    expect(html).not.toContain('qingtian-channel:5')
   })
 
   it('Agent 运行中且无过程块时显示「正在处理」占位气泡', () => {

@@ -13,7 +13,7 @@ import {
   type ChannelOutboundMessage,
   type ChannelPresence
 } from '../../domain/channel-message'
-import type { MessageAttachment } from '../../domain/conversation-entry'
+import type { MessageAttachment, ProcessBlock } from '../../domain/conversation-entry'
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined
@@ -32,6 +32,16 @@ function attachmentsOf(value: unknown): MessageAttachment[] | undefined {
   try {
     const parsed = JSON.parse(value)
     return Array.isArray(parsed) && parsed.length ? parsed as MessageAttachment[] : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function processBlocksOf(value: unknown): ProcessBlock[] | undefined {
+  if (typeof value !== 'string' || !value) return undefined
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) && parsed.length ? parsed as ProcessBlock[] : undefined
   } catch {
     return undefined
   }
@@ -71,7 +81,11 @@ function replyOf(row: SqliteRow): ChannelInboundReply {
     files: stringArrayOf(row.files_json),
     visible: visible ? undefined : false,
     createdAt: numberOf(row.created_at),
-    consumedAt: row.consumed_at === null ? undefined : numberOf(row.consumed_at)
+    consumedAt: row.consumed_at === null ? undefined : numberOf(row.consumed_at),
+    processBlocks: processBlocksOf(row.process_blocks_json),
+    processTurn: optionalString(row.process_turn),
+    processTruncatedItemCount: row.process_truncated_count === null || row.process_truncated_count === undefined
+      ? undefined : numberOf(row.process_truncated_count)
   }
 }
 
@@ -530,6 +544,27 @@ export class SqliteChannelMessageRepository {
     ).run(now, id)
   }
 
+  /**
+   * 把主进程捕获的 Cursor 原生过程持久绑定到已落库回复（幂等重写）。
+   * 回复行不存在时返回 false，由调用方在后续快照重试（队列有时效兜底）。
+   */
+  attachReplyProcess(input: {
+    replyId: string
+    turn: string
+    blocks: ProcessBlock[]
+    truncatedItemCount?: number
+  }): boolean {
+    if (!input.replyId.trim() || !input.turn.trim() || !input.blocks.length) return false
+    const result = this.database.prepare(`
+      UPDATE channel_replies
+      SET process_blocks_json = ?, process_turn = ?, process_truncated_count = ?
+      WHERE id = ?
+    `).run(
+      JSON.stringify(input.blocks), input.turn.trim(), input.truncatedItemCount ?? null, input.replyId.trim()
+    )
+    return numberOf(result.changes) === 1
+  }
+
   /** MCP 进程刷新活性；通道首次出现时建立基线行。 */
   touchPresence(channelId: string, patch: PresencePatch, now = Date.now()): ChannelPresence {
     const normalizedChannel = String(channelId).trim()
@@ -822,6 +857,7 @@ export class SqliteChannelMessageRepository {
     this.migrateOutboundRunColumn()
     this.migrateReplyVisibleColumn()
     this.migratePresenceRuntimeActiveColumn()
+    this.migrateReplyProcessColumns()
     // 旧版过程事件来自 Agent 主动上报，与 Cursor 原生过程重复且失真；迁移时彻底清除。
     this.database.exec('DROP TABLE IF EXISTS channel_process_events')
   }
@@ -854,6 +890,13 @@ export class SqliteChannelMessageRepository {
   /** 老库增量迁移：presence 补 CDP 运行时活动时间列（长任务续命证据）。 */
   private migratePresenceRuntimeActiveColumn(): void {
     this.migrateColumn('channel_presence', 'runtime_active_at', 'INTEGER')
+  }
+
+  /** 老库增量迁移：回复补 Cursor 原生过程持久化列（重启后恢复过程卡）。 */
+  private migrateReplyProcessColumns(): void {
+    this.migrateColumn('channel_replies', 'process_blocks_json', 'TEXT')
+    this.migrateColumn('channel_replies', 'process_turn', 'TEXT')
+    this.migrateColumn('channel_replies', 'process_truncated_count', 'INTEGER')
   }
 
   private migrateColumn(table: string, column: string, definition = 'TEXT'): void {

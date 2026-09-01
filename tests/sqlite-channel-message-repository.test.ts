@@ -203,6 +203,34 @@ describe('SqliteChannelMessageRepository', () => {
 
 
 
+  it('persists Cursor-native process blocks with the assistant reply across restart', () => {
+    const repository = fixture()
+    const path = repository.path
+    const reply = repository.recordReply({ channelId: '1', content: '过程完成' }, 1_000)
+    expect(repository.attachReplyProcess({
+      replyId: reply.id,
+      turn: 'cursor:user-turn-persisted',
+      blocks: [{
+        kind: 'tool', id: 'tool-persisted', toolName: 'read_file', toolKind: 'read',
+        summary: 'package.json', status: 'done', output: 'body'
+      }],
+      truncatedItemCount: 3
+    })).toBe(true)
+    repository.close()
+
+    const reopened = new SqliteChannelMessageRepository(path)
+    try {
+      expect(reopened.listRepliesSince(0)[0]).toMatchObject({
+        id: reply.id,
+        processTurn: 'cursor:user-turn-persisted',
+        processTruncatedItemCount: 3,
+        processBlocks: [{ id: 'tool-persisted', output: 'body' }]
+      })
+    } finally {
+      reopened.close()
+    }
+  })
+
   it('dedupes turn-less duplicate reply contents within the retry window only', () => {
     const repository = fixture()
     try {

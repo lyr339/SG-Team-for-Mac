@@ -47,18 +47,29 @@ class FakeSocket implements StreamObserverSocket {
 function buildObserver(overrides: {
   onWriteSignal?: (composerId: string, at: number) => void
   onProcessEvent?: (event: CursorNativeProcessEvent) => void
+  onStatus?: (status: { state: 'connected' | 'reconnecting' | 'unavailable'; detail: string; updatedAt: number }) => void
 } = {}) {
   const socket = new FakeSocket()
   const observer = new CursorStreamObserver({
     fetchPageSocketUrl: async () => 'ws://127.0.0.1:9333/devtools/page/abc',
     openSocket: () => socket,
     onWriteSignal: overrides.onWriteSignal ?? (() => {}),
-    onProcessEvent: overrides.onProcessEvent
+    onProcessEvent: overrides.onProcessEvent,
+    onStatus: overrides.onStatus
   })
   return { socket, observer }
 }
 
 describe('CursorStreamObserver', () => {
+  it('reports connected, reconnecting and unavailable process-stream health', async () => {
+    const states: string[] = []
+    const { socket, observer } = buildObserver({ onStatus: (status) => states.push(status.state) })
+    expect(await observer.attach()).toBe(true)
+    socket.emit('close', undefined)
+    observer.dispose()
+    expect(states).toEqual(['connected', 'reconnecting', 'unavailable'])
+  })
+
   it('emits write signals after Cursor model mutation, never one frame before', async () => {
     class Manager {
       value = 0
@@ -84,7 +95,7 @@ describe('CursorStreamObserver', () => {
       }
     }
     runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
-    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(11)
+    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(13)
     expect(manager.markDirty({ composerId: 'composer-1' })).toBe(1)
     expect(observed).toEqual([1])
     await manager.updateWithoutMarkingDirty({ composerId: 'composer-1' })
@@ -144,6 +155,60 @@ describe('CursorStreamObserver', () => {
     })
   })
 
+  it('extracts current Cursor thinking objects and discriminated toolCall payloads', async () => {
+    class Manager {
+      loadedComposers = { ids: ['composer-modern'] }
+      markDirty(): void {}
+    }
+    const manager = new Manager()
+    const frames: Array<Record<string, any>> = []
+    const context = {
+      Promise,
+      queueMicrotask,
+      setTimeout,
+      globalThis: {
+        __qtComposerService: {
+          composerDataService: {
+            composerDataHandleManager: manager,
+            getComposerDataIfLoaded: () => ({
+              fullConversationHeadersOnly: [
+                { type: 1, bubbleId: 'user-modern' },
+                { type: 2, bubbleId: 'thinking-modern' },
+                { type: 2, bubbleId: 'tool-modern' }
+              ],
+              conversationMap: {
+                'thinking-modern': { thinking: { text: '按当前 Cursor 对象结构思考' }, thinkingDurationMs: 1_800 },
+                'tool-modern': {
+                  toolFormerData: {
+                    tool: 9,
+                    toolCall: { tool: { case: 'shellToolCall', value: {
+                      args: { command: 'echo MODERN_OK' },
+                      result: { result: { case: 'success', value: { stdout: 'MODERN_OK' } } }
+                    } } }
+                  }
+                }
+              },
+              todos: [{ content: '核对现代结构', status: 'completed' }],
+              generatingBubbleIds: []
+            })
+          }
+        },
+        sgTeamStream: () => {},
+        sgTeamProcess: (payload: string) => frames.push(JSON.parse(payload))
+      }
+    }
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    await Promise.resolve()
+    expect(frames[0]?.process).toMatchObject({
+      turnId: 'user-modern',
+      items: [
+        { kind: 'thinking', text: '按当前 Cursor 对象结构思考', durationMs: 1_800 },
+        { kind: 'tool', toolName: 'shellToolCall', toolKind: 'command', summary: 'echo MODERN_OK', status: 'done' }
+      ],
+      todos: [{ content: '核对现代结构', status: 'completed' }]
+    })
+  })
+
   it('attaches: binding + new-document hook + immediate install', async () => {
     const { socket, observer } = buildObserver()
     const attached = await observer.attach()
@@ -194,6 +259,7 @@ describe('CursorStreamObserver', () => {
         payload: JSON.stringify({
           composerId: 'composer-native', observedAt: 1234, isGenerating: true,
           process: {
+            turnId: 'user-turn-1',
             items: [
               { kind: 'thinking', id: 'th-1', text: '先分析', status: 'done', durationMs: 2500 },
               { kind: 'tool', id: 'tool-1', toolName: 'run_terminal_cmd', toolKind: 'command', summary: 'npm test', status: 'done', output: '42 passed' }
@@ -206,6 +272,7 @@ describe('CursorStreamObserver', () => {
     }))
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({ composerId: 'composer-native', observedAt: 1234, isGenerating: true })
+    expect(events[0]?.process?.turnId).toBe('user-turn-1')
     expect(events[0]?.process?.items.map((item) => item.id)).toEqual(['th-1', 'tool-1'])
     expect(events[0]?.process?.items[1]).toMatchObject({ output: '42 passed', toolKind: 'command' })
     expect(events[0]?.process?.todos).toEqual([{ content: '验证结果', status: 'in_progress' }])
@@ -293,6 +360,9 @@ describe('CursorStreamObserver', () => {
       expect(secondRemove[0]!.params.identifier).toBe(`script-${firstAdd[0]!.id}`)
       const secondAdd = second.sent.filter((call) => call.method === 'Page.addScriptToEvaluateOnNewDocument')
       expect(secondAdd).toHaveLength(1)
+      // 旧 socket 的迟到 close 不得清掉已经连上的新 socket。
+      first.emit('close', undefined)
+      expect(observer.connected).toBe(true)
       observer.dispose()
     } finally {
       vi.useRealTimers()

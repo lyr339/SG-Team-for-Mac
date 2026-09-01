@@ -39,26 +39,82 @@ const ATTACH_TIMEOUT_MS = 8_000
  * 自轮询重试（2s 间隔，上限 60 次），保证重载后 hook 自动恢复，不依赖重连。
  */
 export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
-  const HOOK_VERSION = 11
+  const HOOK_VERSION = 13
   let attempts = 0
   const pendingSnapshots = new Set()
   let snapshotQueued = false
   function classifyTool(name) {
     const n = String(name || '').toLowerCase()
     if (n.includes('todo')) return 'todo'
-    if (n.includes('browser') || n.includes('computer') || n.includes('screenshot') || n.includes('navigate') || n.includes('click')) return 'browser'
-    if (n.startsWith('mcp-') || n.startsWith('get_mcp_tools') || n.includes('_mcp_')) return 'mcp'
-    if (n.includes('read')) return 'read'
+    if (n.includes('browser') || n.includes('computer') || n.includes('screenshot') || n.includes('navigate') || n.includes('click') || n.includes('fetch')) return 'browser'
+    if (n.startsWith('mcp-') || n.startsWith('get_mcp_tools') || n.includes('_mcp_') || n.includes('mcptool')) return 'mcp'
+    if (n.includes('read') || n.includes('lint') || n.includes('ls_tool') || n.includes('lstool')) return 'read'
     if (n.includes('glob') || n.includes('grep') || n.includes('search') || n.includes('find')) return 'search'
-    if (n.includes('edit') || n.includes('apply')) return 'edit'
+    if (n.includes('edit') || n.includes('apply') || n.includes('delete')) return 'edit'
     if (n.includes('write') || n.includes('create_file')) return 'write'
-    if (n.includes('terminal') || n.includes('command') || n.includes('run_') || n.includes('exec')) return 'command'
+    if (n.includes('shell') || n.includes('terminal') || n.includes('command') || n.includes('run_') || n.includes('exec')) return 'command'
     return 'other'
+  }
+  function toolInfo(td) {
+    const wrapped = td?.toolCall?.tool
+    const value = wrapped?.value
+    const toolCase = typeof wrapped?.case === 'string' ? wrapped.case : ''
+    const legacy = typeof td?.name === 'string' ? td.name
+      : typeof td?.tool === 'string' ? td.tool
+      : ''
+    let name = legacy || toolCase || (td?.tool !== undefined ? 'cursorTool:' + String(td.tool) : '')
+    const args = value?.args || td?.params || (() => {
+      try { return JSON.parse(String(td?.rawArgs || '{}')) } catch (e) { return {} }
+    })()
+    const result = value?.result || td?.result
+    if (toolCase.toLowerCase() === 'mcptoolcall') {
+      const server = args?.server || args?.serverName || value?.serverName || ''
+      const called = args?.toolName || args?.name || value?.toolName || ''
+      if (called) name = 'mcp-' + String(server || 'server') + '-' + String(called)
+    }
+    const rawStatus = String(td?.status || value?.status || '').toLowerCase()
+    let status = rawStatus === 'completed' || rawStatus === 'success' || rawStatus === 'done'
+      ? 'done'
+      : rawStatus === 'error' || rawStatus === 'failed' ? 'failed' : 'running'
+    const resultCase = String(result?.result?.case || result?.case || '').toLowerCase()
+    if (status === 'running' && result !== undefined) status = resultCase === 'error' || resultCase === 'failure' ? 'failed' : 'done'
+    const error = td?.error || result?.error || (resultCase === 'error' || resultCase === 'failure' ? result : undefined)
+    return { name, args, result, status, error }
+  }
+  function isTransportNoise(name) {
+    const lower = String(name || '').toLowerCase()
+    return ['check_messages', 'record_reply', 'wait_messages', 'qingtian'].some(item => (
+      lower === item || lower.endsWith('-' + item) || lower.endsWith('_' + item)
+    ))
+  }
+  function thinkingInfo(message) {
+    const direct = typeof message?.thinking === 'string'
+      ? { text: message.thinking, durationMs: message.thinkingDurationMs }
+      : message?.thinking && typeof message.thinking === 'object'
+        ? { text: message.thinking.text, durationMs: message.thinking.thinkingDurationMs ?? message.thinking.durationMs ?? message.thinkingDurationMs }
+        : undefined
+    if (typeof direct?.text === 'string' && direct.text.length > 1) return direct
+    const blocks = Array.isArray(message?.allThinkingBlocks) ? message.allThinkingBlocks : []
+    const texts = blocks.flatMap(block => {
+      const text = typeof block === 'string' ? block : block && typeof block.text === 'string' ? block.text : ''
+      return text ? [text] : []
+    })
+    if (!texts.length) return undefined
+    const durationMs = blocks.reduce((sum, block) => sum + (typeof block?.thinkingDurationMs === 'number'
+      ? block.thinkingDurationMs
+      : typeof block?.durationMs === 'number' ? block.durationMs : 0), 0)
+    return { text: texts.join('\\n\\n'), durationMs: durationMs || message?.thinkingDurationMs }
+  }
+  function clipText(value, limit) {
+    const text = String(value || '')
+    return text.length > limit
+      ? text.slice(0, limit) + '\\n…[Cursor 原生内容过长，另有 ' + (text.length - limit) + ' 字符未内联]'
+      : text
   }
   function safePlain(value, depth) {
     if (value === null || value === undefined) return value
     if (depth > 3) return '[nested]'
-    if (typeof value === 'string') return value.slice(0, 8000)
+    if (typeof value === 'string') return clipText(value, 8000)
     if (typeof value === 'number' || typeof value === 'boolean') return value
     if (typeof value === 'bigint') return String(value)
     if (Array.isArray(value)) return value.slice(0, 30).map(item => safePlain(item, depth + 1))
@@ -76,7 +132,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       }
       return out
     }
-    return String(value).slice(0, 1000)
+    return clipText(value, 1000)
   }
   function outputText(result) {
     try {
@@ -86,16 +142,17 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
         if ((text.startsWith('{') || text.startsWith('[')) && text.length < 2000000) {
           try { return outputText(JSON.parse(text)) } catch (e) {}
         }
-        return text.length > 12000 && /^[A-Za-z0-9+/=\s]+$/.test(text)
+        return text.length > 12000 && /^[A-Za-z0-9+/=\\s]+$/.test(text)
           ? '[binary/image payload omitted]'
-          : text.slice(0, 8000)
+          : clipText(text, 12000)
       }
       if (Array.isArray(result)) {
-        return result.slice(0, 30).flatMap(item => {
+        const parts = result.slice(0, 30).flatMap(item => {
           if (item?.type === 'image') return ['[image result]']
           const text = outputText(item)
           return text ? [text] : []
-        }).join('\\n').slice(0, 8000)
+        })
+        return clipText(parts.join('\\n'), 12000)
       }
       if (Array.isArray(result.content)) return outputText(result.content)
       for (const key of ['output', 'contents', 'content', 'text', 'stdout', 'result']) {
@@ -105,11 +162,11 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
         }
       }
       const json = JSON.stringify(safePlain(result, 0), null, 2)
-      return json && json !== '{}' ? json.slice(0, 8000) : ''
+      return json && json !== '{}' ? clipText(json, 12000) : ''
     } catch (e) { return '' }
   }
   function toolSummary(td, parsedArgs) {
-    const candidates = [td?.params, parsedArgs?.args, parsedArgs]
+    const candidates = [parsedArgs?.args, parsedArgs, td?.params]
     try {
       const firstToolParams = td?.params?.tools?.[0]?.parameters
       if (typeof firstToolParams === 'string') candidates.unshift(JSON.parse(firstToolParams))
@@ -130,6 +187,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     for (let i = headers.length - 1; i >= 0; i--) {
       if (headers[i] && headers[i].type === 1) { lastUserIdx = i; break }
     }
+    const turnId = lastUserIdx >= 0 ? String(headers[lastUserIdx]?.bubbleId || '') : ''
     const turnBubbles = headers.slice(lastUserIdx + 1)
     const generatingIds = data.generatingBubbleIds
     const generatingBubbleCount = Array.isArray(generatingIds)
@@ -137,12 +195,20 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       : typeof generatingIds?.size === 'number'
         ? generatingIds.size
         : generatingIds && typeof generatingIds === 'object' ? Object.keys(generatingIds).length : 0
+    const generatingBubbleSet = new Set(Array.isArray(generatingIds)
+      ? generatingIds.map(String)
+      : generatingIds && typeof generatingIds[Symbol.iterator] === 'function'
+        ? [...generatingIds].map(String)
+        : generatingIds && typeof generatingIds === 'object' ? Object.keys(generatingIds) : [])
     const isGenerating = data.isGenerating === true || generatingBubbleCount > 0
     const items = []
     let todos
     const hasWork = turnBubbles.map(h => {
       const message = map[h && h.bubbleId] || {}
-      return !!message.toolFormerData?.name || (typeof message.thinking === 'string' && message.thinking.length > 1)
+      const info = toolInfo(message.toolFormerData)
+      const thought = thinkingInfo(message)
+      return (!!info.name && !isTransportNoise(info.name)) || !!thought
+        || (!info.name && !thought && (message.capabilityType !== undefined || !!message.serviceStatusUpdate || !!message.planUpdate))
     })
     const hasLaterWork = new Array(hasWork.length).fill(false)
     let workSeen = false
@@ -154,34 +220,46 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       const h = turnBubbles[i]
       const m = map[h && h.bubbleId] || {}
       const td = m.toolFormerData
-      const thinking = typeof m.thinking === 'string' ? m.thinking : ''
-      if (thinking && thinking.length > 1) {
+      const bubbleGenerating = generatingBubbleSet.has(String(h?.bubbleId || ''))
+      const thinking = thinkingInfo(m)
+      if (thinking?.text) {
         items.push({
-          kind: 'thinking', id: 'cursor-th:' + h.bubbleId, text: thinking.slice(0, 4000),
-          status: (i === turnBubbles.length - 1 && isGenerating && !td?.name) ? 'running' : 'done',
-          durationMs: typeof m.thinkingDurationMs === 'number' ? m.thinkingDurationMs : undefined
+          kind: 'thinking', id: 'cursor-th:' + h.bubbleId, text: clipText(thinking.text, 24000),
+          status: bubbleGenerating && !toolInfo(td).name ? 'running' : 'done',
+          durationMs: typeof thinking.durationMs === 'number' ? thinking.durationMs : undefined
         })
       }
       // Cursor 原生 assistant-message 只在其后仍有 thinking/tool 时属于过程；
       // 回合最后一段正文由 liveAgentResponse / record_reply 展示，避免重复。
       const messageText = typeof m.text === 'string' ? m.text.trim() : ''
-      const laterWork = hasLaterWork[i] || !!td?.name
+      const tool = toolInfo(td)
+      const laterWork = hasLaterWork[i] || (!!tool.name && !isTransportNoise(tool.name))
       if (messageText && laterWork) {
         items.push({
           kind: 'message', id: 'cursor-msg:' + h.bubbleId,
-          text: messageText.slice(0, 8000), status: 'done'
+          text: clipText(messageText, 12000), status: 'done'
         })
       }
-      if (td && td.name) {
-        let parsedArgs = {}
-        try { parsedArgs = JSON.parse(String(td.rawArgs || '{}')) } catch (e) {}
+      if (td && tool.name) {
         items.push({
           kind: 'tool', id: 'cursor:' + h.bubbleId,
-          toolName: String(td.name).slice(0, 80), toolKind: classifyTool(td.name),
-          summary: toolSummary(td, parsedArgs),
-          status: td.status === 'completed' || td.status === 'success' ? 'done' : (td.status === 'error' || td.status === 'failed' ? 'failed' : 'running'),
-          input: safePlain(td.params || parsedArgs, 0), output: outputText(td.result),
-          error: typeof td.error === 'string' ? td.error.slice(0, 4000) : outputText(td.error)
+          toolName: String(tool.name).slice(0, 120), toolKind: classifyTool(tool.name),
+          summary: toolSummary(td, tool.args),
+          status: bubbleGenerating ? 'running' : tool.status,
+          input: safePlain(tool.args, 0), output: outputText(tool.result),
+          error: typeof tool.error === 'string' ? clipText(tool.error, 8000) : outputText(tool.error)
+        })
+      }
+      if (!tool.name && !thinking?.text && (m.capabilityType !== undefined || m.serviceStatusUpdate || m.planUpdate)) {
+        const capabilityName = m.planUpdate ? 'planUpdate'
+          : m.capabilityType !== undefined ? 'capability:' + String(m.capabilityType) : 'serviceStatus'
+        items.push({
+          kind: 'tool', id: 'cursor-capability:' + h.bubbleId,
+          toolName: capabilityName, toolKind: m.planUpdate ? 'todo' : 'other',
+          summary: typeof m.simulatedMessageMetadata?.title === 'string' ? m.simulatedMessageMetadata.title.slice(0, 160) : '',
+          status: bubbleGenerating ? 'running' : 'done',
+          input: safePlain(m.planUpdate || m.capabilityContexts || m.serviceStatusUpdate || {}, 0),
+          output: outputText(m.subagentReturn || m.serviceStatusUpdate || m.planUpdate)
         })
       }
       if (Array.isArray(m.todos) && m.todos.length) {
@@ -190,9 +268,26 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
           : [])
       }
     }
+    if (!todos && Array.isArray(data.todos) && data.todos.length) {
+      todos = data.todos.slice(0, 100).flatMap(t => t && typeof t.content === 'string'
+        ? [{ content: t.content.slice(0, 500), status: String(t.status || 'pending').slice(0, 40) }]
+        : [])
+    }
+    if (data.plan && !items.some(item => item.toolName === 'planUpdate')) {
+      items.unshift({
+        kind: 'tool', id: 'cursor:plan', toolName: 'planUpdate', toolKind: 'todo',
+        summary: '执行计划', status: data.hasPendingPlan ? 'running' : 'done',
+        input: safePlain(data.plan, 0), output: ''
+      })
+    }
+    const totalItemCount = items.length
+    const keptItems = items.slice(-256)
     return {
       isGenerating,
-      process: items.length || todos?.length ? { items: items.slice(-36), todos, generatingBubbleCount } : undefined
+      process: items.length || todos?.length ? {
+        turnId, items: keptItems, todos, generatingBubbleCount,
+        truncatedItemCount: Math.max(0, totalItemCount - keptItems.length) || undefined
+      } : undefined
     }
   }
   function scheduleProcessSnapshot(composerId) {
@@ -332,6 +427,7 @@ export interface CursorStreamObserverOptions {
   onUsageEvent?: (event: CursorUsageEvent) => void
   /** Cursor 内存模型写后直接推送的原生顺序过程快照。 */
   onProcessEvent?: (event: CursorNativeProcessEvent) => void
+  onStatus?: (status: { state: 'connected' | 'reconnecting' | 'unavailable'; detail: string; updatedAt: number }) => void
 }
 
 export interface CursorNativeProcessEvent {
@@ -353,6 +449,7 @@ export class CursorStreamObserver {
   private readonly onWriteSignal: NonNullable<CursorStreamObserverOptions['onWriteSignal']>
   private readonly onUsageEvent: NonNullable<CursorStreamObserverOptions['onUsageEvent']>
   private readonly onProcessEvent: NonNullable<CursorStreamObserverOptions['onProcessEvent']>
+  private readonly onStatus: NonNullable<CursorStreamObserverOptions['onStatus']>
   private socket?: StreamObserverSocket
   private seq = 0
   private readonly pending = new Map<number, PendingCall>()
@@ -372,6 +469,7 @@ export class CursorStreamObserver {
     this.onWriteSignal = options.onWriteSignal ?? (() => {})
     this.onUsageEvent = options.onUsageEvent ?? (() => {})
     this.onProcessEvent = options.onProcessEvent ?? (() => {})
+    this.onStatus = options.onStatus ?? (() => {})
   }
 
   get connected(): boolean {
@@ -389,8 +487,10 @@ export class CursorStreamObserver {
       const socket = this.openSocket(webSocketDebuggerUrl)
       this.socket = socket
       this.retryAttempts = 0
-      socket.on('message', (data) => this.handleMessage(data))
-      socket.on('close', () => this.handleDisconnect())
+      socket.on('message', (data) => {
+        if (this.socket === socket) this.handleMessage(data)
+      })
+      socket.on('close', () => this.handleDisconnect(socket))
       socket.on('error', () => undefined)
       // 等待连接建立：ws 在 open 前 send 会抛错；握手失败（error）立即失败而非等满超时
       await new Promise((resolve, reject) => {
@@ -417,12 +517,18 @@ export class CursorStreamObserver {
       // 已加载文档立即安装；后续导航经 addScriptToEvaluateOnNewDocument 重装
       //（binding 由 CDP 自动注入后续 executionContext）。
       await this.call('Runtime.evaluate', { expression: CURSOR_STREAM_HOOK_EXPRESSION, returnByValue: true })
+      this.onStatus({ state: 'connected', detail: 'Cursor 原生过程流已连接', updatedAt: Date.now() })
       return true
-    } catch {
+    } catch (error) {
       // 半途失败必须关闭已建立的 socket，否则泄漏连接且 retry 另建新连接。
       const socket = this.socket
       this.socket = undefined
       try { socket?.close() } catch { /* 尽力而为 */ }
+      this.onStatus({
+        state: 'reconnecting',
+        detail: error instanceof Error ? error.message.slice(0, 240) : 'Cursor 原生过程流连接失败',
+        updatedAt: Date.now()
+      })
       this.scheduleRetry()
       return false
     } finally {
@@ -460,6 +566,7 @@ export class CursorStreamObserver {
     }
     this.newDocumentScriptId = undefined
     try { socket?.close() } catch { /* 尽力而为 */ }
+    this.onStatus({ state: 'unavailable', detail: 'Cursor 原生过程观察器已停止', updatedAt: Date.now() })
   }
 
   private handleMessage(data: unknown): void {
@@ -526,10 +633,13 @@ export class CursorStreamObserver {
     }
   }
 
-  private handleDisconnect(): void {
-    if (this.socket) this.socket = undefined
+  private handleDisconnect(source: StreamObserverSocket): void {
+    // 旧 socket 的迟到 close 不得清掉重连后已就位的新 socket。
+    if (this.socket !== source) return
+    this.socket = undefined
     for (const pending of this.pending.values()) pending.reject(new Error('observer disconnected'))
     this.pending.clear()
+    this.onStatus({ state: 'reconnecting', detail: 'Cursor 原生过程流已断开，正在重连', updatedAt: Date.now() })
     if (!this.stopped) this.scheduleRetry()
   }
 

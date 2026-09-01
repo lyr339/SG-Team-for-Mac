@@ -22,6 +22,7 @@ import {
 import type { SqliteChannelMessageRepository } from '../infrastructure/channel-messages/sqlite-channel-message-repository'
 import type {
   DesktopSnapshot,
+  LiveProcessState,
   SendMessageAccepted,
   SendMessageInput
 } from '../shared/desktop-api'
@@ -374,8 +375,42 @@ export class ChannelMessageRelay {
       text: visibleConversationText(reply.content),
       timestamp: reply.createdAt,
       status: 'complete',
-      source: 'cursor'
+      source: 'cursor',
+      processBlocks: reply.processBlocks,
+      processTruncatedItemCount: reply.processTruncatedItemCount,
+      turn: reply.processTurn
     }
+  }
+
+  /**
+   * 把主进程捕获的 Cursor 原生过程持久绑定到已落库回复：
+   * SQLite 持久化（重启后 entryFromReply 水合恢复过程卡）+ 内存会话缓存同步。
+   * 返回 true 仅表示 SQLite 写入成功；行不存在时 false，由调用方按快照重试。
+   */
+  attachProcessToReply(entryId: string, process: LiveProcessState): boolean {
+    const replyId = entryId.startsWith('reply:') ? entryId.slice('reply:'.length) : ''
+    if (!replyId || !process.blocks.length) return false
+    const persisted = this.repository.attachReplyProcess({
+      replyId,
+      turn: process.turn,
+      blocks: process.blocks,
+      truncatedItemCount: process.truncatedItemCount
+    })
+    if (!persisted) return false
+    for (const [channelId, entries] of this.conversations) {
+      const index = entries.findIndex((entry) => entry.id === entryId)
+      if (index < 0) continue
+      const next = [...entries]
+      next[index] = {
+        ...next[index]!,
+        processBlocks: process.blocks,
+        processTruncatedItemCount: process.truncatedItemCount,
+        turn: process.turn
+      }
+      this.conversations.set(channelId, next)
+      return true
+    }
+    return true
   }
 
   start(intervalMs = DEFAULT_POLL_MS): void {

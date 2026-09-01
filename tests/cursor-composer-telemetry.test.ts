@@ -648,6 +648,73 @@ describe('CursorComposerTelemetryReader', () => {
     expect('tokenUsage' in second).toBe(false)
   })
 
+  it('recovers the last Cursor thought and tool sequence from transcript after an app restart', () => {
+    const data = fixture()
+    const composerId = 'composer-process-recovery-123'
+    const runtime = { ...binding('3'), composerId }
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    const lines = [
+      { role: 'user', message: { content: [{ type: 'text', text: '启动 CH-3' }] } },
+      { role: 'assistant', message: { content: [
+        { type: 'text', text: '先确认当前通道工具。' },
+        { type: 'tool_use', name: 'GetDynamicTools', input: { namespace: 'user-SG Team', toolName: 'check_messages' } }
+      ] } },
+      { role: 'assistant', message: { content: [
+        { type: 'text', text: '工具已确认，开始同步回复。' },
+        { type: 'tool_use', name: 'CallDynamicTool', input: { namespace: 'user-SG Team', toolName: 'record_reply', arguments: { channel_id: '3' } } }
+      ] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'CH-3 已就绪。' }] } }
+    ]
+    writeTranscript(data.projectsRoot, data.workspace, composerId, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`)
+
+    const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!
+    expect(composer.lastAssistantResponse?.text).toBe('CH-3 已就绪。')
+    expect(composer.lastAssistantProcess?.blocks.map((block) => block.kind)).toEqual([
+      'thinking', 'tool', 'thinking', 'tool'
+    ])
+    expect(composer.lastAssistantProcess?.blocks[1]).toMatchObject({
+      kind: 'tool', toolName: 'get_mcp_tools', toolKind: 'mcp'
+    })
+    expect(composer.lastAssistantProcess?.blocks[3]).toMatchObject({
+      kind: 'tool', toolName: 'record_reply', input: { channel_id: '3' }
+    })
+  })
+
+  it('does not reuse the previous answer after a newer user turn has started', () => {
+    const data = fixture()
+    const composerId = 'composer-open-turn-123'
+    const runtime = { ...binding('2'), composerId }
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    const lines = [
+      { role: 'user', message: { content: [{ type: 'text', text: '第一问' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: '第一问回答' }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '第二问' }] } }
+    ]
+    writeTranscript(data.projectsRoot, data.workspace, composerId, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`)
+    const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!
+    expect(composer.lastAssistantResponse).toBeUndefined()
+  })
+
+  it('drops a redaction-only transport tail instead of presenting it as the final reply', () => {
+    const data = fixture()
+    const composerId = 'composer-redacted-tail-123'
+    const runtime = { ...binding('1'), composerId }
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    const lines = [
+      { role: 'user', message: { content: [{ type: 'text', text: '持续待命' }] } },
+      { role: 'assistant', message: { content: [
+        { type: 'text', text: '[REDACTED]' },
+        { type: 'tool_use', name: 'CallDynamicTool', input: { namespace: 'user-SG Team', toolName: 'check_messages', arguments: { channel_id: '1' } } }
+      ] } }
+    ]
+    writeTranscript(data.projectsRoot, data.workspace, composerId, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`)
+    const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!
+    expect(composer.lastAssistantResponse).toBeUndefined()
+    expect(composer.lastAssistantProcess?.blocks.some((block) => (
+      block.kind === 'thinking' && block.text.includes('[REDACTED]')
+    ))).toBe(false)
+  })
+
   it('reads Cursor native promptTokenBreakdown for the context hover panel', () => {
     const data = fixture()
     const composerId = 'composer-native-context-breakdown'

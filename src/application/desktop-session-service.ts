@@ -1,5 +1,5 @@
 import type { AgentSession, AgentExecutionProfile } from '../domain/agent-session'
-import { sanitizeModelGeneratedText } from '../domain/model-output-sanitizer'
+import { sanitizeModelDisplayText } from '../domain/model-output-sanitizer'
 import type { CursorModelOption, CursorModelSelection } from '../domain/cursor-model'
 import { badgesFromParameters, contextTokensFromValue } from '../shared/model-badges'
 import {
@@ -12,6 +12,7 @@ import type {
   DesktopSnapshot,
   LiveAgentResponseState,
   LiveProcessState,
+  NativeProcessStreamStatus,
   SendMessageAccepted,
   SendMessageInput
 } from '../shared/desktop-api'
@@ -280,6 +281,10 @@ export class DesktopSessionService implements DesktopSessionBridge {
   private runtimeSignalTimer?: ReturnType<typeof setTimeout>
   private runtimeEvidence: Record<string, CursorComposerRuntimeEvidence> = {}
   private readonly liveAgentResponses = new Map<string, LiveAgentResponseState>()
+  /** 已由 record_reply/会话仓库接管的 Cursor response，防轮询 lastAiText 后重复回灌。 */
+  private readonly finalizedLiveResponseIds = new Set<string>()
+  /** 首次 runtime inspect 完成前暂缓 transcript 回退，避免页面先显示转录、再切 CDP。 */
+  private readonly runtimeInspectedComposerIds = new Set<string>()
   /** Cursor 内存模型直接推送的当前回合过程流。 */
   private readonly liveCursorProcess = new Map<string, {
     view: LiveProcessState
@@ -288,8 +293,18 @@ export class DesktopSessionService implements DesktopSessionBridge {
     updatedAt: number
     blockFirstSeen: Map<string, number>
   }>()
-  /** Cursor 原生完成回合的内存归档；只贴到对应回复，不读取 transcript/SQLite 过程。 */
-  private readonly nativeProcessArchive = new Map<string, LiveProcessState>()
+  /** Cursor 原生完成回合 FIFO；支持回复落库延迟与连续多回合，不覆盖前一轮。 */
+  private readonly nativeProcessArchive = new Map<string, LiveProcessState[]>()
+  /** 已贴到回复的过程缓存；基础会话仓库不保存 CDP 过程，后续快照需稳定重放。 */
+  private readonly nativeProcessByReplyId = new Map<string, {
+    channelId: string
+    process: LiveProcessState
+  }>()
+  private nativeProcessStream: NativeProcessStreamStatus = {
+    state: 'reconnecting',
+    detail: '正在连接 Cursor 原生过程流',
+    updatedAt: Date.now()
+  }
   private runtimeFastTimer?: ReturnType<typeof setInterval>
   private lastRuntimeArgs?: { workspacePath: string; bindings: RuntimeBinding[] }
   /** 遥测短暂缺字段时保留同 Composer 最近一次上下文读数；换工作区/换轮即清空。 */
@@ -335,8 +350,11 @@ export class DesktopSessionService implements DesktopSessionBridge {
         this.durationBySession.clear()
         this.runtimeEvidence = {}
         this.liveAgentResponses.clear()
+        this.finalizedLiveResponseIds.clear()
+        this.runtimeInspectedComposerIds.clear()
         this.liveCursorProcess.clear()
         this.nativeProcessArchive.clear()
+        this.nativeProcessByReplyId.clear()
         this.pendingNativeProcessByComposer.clear()
         this.contextUsageByComposer.clear()
         this.refreshTelemetry()
@@ -344,8 +362,11 @@ export class DesktopSessionService implements DesktopSessionBridge {
       if (runChanged && !workspaceChanged) {
         this.durationBySession.clear()
         this.liveAgentResponses.clear()
+        this.finalizedLiveResponseIds.clear()
+        this.runtimeInspectedComposerIds.clear()
         this.liveCursorProcess.clear()
         this.nativeProcessArchive.clear()
+        this.nativeProcessByReplyId.clear()
         this.pendingNativeProcessByComposer.clear()
         this.contextUsageByComposer.clear()
       }
@@ -362,6 +383,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const enriched = enrichDesktopSnapshot(withEmbedded, this.team.getSnapshot(), this.telemetry)
     const snapshot: DesktopSnapshot = {
       ...enriched,
+      nativeProcessStream: this.nativeProcessStream,
       sessions: enriched.sessions.map((session) => {
         const key = session.composerId || session.id
         if (session.contextUsage) this.contextUsageByComposer.set(key, session.contextUsage)
@@ -415,13 +437,35 @@ export class DesktopSessionService implements DesktopSessionBridge {
     return this.applyLiveCursorProcess(withResponses)
   }
 
-  /** Cursor 原生当前回合直接成为唯一 liveProcess 来源；超过时效后撤下。 */
+  setNativeProcessStreamStatus(status: NativeProcessStreamStatus): void {
+    if (status.state === this.nativeProcessStream.state && status.detail === this.nativeProcessStream.detail) return
+    this.nativeProcessStream = { ...status }
+    this.emit()
+  }
+
+  /**
+   * Cursor 原生当前回合直接成为唯一 liveProcess 来源。
+   *
+   * 生成中的断帧按时效撤下；完成过程必须保留到持久化回复接管、下一轮用户消息
+   * 到来或 TeamRun/工作区切换。此前完成态 3.5s 固定清理在 record_reply 失败时
+   * 会永久丢掉唯一的 Cursor 过程，且冷启动 CDP 水合后形成“一闪而过”。
+   */
   private applyLiveCursorProcess(snapshot: DesktopSnapshot): DesktopSnapshot {
     const now = Date.now()
     const liveProcess: Record<string, LiveProcessState> = {}
     for (const [channelId, state] of this.liveCursorProcess) {
-      const staleMs = state.generating ? 8_000 : 3_500
-      if (now - state.updatedAt > staleMs) {
+      const entries = snapshot.conversations[channelId] ?? []
+      const persisted = entries.some((entry) => (
+        entry.role === 'assistant'
+        && entry.status === 'complete'
+        && entry.turn === state.view.turn
+        && Boolean(entry.processBlocks?.length)
+      ))
+      const supersededByUser = !state.generating && entries.some((entry) => (
+        entry.role === 'user' && entry.timestamp > state.view.updatedAt
+      ))
+      const streamingStale = state.generating && now - state.updatedAt > 8_000
+      if (persisted || supersededByUser || streamingStale) {
         this.liveCursorProcess.delete(channelId)
         continue
       }
@@ -435,32 +479,130 @@ export class DesktopSessionService implements DesktopSessionBridge {
     return { ...snapshot, liveProcess }
   }
 
-  /** 把完成的 Cursor 原生过程贴到该通道随后落地的助手回复。 */
+  /**
+   * 把完成的 Cursor 原生过程贴到该通道随后落地的助手回复：
+   * - 已持久化的回复（relay 水合或本方法写入）进入 nativeProcessByReplyId 稳定缓存，
+   *   后续快照无脑重放（基础会话仓库不保存 CDP 过程）；
+   * - 队列项按「同 turn 精确匹配 → 时间窗就近匹配」绑定到缺失过程的回复；
+   * - 内嵌通道同步持久化到 SQLite（reply: 前缀），插件通道只做展示层贴附；
+   * - 队列按消费与 30 分钟时效收敛，防止内存无限增长。
+   */
   private attachNativeProcessArchive(snapshot: DesktopSnapshot): DesktopSnapshot {
-    if (!this.nativeProcessArchive.size) return snapshot
+    if (!this.nativeProcessArchive.size && !this.nativeProcessByReplyId.size) return snapshot
     let conversations = snapshot.conversations
     let changed = false
-    for (const [channelId, archived] of this.nativeProcessArchive) {
+    for (const [channelId, queue] of this.nativeProcessArchive) {
       const entries = conversations[channelId]
       if (!entries?.length) continue
-      let replyIndex = -1
-      for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const consumedTurns = new Set<string>()
+      const usedIndexes = new Set<number>()
+      let nextEntries = entries
+      for (let index = 0; index < entries.length; index += 1) {
         const entry = entries[index]
-        if (entry?.role === 'assistant' && entry.timestamp >= archived.startedAt - 5_000) {
-          replyIndex = index
-          break
+        if (entry?.processBlocks?.length && entry.turn) {
+          const persisted: LiveProcessState = {
+            turn: entry.turn,
+            blocks: entry.processBlocks,
+            truncatedItemCount: entry.processTruncatedItemCount,
+            startedAt: entry.processBlocks[0]?.startedAt ?? entry.timestamp,
+            updatedAt: entry.timestamp
+          }
+          this.nativeProcessByReplyId.set(entry.id, { channelId, process: persisted })
+          if (queue.some((item) => item.turn === entry.turn)) consumedTurns.add(entry.turn)
+          continue
+        }
+        const cached = entry ? this.nativeProcessByReplyId.get(entry.id) : undefined
+        if (!entry || !cached || cached.channelId !== channelId) continue
+        if (nextEntries === entries) nextEntries = [...entries]
+        nextEntries[index] = {
+          ...entry,
+          processBlocks: cached.process.blocks,
+          processTruncatedItemCount: cached.process.truncatedItemCount,
+          turn: cached.process.turn
+        }
+        const awaitingPersistence = queue.some((item) => item.turn === cached.process.turn)
+        if (awaitingPersistence && this.embeddedRelay?.handlesChannel(channelId) && entry.id.startsWith('reply:')) {
+          try {
+            if (this.embeddedRelay.attachProcessToReply(entry.id, cached.process)) consumedTurns.add(cached.process.turn)
+          } catch { /* 下一次快照继续重试 */ }
         }
       }
-      if (replyIndex < 0) continue
-      const reply = entries[replyIndex]!
-      if (reply.processBlocks === archived.blocks) continue
-      if (!changed) conversations = { ...conversations }
-      const nextEntries = [...entries]
-      nextEntries[replyIndex] = { ...reply, processBlocks: archived.blocks, turn: archived.turn }
-      conversations[channelId] = nextEntries
-      changed = true
+      for (let replyIndex = 0; replyIndex < nextEntries.length; replyIndex += 1) {
+        const reply = nextEntries[replyIndex]
+        if (!reply || reply.role !== 'assistant' || reply.processBlocks?.length || usedIndexes.has(replyIndex)) continue
+        const exact = reply.turn
+          ? queue.find((item) => !consumedTurns.has(item.turn) && item.turn === reply.turn)
+          : undefined
+        const archived = exact ?? queue
+          .filter((item) => !consumedTurns.has(item.turn))
+          .map((item) => ({ item, lag: reply.timestamp - item.updatedAt }))
+          .filter(({ lag }) => lag >= -5_000 && lag <= 10 * 60_000)
+          .sort((left, right) => Math.abs(left.lag) - Math.abs(right.lag))[0]?.item
+        if (!archived) continue
+        if (nextEntries === entries) nextEntries = [...entries]
+        nextEntries[replyIndex] = {
+          ...reply,
+          processBlocks: archived.blocks,
+          processTruncatedItemCount: archived.truncatedItemCount,
+          turn: archived.turn
+        }
+        this.nativeProcessByReplyId.set(reply.id, { channelId, process: archived })
+        let persistenceReady = true
+        if (this.embeddedRelay?.handlesChannel(channelId) && reply.id.startsWith('reply:')) {
+          try {
+            persistenceReady = this.embeddedRelay.attachProcessToReply(reply.id, archived)
+          } catch {
+            persistenceReady = false
+          }
+        }
+        if (this.nativeProcessByReplyId.size > 200) {
+          const oldest = this.nativeProcessByReplyId.keys().next().value
+          if (oldest) this.nativeProcessByReplyId.delete(oldest)
+        }
+        usedIndexes.add(replyIndex)
+        if (persistenceReady) consumedTurns.add(archived.turn)
+      }
+      if (nextEntries !== entries) {
+        if (!changed) conversations = { ...conversations }
+        conversations[channelId] = nextEntries
+        changed = true
+      }
+      const expireBefore = Date.now() - 30 * 60_000
+      const remaining = queue.filter((item) => !consumedTurns.has(item.turn) && item.updatedAt >= expireBefore)
+      if (remaining.length) this.nativeProcessArchive.set(channelId, remaining)
+      else this.nativeProcessArchive.delete(channelId)
+    }
+    // 队列已清空的通道仍需把已绑定过程稳定贴回基础快照。
+    for (const [channelId, entries] of Object.entries(conversations)) {
+      if (this.nativeProcessArchive.has(channelId) || !entries.length) continue
+      let nextEntries = entries
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index]
+        const cached = this.nativeProcessByReplyId.get(entry!.id)
+        if (!cached || cached.channelId !== channelId) continue
+        if (nextEntries === entries) nextEntries = [...entries]
+        nextEntries[index] = {
+          ...entry!, processBlocks: cached.process.blocks,
+          processTruncatedItemCount: cached.process.truncatedItemCount,
+          turn: cached.process.turn
+        }
+      }
+      if (nextEntries !== entries) {
+        if (!changed) conversations = { ...conversations }
+        conversations[channelId] = nextEntries
+        changed = true
+      }
     }
     return changed ? { ...snapshot, conversations } : snapshot
+  }
+
+  private archiveNativeProcess(channelId: string, completed: LiveProcessState): void {
+    const queue = this.nativeProcessArchive.get(channelId) ?? []
+    const existing = queue.findIndex((item) => item.turn === completed.turn)
+    const next = existing >= 0
+      ? queue.map((item, index) => index === existing ? completed : item)
+      : [...queue, completed].slice(-20)
+    this.nativeProcessArchive.set(channelId, next)
   }
 
   private trackActiveDuration(key: string, session: AgentSession): number | undefined {
@@ -551,6 +693,45 @@ export class DesktopSessionService implements DesktopSessionBridge {
         : emptyCursorTelemetrySnapshot('unavailable', '尚未选择团队工作区')
       const next = applyRuntimeEvidence(local, this.runtimeEvidence)
 
+      // Cursor 转录是耐久事实源：即使 record_reply 被身份门禁拒绝、CDP 完成态随后离线，
+      // 也要把最后完整回复恢复到会话视图，不能只依赖 3 秒 live map。
+      const composerByIdForReplies = new Map(next.composers.map((composer) => [composer.composerId, composer]))
+      let transcriptResponseChanged = false
+      for (const binding of teamSnapshot.bindings) {
+        if (!binding.composerId) continue
+        if (this.runtimeSource && !this.runtimeInspectedComposerIds.has(binding.composerId)) continue
+        const response = composerByIdForReplies.get(binding.composerId)?.lastAssistantResponse
+        if (response) {
+          transcriptResponseChanged = this.updateLiveAgentResponse(binding.channelId, {
+            composerId: binding.composerId,
+            state: 'unknown',
+            detail: 'Cursor 转录完整回复',
+            observedAt: response.observedAt,
+            isGenerating: false,
+            responseId: response.id,
+            responseText: response.text
+          }) || transcriptResponseChanged
+        }
+        const process = composerByIdForReplies.get(binding.composerId)?.lastAssistantProcess
+        if (process?.blocks.length && !this.liveCursorProcess.has(binding.channelId)) {
+          const turn = `transcript:${binding.composerId}:${Math.round(process.observedAt)}`
+          const view: LiveProcessState = {
+            turn,
+            blocks: process.blocks,
+            startedAt: process.observedAt,
+            updatedAt: process.observedAt
+          }
+          this.liveCursorProcess.set(binding.channelId, {
+            view,
+            fingerprint: JSON.stringify(process.blocks.map((block) => [block.id, block.status])),
+            generating: false,
+            updatedAt: process.observedAt,
+            blockFirstSeen: new Map(process.blocks.map((block) => [block.id, process.observedAt]))
+          })
+          transcriptResponseChanged = true
+        }
+      }
+
       const bindingByChannelId = bindingByChannel(teamSnapshot)
       for (const candidate of next.bindingCandidates) {
         const binding = bindingByChannelId.get(candidate.channelId)
@@ -585,7 +766,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
       const changed = fingerprint !== this.telemetryFingerprint
       this.telemetry = next
       this.telemetryFingerprint = fingerprint
-      if (changed) this.emit()
+      if (changed || transcriptResponseChanged) this.emit()
       if (workspace) this.refreshRuntimeEvidence(workspace.path, teamSnapshot.bindings)
     } catch (error) {
       const failed = emptyCursorTelemetrySnapshot(
@@ -620,6 +801,9 @@ export class DesktopSessionService implements DesktopSessionBridge {
     void this.runtimeSource.inspectComposerRuntime(workspacePath, composerIds)
       .then((evidence) => {
         if (workspaceId !== this.activeWorkspaceId || runId !== this.activeRunId) return
+        for (const binding of bindings) {
+          if (binding.composerId) this.runtimeInspectedComposerIds.add(binding.composerId)
+        }
         let liveChanged = false
         for (const binding of bindings) {
           if (!binding.composerId) continue
@@ -722,7 +906,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
     })
     if (!event.isGenerating) {
       const completed = this.liveCursorProcess.get(channelId)?.view
-      if (completed?.blocks.length) this.nativeProcessArchive.set(channelId, completed)
+      if (completed?.blocks.length) this.archiveNativeProcess(channelId, completed)
     }
     if (changed) this.emit()
   }
@@ -781,13 +965,30 @@ export class DesktopSessionService implements DesktopSessionBridge {
   /**
    * CDP 过程流状态维护：evidence.process（当前回合 thinking/工具/todos）映射为
    * ProcessBlock 序列。块 id 稳定（cursor:<bubbleId>），firstSeen/状态翻转按观测推进；
-   * 生成结束后短暂保留（applyLiveCursorProcess 按时效撤下），随后由
-   * nativeProcessArchive 贴到 Agent 回复。
+   * 生成结束后保留至持久化回复或下一用户回合接管，随后由 nativeProcessArchive
+   * 贴到 Agent 回复。
    */
   private updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean {
     if (evidence.state === 'stopped') {
-      const removed = this.liveCursorProcess.delete(channelId)
-      return removed
+      const previous = this.liveCursorProcess.get(channelId)
+      if (!previous || !previous.generating) return false
+      const blocks = previous.view.blocks.map((block) => block.status === 'running'
+        ? { ...block, status: 'done' as const, completedAt: evidence.observedAt }
+        : block)
+      const view: LiveProcessState = {
+        ...previous.view,
+        blocks,
+        updatedAt: evidence.observedAt
+      }
+      this.liveCursorProcess.set(channelId, {
+        ...previous,
+        view,
+        fingerprint: JSON.stringify(blocks.map((block) => [block.id, block.status, block.completedAt ?? ''])),
+        generating: false,
+        updatedAt: evidence.observedAt
+      })
+      this.archiveNativeProcess(channelId, view)
+      return true
     }
     const stream = evidence.process
     if (!stream) {
@@ -810,6 +1011,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
           generating: false,
           updatedAt: evidence.observedAt
         })
+        this.archiveNativeProcess(channelId, view)
         return true
       }
       return false
@@ -820,11 +1022,12 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const incomingIds = new Set(stream.items.map((item) => item.id))
     if (stream.todos?.length) incomingIds.add('cursor:todos')
     const overlapsPrevious = previous?.view.blocks.some((block) => incomingIds.has(block.id)) === true
-    // 回合延续以稳定 bubble id 为主证据；只靠时间会把用户快速发起的下一轮误并
-    // 到上一轮。上一轮仍在生成时允许新 bubble 直接追加。
-    const sameTurn = previous !== undefined
-      && (previous.generating || overlapsPrevious)
-    const turn = sameTurn && previous ? previous.view.turn : `cursor:${now}`
+    const nativeTurn = stream.turnId ? `cursor:${stream.turnId}` : undefined
+    // 优先使用 Cursor 原生 user bubble id。仅旧版事件缺 turnId 时回退重叠判断。
+    const sameTurn = previous !== undefined && (nativeTurn
+      ? previous.view.turn === nativeTurn
+      : previous.generating || overlapsPrevious)
+    const turn = nativeTurn ?? (sameTurn && previous ? previous.view.turn : `cursor:${now}`)
     const blockFirstSeen = sameTurn && previous
       ? previous.blockFirstSeen
       : new Map<string, number>()
@@ -930,6 +1133,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
       view: {
         turn,
         blocks,
+        truncatedItemCount: stream.truncatedItemCount,
         startedAt: sameTurn && previous ? previous.view.startedAt : now,
         updatedAt: now
       },
@@ -945,11 +1149,32 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const responseId = evidence.responseId?.trim()
     // composer DOM 文本同样可能含工具调用标记泄漏（生成缺陷）；实时层只展示
     // 截断后的干净前缀，断流恢复由转录侧 interrupted 条目触发（回合确已结束）。
-    const responseText = sanitizeModelGeneratedText(evidence.responseText ?? '').text
+    const responseText = sanitizeModelDisplayText(evidence.responseText ?? '').text
     const existing = this.liveAgentResponses.get(channelId)
+    const incomingIsTranscript = responseId?.startsWith('transcript:') === true
+    const existingIsTranscript = existing?.id.startsWith('transcript:') === true
+    // 同一完成回合有两个观测源：Cursor CDP 的真实可见正文 + transcript 耐久回退。
+    // transcript 每个 250ms 遥测 tick 都会重放；若它覆盖 CDP，下一次 runtime inspect
+    // 又覆盖回来，就形成截图中的两种排版闪烁。优先级固定为 streaming > CDP complete
+    // > transcript complete；transcript 只在没有 CDP 完成态时兜底。
+    if (incomingIsTranscript && existing && !existingIsTranscript) return false
+    // 完成态只允许时间单调前进。Cursor 重启水合期间 team/telemetry 快照会短暂错拍，
+    // 较旧 Composer 的 transcript 若晚到，过去会覆盖当前通道再被纠正，形成闪烁。
+    if (!evidence.isGenerating && existing?.status === 'complete'
+      && responseId && existing.id !== responseId
+      && evidence.observedAt <= existing.updatedAt) return false
     if (evidence.state === 'stopped') {
-      return this.liveAgentResponses.delete(channelId)
+      if (!existing) return false
+      if (existing.status === 'complete') return false
+      this.liveAgentResponses.set(channelId, {
+        ...existing,
+        text: responseText || existing.text,
+        status: 'complete',
+        updatedAt: evidence.observedAt
+      })
+      return true
     }
+    if (responseId && this.finalizedLiveResponseIds.has(responseId)) return false
     if (evidence.isGenerating && responseId) {
       this.liveAgentResponses.set(channelId, {
         id: responseId,
@@ -978,6 +1203,17 @@ export class DesktopSessionService implements DesktopSessionBridge {
         return true
       }
     }
+    if (!evidence.isGenerating && responseId && responseText && (!existing || existing.id !== responseId)) {
+      this.liveAgentResponses.set(channelId, {
+        id: responseId,
+        channelId,
+        text: responseText,
+        status: 'complete',
+        startedAt: evidence.observedAt,
+        updatedAt: evidence.observedAt
+      })
+      return true
+    }
     return false
   }
 
@@ -991,11 +1227,19 @@ export class DesktopSessionService implements DesktopSessionBridge {
         && entry.timestamp >= response.startedAt - 5_000
         && entry.text.trim() === response.text.trim()
       ))
-      const stale = response.status === 'streaming'
-        ? now - response.updatedAt > 2_500
-        : now - response.updatedAt > 3_000
+      // completed Cursor 原生回复在 record_reply 落库前就是唯一历史来源；此前 3s
+      // 自动删除导致截图中的回复/过程“过一会消失”。仅流式断帧做时效清理，完成态
+      // 保留到持久化回复接管或 TeamRun/工作区切换。
+      const stale = response.status === 'streaming' && now - response.updatedAt > 2_500
       if (finalized || stale) {
         this.liveAgentResponses.delete(channelId)
+        if (finalized) {
+          this.finalizedLiveResponseIds.add(response.id)
+          if (this.finalizedLiveResponseIds.size > 200) {
+            const oldest = this.finalizedLiveResponseIds.values().next().value
+            if (oldest) this.finalizedLiveResponseIds.delete(oldest)
+          }
+        }
         continue
       }
       result[channelId] = response

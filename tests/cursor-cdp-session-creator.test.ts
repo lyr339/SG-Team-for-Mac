@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import {
   CursorCdpSessionCreator,
+  buildRuntimeInspectionExpression,
   cursorWorkspaceScopeId,
   type CursorCdpTarget
 } from '../src/infrastructure/cursor/cursor-cdp-session-creator'
@@ -248,6 +250,53 @@ describe('CursorCdpSessionCreator.createAgentSession', () => {
 })
 
 describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
+  it('reads final assistant text from Cursor data and excludes interim text followed by work', async () => {
+    const data = {
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'interim' },
+        { type: 2, bubbleId: 'tool-1' }
+      ],
+      conversationMap: {
+        'user-1': { text: '开始' },
+        interim: { text: '我先读取文件。' },
+        'tool-1': { toolFormerData: { name: 'read_file' } }
+      }
+    }
+    const window = {
+      __qtComposerBridge: {
+        ready: true,
+        listComposers: () => [{ composerId: 'composer-1', status: 'generating', isGenerating: true }],
+        getStatus: () => ({ found: true, status: 'generating', lastAiText: 'DOM 中混入的工具文字', lastAiBubbleId: 'dom' }),
+        getComposerData: () => data
+      }
+    }
+    const withoutFinal = await runInNewContext(buildRuntimeInspectionExpression(['composer-1']), { window, Map, Date })
+    expect(withoutFinal.rows[0]).toMatchObject({ responseText: '', responseId: '' })
+
+    data.fullConversationHeadersOnly.push({ type: 2, bubbleId: 'final-1' })
+    Object.assign(data.conversationMap, { 'final-1': { text: '这是最终回答。' } })
+    data.fullConversationHeadersOnly.push({ type: 2, bubbleId: 'record-reply' })
+    Object.assign(data.conversationMap, {
+      'record-reply': { toolFormerData: { name: 'mcp-SG Team-record_reply' } }
+    })
+    const withFinal = await runInNewContext(buildRuntimeInspectionExpression(['composer-1']), { window, Map, Date })
+    expect(withFinal.rows[0]).toMatchObject({ responseText: '这是最终回答。', responseId: 'final-1' })
+  })
+
+  it('uses live status fallback while Composer data is only an empty hydration shell', async () => {
+    const window = {
+      __qtComposerBridge: {
+        ready: true,
+        listComposers: () => [{ composerId: 'composer-empty', status: 'generating', isGenerating: true }],
+        getStatus: () => ({ found: true, status: 'generating', lastAiText: '仍然可见的实时回复', lastAiBubbleId: 'live-bubble' }),
+        getComposerData: () => ({ fullConversationHeadersOnly: [], conversationMap: {} })
+      }
+    }
+    const inspected = await runInNewContext(buildRuntimeInspectionExpression(['composer-empty']), { window, Map, Date })
+    expect(inspected.rows[0]).toMatchObject({ responseText: '仍然可见的实时回复', responseId: 'live-bubble' })
+  })
+
   it('returns exact stopped evidence from the live Cursor bridge', async () => {
     const { creator, evaluatedExpressions } = createCreator({
       only: {
@@ -274,11 +323,13 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
       isGenerating: true, responseId: 'bubble-live', responseText: '正在实时生成回答'
     })
     expect(evaluatedExpressions.some((expression) => expression.includes('bridge.getStatus'))).toBe(true)
+    expect(evaluatedExpressions.some((expression) => expression.includes('bridge.getComposerData'))).toBe(true)
+    expect(evaluatedExpressions.some((expression) => expression.includes('laterWork'))).toBe(true)
     expect(evaluatedExpressions.some((expression) => expression.includes('lastAiText'))).toBe(true)
     expect(evaluatedExpressions.some((expression) => expression.includes('lastAiBubbleId'))).toBe(true)
   })
 
-  it('解析过程流并过滤内部协议调用（对齐转录侧噪音过滤）', async () => {
+  it('只过滤轮询噪音并保留改变业务状态的团队工具', async () => {
     const { creator } = createCreator({
       only: {
         title: 'qingtian — Cursor',
@@ -298,17 +349,19 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
               items: [
                 { kind: 'thinking', id: 'cursor-th:b1', text: '先读配置', status: 'running' },
                 { kind: 'tool', id: 'cursor:b-read', toolName: 'read_file_v2', toolKind: 'read', summary: '/p/a.json', status: 'done' },
-                // 内部协议调用：必须过滤（持续对话模式 check_messages 每秒一次，会刷屏）
+                // 仅持续轮询与回复同步属于噪音；团队业务工具必须保留。
                 { kind: 'tool', id: 'cursor:b-check', toolName: 'mcp-SG Team-check_messages', toolKind: 'mcp', summary: '', status: 'running' },
                 { kind: 'tool', id: 'cursor:b-reply', toolName: 'mcp-SG Team-record_reply', toolKind: 'mcp', summary: '', status: 'done' },
-                { kind: 'tool', id: 'cursor:b-team', toolName: 'mcp-SG Team-team_check_in', toolKind: 'mcp', summary: '', status: 'done' },
-                { kind: 'tool', id: 'cursor:b-plain', toolName: 'team_plan_tasks', toolKind: 'mcp', summary: '', status: 'done' }
+                { kind: 'tool', id: 'cursor:b-team', toolName: 'mcp-SG Team-team_bootstrap', toolKind: 'mcp', summary: '', status: 'done' },
+                { kind: 'tool', id: 'cursor:b-plain', toolName: 'team_run', toolKind: 'mcp', summary: '', status: 'done' }
               ],
               todos: [
                 { content: '读取配置', status: 'completed' },
                 { content: '验证配置', status: 'in_progress' }
               ],
-              generatingBubbleCount: 1
+              generatingBubbleCount: 1,
+              turnId: 'user-business-turn',
+              truncatedItemCount: 2
             }
           }]
         }
@@ -320,8 +373,12 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
     expect(evidence?.process).toMatchObject({
       items: [
         { kind: 'thinking', id: 'cursor-th:b1', text: '先读配置', status: 'running' },
-        { kind: 'tool', id: 'cursor:b-read', toolName: 'read_file_v2', toolKind: 'read' }
+        { kind: 'tool', id: 'cursor:b-read', toolName: 'read_file_v2', toolKind: 'read' },
+        { kind: 'tool', id: 'cursor:b-team', toolName: 'mcp-SG Team-team_bootstrap', toolKind: 'mcp' },
+        { kind: 'tool', id: 'cursor:b-plain', toolName: 'team_run', toolKind: 'mcp' }
       ],
+      turnId: 'user-business-turn',
+      truncatedItemCount: 2,
       todos: [
         { content: '读取配置', status: 'completed' },
         { content: '验证配置', status: 'in_progress' }
@@ -329,7 +386,30 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
       generatingBubbleCount: 1
     })
     const toolNames = evidence?.process?.items.flatMap((item) => item.kind === 'tool' ? [item.toolName] : []) ?? []
-    expect(toolNames).toEqual(['read_file_v2'])
+    expect(toolNames).toEqual(['read_file_v2', 'mcp-SG Team-team_bootstrap', 'team_run'])
+  })
+
+  it('keeps long native turns beyond the old 36-step cutoff', async () => {
+    const items = Array.from({ length: 80 }, (_, index) => ({
+      kind: 'tool', id: `tool-${index}`, toolName: 'read_file', toolKind: 'read',
+      summary: `file-${index}.ts`, status: 'done'
+    }))
+    const { creator } = createCreator({
+      only: {
+        title: 'qingtian — Cursor', bridgeReady: true, scope: WS_SCOPE,
+        runtimeResult: {
+          ok: true,
+          rows: [{
+            composerId: 'composer-long', state: 'active', detail: 'running', observedAt: 1,
+            isGenerating: true,
+            process: { turnId: 'user-long', items, generatingBubbleCount: 1 }
+          }]
+        }
+      }
+    })
+    const result = await creator.inspectComposerRuntime(WS_PATH, ['composer-long'])
+    expect(result['composer-long']?.process?.items).toHaveLength(80)
+    expect(result['composer-long']?.process?.items[0]?.id).toBe('tool-0')
   })
 
   it('纯内部协议调用回合 → process 为 undefined（不产生噪音卡）', async () => {

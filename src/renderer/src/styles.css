@@ -1377,6 +1377,14 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 .live-process-idle { display: flex; align-items: center; gap: 8px; color: var(--faint); }
 .live-process-idle .typing-indicator { margin-left: 0; }
 .live-process-idle__hint { font-size: var(--fs-10); }
+.live-process-idle__hint.is-warning { color: var(--color-text-warning); }
+.cursor-native-process__truncated, .process-turn__truncated { margin: 0; padding: 7px 9px; color: var(--color-text-warning); background: var(--color-background-warning); border: var(--border-width-regular) solid var(--color-border-warning); border-radius: 8px; font-size: var(--fs-10); }
+.cursor-native-thought__head { width: fit-content; display: inline-flex; align-items: baseline; gap: 5px; padding: 0; color: var(--color-text-tertiary); background: transparent; border: 0; text-align: left; cursor: pointer; }
+.cursor-native-thought__head strong { color: var(--text); font-size: var(--fs-12); font-weight: 600; letter-spacing: -.01em; }
+.cursor-native-thought__head time { color: var(--muted); font: 500 var(--fs-11)/1 var(--mono); }
+.cursor-native-thought__head span { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-info); font: 500 var(--fs-10)/1 var(--mono); }
+.cursor-native-thought__head span i { width: 5px; height: 5px; background: currentColor; border-radius: 50%; animation: process-turn-pulse 1.2s ease-in-out infinite; }
+.cursor-native-thought__head > svg { width: 13px; height: 13px; align-self: center; margin-left: 2px; }
 
 /* ============================================================
    Process Turn v3：实时/归档统一的单回合过程容器

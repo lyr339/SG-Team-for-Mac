@@ -30,6 +30,8 @@ export type BridgeConnectionState =
 export interface LiveProcessState {
   turn: string
   blocks: ProcessBlock[]
+  /** 原生超长回合因传输上限折叠的步骤数。 */
+  truncatedItemCount?: number
   startedAt: number
   updatedAt: number
 }
@@ -41,6 +43,12 @@ export interface LiveAgentResponseState {
   text: string
   status: 'streaming' | 'complete'
   startedAt: number
+  updatedAt: number
+}
+
+export interface NativeProcessStreamStatus {
+  state: 'connected' | 'reconnecting' | 'unavailable'
+  detail: string
   updatedAt: number
 }
 
@@ -64,6 +72,8 @@ export interface DesktopSnapshot {
   liveProcess?: Record<string, LiveProcessState>
   /** 按通道映射的 Cursor 原生流式回复。record_reply 落地后自动移除。 */
   liveAgentResponses?: Record<string, LiveAgentResponseState>
+  /** Cursor 原生过程观察器健康度；断链时 UI 必须明确披露。 */
+  nativeProcessStream?: NativeProcessStreamStatus
   protocolIssues: string[]
   cursorModels?: CursorModelOption[]
   updatedAt: number

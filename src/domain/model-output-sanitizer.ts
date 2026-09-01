@@ -63,6 +63,17 @@ export function sanitizeModelGeneratedText(raw: string): SanitizedModelText {
   return { text: stripDanglingBoldMarkers(truncated), leaked: true }
 }
 
+/** 用户可见的模型文本统一入口：处理工具标记泄漏，并移除零信息量脱敏占位符。 */
+export function sanitizeModelDisplayText(raw: string): SanitizedModelText {
+  const sanitized = sanitizeModelGeneratedText(raw)
+  return {
+    ...sanitized,
+    text: stripRedactionMarkers(
+      sanitized.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    )
+  }
+}
+
 /** 逐行清理未配对的粗体标记（配对规则与渲染层一致：顺序两两配对）。 */
 export function stripDanglingBoldMarkers(text: string): string {
   return text.split('\n').map(stripLineDanglingBoldMarker).join('\n')
