@@ -135,6 +135,9 @@ export class ChannelMessageRelay {
   markCursorStopped(channelId: string, observedAt = this.now()): boolean {
     const current = this.repository.getPresence(channelId)
     if (current?.connectionPhase === 'cursor_stopped') return false
+    // 生命证据更新则不覆盖：停止观测之后 Agent 仍有 MCP 调用（lastSeenAt 更新），
+    // 说明模型仍在执行——过时的死亡证据不得压过新生命证据把健康 Agent 判死。
+    if (current && current.lastSeenAt > observedAt) return false
     this.repository.touchPresence(channelId, {
       lastSeenAt: observedAt,
       waiting: false,

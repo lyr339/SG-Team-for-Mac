@@ -99,6 +99,14 @@ export function isExplicitlyStoppedPhase(connectionPhase: string): boolean {
 }
 
 /**
+ * 终止相位的中转复活相：新 TeamRun 作用域开启、或更新的 MCP 心跳推翻
+ * 死亡证据后进入。上一轮残留的 cursor_stopped/tool_aborted 若不清除，
+ * 新 run 的 Agent 签到后仍被永久判死（2026-09-01 事故：14:19:52 签到、
+ * 14:19:58 即被清扫器判定主控终止）。
+ */
+export const PRESENCE_REVIVED_PHASE = 'reviving'
+
+/**
  * 已取走真实消息的执行租约。
  *
  * processing / need_reply_sync 期间 Agent 正在推理、跑命令或生成回复，协议上本来

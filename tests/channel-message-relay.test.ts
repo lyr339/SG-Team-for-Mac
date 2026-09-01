@@ -142,6 +142,89 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('clears residual cursor_stopped phases when a new TeamRun scope begins (2026-09-01 incident)', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      // 上一轮结束时遗留的终止相位：presence 行不按 run 分表，跨轮存活。
+      repository.touchPresence('1', {
+        waiting: false, connectionPhase: 'cursor_stopped', lastSeenAt: 9_000
+      }, 9_000)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('cursor_stopped')
+
+      // 新 run 启动（resetScope → beginScope）：终止相位必须被清成 reviving，
+      // 否则新 Agent 14:19:52 签到后 14:19:58 就被清扫器按 runtimeEvidence=stopped
+      // 判定主控失联。
+      setNow(20_000)
+      relay.resetScope('run-new', 20_000)
+      const after = repository.getPresence('1')
+      expect(after?.connectionPhase).toBe('reviving')
+      // 相位残留已清：会话不再被投影成 runtimeEvidence=stopped（清扫器对
+      // reviving/active/suspected 都不报警）。lastSeenAt 保留旧值——它是
+      // 真实证据不伪造；旧心跳仍在 120s 窗口内则短暂显示在线（reviving），
+      // 超窗即离线，均不会误判「已终止」。
+      setNow(20_001)
+      const session = relay.applyTo(baseSnapshot()).sessions[0]
+      expect(session?.connectionPhase).toBe('reviving')
+      expect(session?.runtimeEvidence).not.toBe('stopped')
+      // 旧心跳超窗后自然离线（suspected，非 stopped）。
+      setNow(20_000 + CHANNEL_PRESENCE_STALE_MS + 1_000)
+      const stale = relay.applyTo(baseSnapshot()).sessions[0]
+      expect(stale).toMatchObject({ online: false, runtimeEvidence: 'suspected' })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('revives a terminal phase on heartbeat-only presence writes (MCP tool call is life evidence)', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      repository.touchPresence('1', {
+        waiting: false, connectionPhase: 'cursor_stopped', lastSeenAt: 10_000
+      }, 10_000)
+      setNow(10_001)
+      expect(relay.applyTo(baseSnapshot()).sessions[0]).toMatchObject({
+        online: false, runtimeEvidence: 'stopped'
+      })
+
+      // MCP 心跳（refreshIdentity / keepalive 等纯心跳写入，不带 phase）：
+      // 工具调用刚发生 = 模型在跑，死亡证据必须让位。
+      repository.touchPresence('1', { lastSeenAt: 11_000 }, 11_000)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('reviving')
+      setNow(11_001)
+      expect(relay.applyTo(baseSnapshot()).sessions[0]).toMatchObject({
+        online: true, runtimeEvidence: 'active', status: 'reviving'
+      })
+
+      // 显式相位写入不受自动复活影响：协议相位机照常工作。
+      repository.touchPresence('1', { waiting: true, connectionPhase: 'waiting', lastSeenAt: 12_000 }, 12_000)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('waiting')
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('markCursorStopped refuses to override fresher heartbeat evidence', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      // Agent 刚在 12_000 有 MCP 调用；停止观测却是更早的 11_000（迟到的
+      // runtime evidence）——过时死亡证据不得覆盖新生命证据。
+      repository.touchPresence('1', {
+        waiting: false, connectionPhase: 'processing', lastSeenAt: 12_000
+      }, 12_000)
+      expect(relay.markCursorStopped('1', 11_000)).toBe(false)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('processing')
+
+      // 观测时间新于心跳：正常标记。
+      expect(relay.markCursorStopped('1', 13_000)).toBe(true)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('cursor_stopped')
+    } finally {
+      repository.close()
+    }
+  })
+
   it('does not duplicate timeline or queue entries when the same text is submitted twice quickly', () => {
     const { repository, relay, advance } = fixture()
     try {

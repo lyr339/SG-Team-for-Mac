@@ -7,6 +7,8 @@ import {
   CHANNEL_OUTBOX_MAX_PENDING,
   CHANNEL_OUTBOUND_DEDUPE_WINDOW_MS,
   CHANNEL_REPLY_DEDUPE_WINDOW_MS,
+  PRESENCE_REVIVED_PHASE,
+  isExplicitlyStoppedPhase,
   type ChannelInboundReply,
   type ChannelOutboundMessage,
   type ChannelPresence
@@ -383,10 +385,18 @@ export class SqliteChannelMessageRepository {
             pending_group_id = NULL, updated_at = ?
         WHERE pending_reply_sync_since IS NOT NULL AND pending_reply_sync_since < ?
       `).run(now, boundary)
+      // 上一轮残留的终止相位（cursor_stopped/tool_aborted）必须随作用域切换清除：
+      // presence 行不按 run 分表，死亡证据跨轮存活会把新 run 的签到 Agent
+      // 永久判死。清除后进入 reviving 中转相，等待 Agent 的协议相位接管。
+      const revived = this.database.prepare(`
+        UPDATE channel_presence
+        SET connection_phase = ?, waiting = 0, updated_at = ?
+        WHERE connection_phase IN ('cursor_stopped', 'tool_aborted')
+      `).run(PRESENCE_REVIVED_PHASE, now)
       this.database.exec('COMMIT')
       return {
         outbound: numberOf(outbound.changes),
-        presence: numberOf(presence.changes)
+        presence: numberOf(presence.changes) + numberOf(revived.changes)
       }
     } catch (error) {
       if (this.database.isTransaction) this.database.exec('ROLLBACK')
@@ -520,13 +530,21 @@ export class SqliteChannelMessageRepository {
   /** MCP 进程刷新活性；通道首次出现时建立基线行。 */
   touchPresence(channelId: string, patch: PresencePatch, now = Date.now()): ChannelPresence {
     const normalizedChannel = String(channelId).trim()
-    if (!/^\d+$/.test(normalizedChannel)) throw new Error(`通道号无效：${channelId}`)
+    if (!/^\d+$/.test(normalizedChannel)) throw new Error(`通道号无效：${normalizedChannel}`)
     const current = this.getPresence(normalizedChannel)
+    // 纯心跳写入（不带 connectionPhase）即 MCP 工具调用刚发生的生命证据：
+    // 终止相位必须让位（2026-09-01 事故：签到后仍被残留 cursor_stopped
+    // 永久判死）。显式写相位的调用（markCursorStopped/协议相位机）不受影响。
+    const phaseOfPatch = patch.connectionPhase ?? (
+      patch.lastSeenAt !== undefined && current && isExplicitlyStoppedPhase(current.connectionPhase)
+        ? PRESENCE_REVIVED_PHASE
+        : undefined
+    )
     const next: ChannelPresence = {
       channelId: normalizedChannel,
       lastSeenAt: patch.lastSeenAt ?? now,
       waiting: patch.waiting ?? current?.waiting ?? false,
-      connectionPhase: patch.connectionPhase ?? current?.connectionPhase ?? '',
+      connectionPhase: phaseOfPatch ?? current?.connectionPhase ?? '',
       turnCount: patch.turnCount ?? current?.turnCount ?? 0,
       deliveredCount: patch.deliveredCount ?? current?.deliveredCount ?? 0,
       keepaliveRound: patch.keepaliveRound ?? current?.keepaliveRound ?? 0,

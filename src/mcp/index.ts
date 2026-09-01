@@ -83,6 +83,7 @@ async function serveUnified(databasePath: string): Promise<void> {
   }
 
   // 工具调用即活性证据；身份换届在调用间实时生效，无需重启进程。
+  // 纯心跳写入会在 repository.touchPresence 内自动清除残留终止相位。
   const refreshIdentity = (channelId: string): void => {
     try {
       channelRepository.touchPresence(channelId, { lastSeenAt: Date.now() })
