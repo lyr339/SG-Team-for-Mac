@@ -15,8 +15,14 @@ import type {
   CursorRuntimeAccountBridgePort,
   CursorRuntimeSwitchPayload
 } from '../src/infrastructure/cursor/cursor-runtime-account-bridge'
+import type { CursorDesktopTokenExchangePort } from '../src/infrastructure/cursor/cursor-desktop-token-exchanger'
 
 /** 构造三段式 JWT（base64url payload）。 */
+function makeTypedJwt(sub: string, type: 'web' | 'session'): string {
+  const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url')
+  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ sub, type, exp: 2_000_000_000 })}.signature`
+}
+
 function makeJwt(sub: string, exp?: number): string {
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url')
   return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ sub, ...(exp !== undefined ? { exp } : {}) })}.signature`
@@ -40,6 +46,7 @@ interface Fixture {
     platform?: () => NodeJS.Platform
     execFn?: (file: string, args: string[]) => Promise<{ stdout: string }>
     runtimeBridge?: CursorRuntimeAccountBridgePort
+    tokenExchanger?: CursorDesktopTokenExchangePort
   }) => CursorAccountSwitcher
   input: (overrides?: Partial<CursorAccountSwitchInput>) => CursorAccountSwitchInput
 }
@@ -206,6 +213,38 @@ describe('CursorAccountSwitcher', () => {
       .toEqual({ value: 'auth0|user_new' })
     expect(itemTableValue(fixture.stateDbPath, 'cursorAuth/cachedUserId'))
       .toEqual({ value: 'auth0|user_new' })
+  })
+
+  it('exchanges browser type=web before killing Cursor and only writes/sends the IDE session token', async () => {
+    const webToken = makeTypedJwt('auth0|user_new', 'web')
+    const sessionToken = makeTypedJwt('auth0|user_new', 'session')
+    const tokenExchanger: CursorDesktopTokenExchangePort = {
+      resolve: async (token, stateDatabasePath) => {
+        expect(fixture.calls).toHaveLength(0)
+        expect(token).toBe(webToken)
+        expect(stateDatabasePath).toBe(fixture.stateDbPath)
+        return {
+          accessToken: sessionToken,
+          refreshToken: sessionToken,
+          sourceType: 'web',
+          runtimeType: 'session',
+          exchanged: true
+        }
+      }
+    }
+    let runtimePayload: CursorRuntimeSwitchPayload | undefined
+    const runtimeBridge: CursorRuntimeAccountBridgePort = {
+      applyAfterLaunch: async (payload, launch) => {
+        runtimePayload = payload
+        return { launchResult: await launch(), ack: { success: true, reason: '' } }
+      }
+    }
+    await fixture.switcherFor({ tokenExchanger, runtimeBridge }).switchAccount(fixture.input({ token: webToken }))
+
+    expect(fixture.calls.some((call) => call.startsWith('pkill'))).toBe(true)
+    expect(itemTableValue(fixture.stateDbPath, 'cursorAuth/accessToken')).toEqual({ value: sessionToken })
+    expect(itemTableValue(fixture.stateDbPath, 'cursorAuth/refreshToken')).toEqual({ value: sessionToken })
+    expect(runtimePayload).toMatchObject({ accessToken: sessionToken, refreshToken: sessionToken })
   })
 
   it('does not report success when Cursor runtime rejects the target token', async () => {

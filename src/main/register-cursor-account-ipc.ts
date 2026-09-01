@@ -8,6 +8,7 @@ import { CursorTokenImporter } from '../infrastructure/cursor/cursor-token-impor
 import { CursorMembershipFetcher } from '../infrastructure/cursor/cursor-membership-profile'
 import { CursorAccountSwitcher } from '../infrastructure/cursor/cursor-account-switcher'
 import { CursorRuntimeAccountBridge } from '../infrastructure/cursor/cursor-runtime-account-bridge'
+import { CursorDesktopTokenExchanger } from '../infrastructure/cursor/cursor-desktop-token-exchanger'
 import { CursorBrowserTokenReader } from '../infrastructure/cursor/cursor-browser-token-reader'
 import type { CursorAccountProfile } from '../infrastructure/cursor/cursor-account-profile'
 import { CursorAccountProfileFetcher, profileLabel } from '../infrastructure/cursor/cursor-account-profile'
@@ -73,7 +74,8 @@ export function registerCursorAccountIpc(
   const switcher = new CursorAccountSwitcher({
     cdpPort: options.cdpPort,
     workspacePath: options.workspacePath,
-    runtimeBridge: new CursorRuntimeAccountBridge()
+    runtimeBridge: new CursorRuntimeAccountBridge(),
+    tokenExchanger: new CursorDesktopTokenExchanger()
   })
   const browserReader = new CursorBrowserTokenReader()
 

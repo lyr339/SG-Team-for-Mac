@@ -6,6 +6,10 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { CursorMachineIdentity } from './cursor-machine-identity'
 import type { CursorRuntimeAccountBridgePort } from './cursor-runtime-account-bridge'
+import {
+  CursorDesktopTokenExchanger,
+  type CursorDesktopTokenExchangePort
+} from './cursor-desktop-token-exchanger'
 import { buildCursorWindowsStartArgs, resolveCursorWindowsExecutable } from './cursor-windows-launch'
 
 const execFileAsync = promisify(execFile)
@@ -16,7 +20,7 @@ const POST_EXIT_SETTLE_MS = 1_200
 type CursorStateValue = string | number | bigint | Uint8Array | null
 
 export interface CursorAccountSwitchInput {
-  /** 目标账号完整 access token（JWT；实测与 refreshToken 同值）。 */
+  /** 目标账号 Token：允许 cursor.com type=web JWT，切换前会兑换为 IDE type=session JWT。 */
   token: string
   /** 缓存邮箱（可选，提升 Cursor 侧显示一致性）。 */
   email?: string
@@ -79,6 +83,8 @@ export class CursorAccountSwitcher {
     platform?: () => NodeJS.Platform
     /** Cursor Companion 运行时换号桥；生产必传，测试可省略。 */
     runtimeBridge?: CursorRuntimeAccountBridgePort
+    /** 网页 Token → IDE session Token 兑换器（测试注入点）。 */
+    tokenExchanger?: CursorDesktopTokenExchangePort
   } = {}) {}
 
   private get platform(): () => NodeJS.Platform {
@@ -116,13 +122,20 @@ export class CursorAccountSwitcher {
     if (rawToken.length < 8 || rawToken.length > 8_192) throw new Error('Cursor Token 长度无效')
     // 网页登录/浏览器导入链路保存的是 WorkosCursorSessionToken（user_xxx::eyJ...）；
     // state.vscdb 的 cursorAuth/accessToken 实值为裸 JWT，写入前必须归一化。
-    const token = rawToken.replace(/^user_[A-Za-z0-9]+::/, '')
-    if (token.split('.').length !== 3) throw new Error('Cursor Token 格式无效：必须是 JWT 三段式')
+    const sourceJwt = rawToken.replace(/^user_[A-Za-z0-9]+::/, '')
+    if (sourceJwt.split('.').length !== 3) throw new Error('Cursor Token 格式无效：必须是 JWT 三段式')
 
     const stateDbPath = this.resolveStateDatabasePath()
     if (!existsSync(stateDbPath)) {
       throw new Error(`Cursor 配置文件不存在：${stateDbPath}。请先启动一次 Cursor 客户端。`)
     }
+
+    // 浏览器导入拿到的是 type=web，会让 Cursor 设置页显示已登录/Pro，但 AI 后端拒绝。
+    // 在杀进程和改库之前，先按 Cursor 自身 PKCE 流程兑换 type=session；
+    // 兑换失败保持 Cursor 与本地数据库原样（零副作用失败）。
+    const tokens = await (this.options.tokenExchanger ?? new CursorDesktopTokenExchanger())
+      .resolve(rawToken, stateDbPath)
+    const token = tokens.accessToken
 
     // ① 确定性退出：不确认死透不动数据库（旧路径卡死根因）。
     const killedCursor = await this.killCursor()
@@ -139,7 +152,7 @@ export class CursorAccountSwitcher {
       backupDir = this.backupTouchedState(stateDbPath)
 
       // ③ 认证 + 机器码写入。
-      this.applyDatabaseState(stateDbPath, token, input)
+      this.applyDatabaseState(stateDbPath, tokens, input)
       this.applyStorageJson(input.identity)
       this.applyMachineIdFile(input.identity.machineGuid)
     } catch (error) {
@@ -155,7 +168,7 @@ export class CursorAccountSwitcher {
     if (this.options.runtimeBridge) {
       const applied = await this.options.runtimeBridge.applyAfterLaunch({
         accessToken: token,
-        refreshToken: token,
+        refreshToken: tokens.refreshToken,
         email: input.email?.trim() || undefined,
         signUpType: isAuth0Token(token) ? 'Auth_0' : '',
         userId
@@ -168,7 +181,7 @@ export class CursorAccountSwitcher {
       if (!applied.ack.success) {
         throw new Error(`Cursor 运行时拒绝账号切换：${applied.ack.reason || 'unknown'}`)
       }
-      this.verifyDatabaseAccount(stateDbPath, userId)
+      this.verifyDatabaseAccount(stateDbPath, userId, tokens.runtimeType)
       runtimeVerified = true
     } else {
       relaunchMode = await this.launchCursor()
@@ -426,7 +439,7 @@ export class CursorAccountSwitcher {
   /** 认证 + 机器码 + 痕迹清理，单事务原子落库（Cursor 已死，独占无竞争）。 */
   private applyDatabaseState(
     stateDbPath: string,
-    token: string,
+    tokens: { accessToken: string; refreshToken: string },
     input: CursorAccountSwitchInput
   ): void {
     let db: DatabaseSync | undefined
@@ -437,15 +450,15 @@ export class CursorAccountSwitcher {
         const upsert = db.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)')
         const remove = db.prepare('DELETE FROM ItemTable WHERE key = ?')
 
-        upsert.run('cursorAuth/accessToken', token)
-        upsert.run('cursorAuth/refreshToken', token)
+        upsert.run('cursorAuth/accessToken', tokens.accessToken)
+        upsert.run('cursorAuth/refreshToken', tokens.refreshToken)
         // 与当前 Cursor authenticationService 一致：未知值写空串，不保留上一账号。
         const email = input.email?.trim()
         if (email) upsert.run('cursorAuth/cachedEmail', email)
         else upsert.run('cursorAuth/cachedEmail', '')
-        if (isAuth0Token(token)) upsert.run('cursorAuth/cachedSignUpType', 'Auth_0')
+        if (isAuth0Token(tokens.accessToken)) upsert.run('cursorAuth/cachedSignUpType', 'Auth_0')
         else upsert.run('cursorAuth/cachedSignUpType', '')
-        const userId = decodeJwtSubject(token)
+        const userId = decodeJwtSubject(tokens.accessToken)
         upsert.run('cursorAuth/userId', userId)
         upsert.run('cursorAuth/cachedUserId', userId)
         upsert.run('cursorAuth/authId', userId)
@@ -509,15 +522,18 @@ export class CursorAccountSwitcher {
   }
 
   /** Companion flush 后再次从 Cursor 主库验证目标账号，杜绝“按钮报成功但仍是旧号”。 */
-  private verifyDatabaseAccount(stateDbPath: string, expectedUserId: string): void {
+  private verifyDatabaseAccount(stateDbPath: string, expectedUserId: string, expectedTokenType: string): void {
     const db = new DatabaseSync(stateDbPath, { readOnly: true, timeout: 2_000 })
     try {
       const rows = db.prepare(
         "SELECT key, value FROM ItemTable WHERE key IN ('cursorAuth/accessToken', 'cursorAuth/refreshToken')"
       ).all() as { key: string; value: unknown }[]
       const actual = new Map(rows.map((row) => [row.key, typeof row.value === 'string' ? row.value : '']))
-      if (decodeJwtSubject(actual.get('cursorAuth/accessToken') ?? '') !== expectedUserId
-        || decodeJwtSubject(actual.get('cursorAuth/refreshToken') ?? '') !== expectedUserId) {
+      const access = actual.get('cursorAuth/accessToken') ?? ''
+      const refresh = actual.get('cursorAuth/refreshToken') ?? ''
+      if (decodeJwtSubject(access) !== expectedUserId
+        || decodeJwtSubject(refresh) !== expectedUserId
+        || (expectedTokenType === 'session' && (decodeJwtType(access) !== 'session' || decodeJwtType(refresh) !== 'session'))) {
         throw new Error('Cursor 运行时回执后账号落库校验不一致')
       }
     } finally {
@@ -601,6 +617,17 @@ function decodeJwtExpiry(token: string): number | undefined {
     const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
     const parsed = JSON.parse(Buffer.from(normalized, 'base64').toString('utf8')) as { exp?: unknown }
     return typeof parsed.exp === 'number' && Number.isFinite(parsed.exp) ? parsed.exp : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function decodeJwtType(token: string): string | undefined {
+  try {
+    const payload = token.split('.')[1]
+    if (!payload) return undefined
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { type?: unknown }
+    return typeof parsed.type === 'string' ? parsed.type : undefined
   } catch {
     return undefined
   }
