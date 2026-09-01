@@ -7,10 +7,9 @@ import {
   CHANNEL_ATTACHMENT_MAX_COUNT,
   CHANNEL_ATTACHMENT_MAX_FILE_BYTES,
   CHANNEL_ATTACHMENT_MAX_TOTAL_BYTES,
-  CHANNEL_PRESENCE_STALE_MS,
-  CHANNEL_PROCESSING_STALE_MS,
+  isExplicitlyStoppedPhase,
   isInternalCollaborationNotificationText,
-  isProcessingPhase,
+  isPresenceOnline,
   type ChannelInboundReply,
   type ChannelOutboundMessage,
   type ChannelPresence
@@ -53,15 +52,7 @@ function uniqueAttachmentName(name: string, used: Set<string>): string {
   }
 }
 
-/** 分相活性判定：processing/need_reply_sync 允许 5 分钟静默，其余相严格 120s。 */
-function presenceOnline(presence: ChannelPresence | undefined, now: number): boolean {
-  if (!presence) return false
-  if (presence.connectionPhase === 'cursor_stopped') return false
-  const staleMs = isProcessingPhase(presence.connectionPhase)
-    ? CHANNEL_PROCESSING_STALE_MS
-    : CHANNEL_PRESENCE_STALE_MS
-  return now - presence.lastSeenAt <= staleMs
-}
+/** 分相活性判定：三段模型收口在 domain 的 isPresenceOnline，主进程与 MCP 共用。 */
 
 function sessionStatusOf(presence: ChannelPresence, online: boolean): AgentSession['status'] {
   const phase = presence.connectionPhase.toLowerCase()
@@ -135,9 +126,10 @@ export class ChannelMessageRelay {
   markCursorStopped(channelId: string, observedAt = this.now()): boolean {
     const current = this.repository.getPresence(channelId)
     if (current?.connectionPhase === 'cursor_stopped') return false
-    // 生命证据更新则不覆盖：停止观测之后 Agent 仍有 MCP 调用（lastSeenAt 更新），
-    // 说明模型仍在执行——过时的死亡证据不得压过新生命证据把健康 Agent 判死。
-    if (current && current.lastSeenAt > observedAt) return false
+    // 生命证据更新则不覆盖：停止观测之后 Agent 仍有 MCP 调用（lastSeenAt）或
+    // CDP 探测到生成（runtimeActiveAt），说明模型仍在执行——过时的死亡证据
+    // 不得压过新生命证据把健康 Agent 判死。
+    if (current && Math.max(current.lastSeenAt, current.runtimeActiveAt ?? 0) > observedAt) return false
     this.repository.touchPresence(channelId, {
       lastSeenAt: observedAt,
       waiting: false,
@@ -149,6 +141,26 @@ export class ChannelMessageRelay {
     this.sessionCache.delete(channelId)
     this.emit()
     return true
+  }
+
+  /**
+   * CDP 运行时探测确认 Composer 正在生成（refreshRuntimeEvidence 的
+   * live.state==='active'）：正面生命证据写回 presence。长任务（>5min 的
+   * shell/推理）期间 Agent 按协议不触碰 MCP，但 Cursor 侧持续生成——
+   * runtimeActiveAt 让 processing 窗口持续续命，活性不再只停留在内存 telemetry。
+   * 只在终止相位被推翻（状态翻转）时 emit；纯证据推进由活性翻转自调度兜底。
+   */
+  noteRuntimeActivity(channelId: string, observedAt: number): void {
+    let revived = false
+    try {
+      revived = this.repository.touchRuntimeActivity(channelId, observedAt).revived
+    } catch {
+      return
+    }
+    if (revived) {
+      this.sessionCache.delete(channelId)
+      this.emit()
+    }
   }
 
   /** 发送改道入口：仅接受内嵌通道；入队即视为投递受理（无 WS 回执等待）。 */
@@ -467,11 +479,12 @@ export class ChannelMessageRelay {
     // 长任务期间按协议不碰 MCP，presence 停刷属正常（证据缺失），给 5 分钟宽限；
     // 更长任务必须由上层 Cursor 遥测的正面活动证据续命，不能仅凭旧 phase 假在线。
     // waiting/keepalive 是「正在长轮询」的声称——沉默超 120s 即与声称矛盾，严格判离线。
-    const online = presenceOnline(presence, now)
+    const online = isPresenceOnline(presence, now)
     const fingerprint = [
       presence?.lastSeenAt ?? 0,
       presence?.waiting ? 1 : 0,
       presence?.connectionPhase ?? '',
+      presence?.runtimeActiveAt ?? 0,
       presence?.updatedAt ?? 0,
       queueDepth,
       online ? 1 : 0,
@@ -485,6 +498,11 @@ export class ChannelMessageRelay {
     ].join('|')
     const cached = this.sessionCache.get(channelId)
     if (cached?.fingerprint === fingerprint) return cached.session
+    // 终止相位投影 stopped 的条件与 isPresenceOnline 的读取侧守门一致：
+    // 未被更晚 CDP 生命证据推翻的明确终止，才构成清扫器认可的死亡证据。
+    const runtimeStopped = presence !== undefined
+      && isExplicitlyStoppedPhase(presence.connectionPhase)
+      && (presence.runtimeActiveAt ?? 0) <= presence.lastSeenAt
     const session: AgentSession = {
       id: previous?.id ?? `qingtian-channel:${channelId}`,
       channelId,
@@ -499,7 +517,7 @@ export class ChannelMessageRelay {
       connectionPhase: presence?.connectionPhase ?? '',
       online,
       connected: online,
-      runtimeEvidence: presence?.connectionPhase === 'cursor_stopped'
+      runtimeEvidence: runtimeStopped
         ? 'stopped'
         : online ? 'active' : 'suspected',
       deliveryMode: 'queued',
@@ -519,6 +537,9 @@ export class ChannelMessageRelay {
         : `内嵌 MCP 活性缺失（${Math.max(0, Math.round((now - presence.lastSeenAt) / 1_000))}s 未调用）`
     ]
     if (presence.waiting) evidence.push('check_messages 正在待命')
+    if (presence.runtimeActiveAt !== undefined) {
+      evidence.push(`CDP 运行时确认生成中（${Math.max(0, Math.round((now - presence.runtimeActiveAt) / 1_000))}s 前）`)
+    }
     if (presence.connectionPhase) evidence.push(`连接阶段：${presence.connectionPhase}`)
     if (presence.pendingReplySyncSince !== undefined) evidence.push('等待 Agent record_reply 同步')
     return evidence
@@ -554,7 +575,7 @@ export class ChannelMessageRelay {
     for (const channelId of this.repository.listEmbeddedChannels()) {
       const cached = this.sessionCache.get(channelId)
       if (!cached) continue
-      if (cached.session.online !== presenceOnline(this.repository.getPresence(channelId), now)) {
+      if (cached.session.online !== isPresenceOnline(this.repository.getPresence(channelId), now)) {
         flipped = true
         break
       }

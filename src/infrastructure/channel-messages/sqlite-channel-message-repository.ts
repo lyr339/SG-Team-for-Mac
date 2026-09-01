@@ -89,6 +89,9 @@ function presenceOf(row: SqliteRow): ChannelPresence {
       : numberOf(row.pending_reply_sync_since),
     pendingGroupChat: numberOf(row.pending_group_chat) === 1,
     pendingGroupId: optionalString(row.pending_group_id),
+    runtimeActiveAt: row.runtime_active_at === null || row.runtime_active_at === undefined
+      ? undefined
+      : numberOf(row.runtime_active_at),
     updatedAt: numberOf(row.updated_at)
   }
 }
@@ -601,6 +604,50 @@ export class SqliteChannelMessageRepository {
     return row ? presenceOf(row) : undefined
   }
 
+  /**
+   * CDP 运行时探测的正面生命证据落库（主进程写入）：
+   * - 只单调推进 runtime_active_at（迟到证据不回拨）；
+   * - 不触碰 last_seen_at（MCP 心跳语义）与协议相位机的其他字段；
+   * - 更新的 CDP 活动推翻终止相位（对称于 markCursorStopped 的新鲜度
+   *   守门与 touchPresence 的心跳复活）：死亡证据必须新鲜于生命证据。
+   * 无变化（行不存在/证据更旧且无需复活）时不产生任何写入，避免
+   * updated_at 噪声触发会话指纹抖动。
+   */
+  touchRuntimeActivity(channelId: string, observedAt: number): { advanced: boolean; revived: boolean } {
+    const normalizedChannel = String(channelId).trim()
+    if (!/^\d+$/.test(normalizedChannel)) throw new Error(`通道号无效：${normalizedChannel}`)
+    const before = this.getPresence(normalizedChannel)
+    const result = this.database.prepare(`
+      UPDATE channel_presence
+      SET runtime_active_at = ?,
+          connection_phase = CASE
+            WHEN connection_phase IN ('cursor_stopped', 'tool_aborted') AND last_seen_at <= ? THEN ?
+            ELSE connection_phase
+          END,
+          updated_at = ?
+      WHERE channel_id = ?
+        AND (
+          COALESCE(runtime_active_at, 0) < ?
+          OR (connection_phase IN ('cursor_stopped', 'tool_aborted') AND last_seen_at <= ?)
+        )
+    `).run(
+      observedAt,
+      observedAt,
+      PRESENCE_REVIVED_PHASE,
+      observedAt,
+      normalizedChannel,
+      observedAt,
+      observedAt
+    )
+    if (numberOf(result.changes) === 0 || !before) return { advanced: false, revived: false }
+    const after = this.getPresence(normalizedChannel)
+    return {
+      advanced: (after?.runtimeActiveAt ?? 0) > (before.runtimeActiveAt ?? 0),
+      revived: isExplicitlyStoppedPhase(before.connectionPhase)
+        && after?.connectionPhase === PRESENCE_REVIVED_PHASE
+    }
+  }
+
   listPresence(): ChannelPresence[] {
     const rows = this.database.prepare(
       'SELECT * FROM channel_presence ORDER BY CAST(channel_id AS INTEGER) ASC'
@@ -774,6 +821,7 @@ export class SqliteChannelMessageRepository {
     this.migrateOutboundRetiredColumn()
     this.migrateOutboundRunColumn()
     this.migrateReplyVisibleColumn()
+    this.migratePresenceRuntimeActiveColumn()
     // 旧版过程事件来自 Agent 主动上报，与 Cursor 原生过程重复且失真；迁移时彻底清除。
     this.database.exec('DROP TABLE IF EXISTS channel_process_events')
   }
@@ -801,6 +849,11 @@ export class SqliteChannelMessageRepository {
   /** 老库增量迁移：出站消息显式绑定 TeamRun。 */
   private migrateOutboundRunColumn(): void {
     this.migrateColumn('channel_outbox', 'run_id', 'TEXT')
+  }
+
+  /** 老库增量迁移：presence 补 CDP 运行时活动时间列（长任务续命证据）。 */
+  private migratePresenceRuntimeActiveColumn(): void {
+    this.migrateColumn('channel_presence', 'runtime_active_at', 'INTEGER')
   }
 
   private migrateColumn(table: string, column: string, definition = 'TEXT'): void {

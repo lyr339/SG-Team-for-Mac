@@ -259,6 +259,46 @@ describe('SqliteChannelMessageRepository', () => {
     }
   })
 
+  it('records runtime activity monotonically without touching heartbeat semantics', () => {
+    const repository = fixture()
+    try {
+      repository.touchPresence('1', { waiting: false, connectionPhase: 'processing', lastSeenAt: 1_000 }, 1_000)
+      expect(repository.touchRuntimeActivity('1', 2_000)).toEqual({ advanced: true, revived: false })
+      expect(repository.getPresence('1')).toMatchObject({
+        lastSeenAt: 1_000,
+        connectionPhase: 'processing',
+        runtimeActiveAt: 2_000
+      })
+      // 迟到/重复证据：不回拨、不产生 updated_at 噪声写入（会话指纹不抖动）。
+      const updatedAt = repository.getPresence('1')?.updatedAt
+      expect(repository.touchRuntimeActivity('1', 1_500)).toEqual({ advanced: false, revived: false })
+      expect(repository.touchRuntimeActivity('1', 2_000)).toEqual({ advanced: false, revived: false })
+      expect(repository.getPresence('1')).toMatchObject({ runtimeActiveAt: 2_000, updatedAt })
+      // 未注册通道：静默无效果（presence 行由心跳路径建立）。
+      expect(repository.touchRuntimeActivity('9', 3_000)).toEqual({ advanced: false, revived: false })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('revives terminal phases only when runtime activity is newer than the stop marker', () => {
+    const repository = fixture()
+    try {
+      repository.touchPresence('1', { waiting: false, connectionPhase: 'cursor_stopped', lastSeenAt: 10_000 }, 10_000)
+      // 早于停止标记的迟到观测：证据照记（供后续新鲜度比较），相位不让位。
+      expect(repository.touchRuntimeActivity('1', 9_500)).toEqual({ advanced: true, revived: false })
+      expect(repository.getPresence('1')?.connectionPhase).toBe('cursor_stopped')
+      // 更晚的生成观测：终止相位让位（死亡证据必须新鲜于生命证据）。
+      expect(repository.touchRuntimeActivity('1', 11_000)).toEqual({ advanced: true, revived: true })
+      expect(repository.getPresence('1')).toMatchObject({
+        connectionPhase: 'reviving',
+        runtimeActiveAt: 11_000
+      })
+    } finally {
+      repository.close()
+    }
+  })
+
   it('tracks embedded channel registrations across repository instances', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-')), 'channel.sqlite3')
     const writer = new SqliteChannelMessageRepository(path)

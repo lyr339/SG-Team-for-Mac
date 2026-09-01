@@ -11,7 +11,7 @@ import { SqliteChannelMessageRepository } from '../infrastructure/channel-messag
 import { ChannelMessageService } from '../application/channel-message-service'
 import { buildTeamRoleBriefing } from '../domain/team-control'
 import { TaskPoolError } from '../domain/task-pool'
-import { CHANNEL_PRESENCE_STALE_MS, CHANNEL_PROCESSING_STALE_MS, isProcessingPhase } from '../domain/channel-message'
+import { isPresenceOnline } from '../domain/channel-message'
 import { createUnifiedChannelServer } from './unified-channel-server'
 import type { TeamChannelRuntime } from './team-tools'
 
@@ -69,12 +69,9 @@ async function serveUnified(databasePath: string): Promise<void> {
       memory,
       controlRepository: teamRepository,
       isChannelOnline: (targetChannelId) => {
-        const presence = channelRepository.getPresence(targetChannelId)
-        if (!presence || presence.connectionPhase === 'cursor_stopped') return false
-        const staleMs = isProcessingPhase(presence.connectionPhase)
-          ? CHANNEL_PROCESSING_STALE_MS
-          : CHANNEL_PRESENCE_STALE_MS
-        return Date.now() - presence.lastSeenAt <= staleMs
+        // 与主进程 relay 同一判定（domain 收口）：终止相位 + processing 三段窗口。
+        // CDP 探测写入的 runtimeActiveAt 让长任务期间通道保持可达。
+        return isPresenceOnline(channelRepository.getPresence(targetChannelId), Date.now())
       },
       channelPresence: (targetChannelId) => channelRepository.getPresence(targetChannelId)
     }

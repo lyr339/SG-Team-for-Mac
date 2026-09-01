@@ -65,6 +65,13 @@ export interface ChannelPresence {
   pendingReplySyncSince?: number
   pendingGroupChat: boolean
   pendingGroupId?: string
+  /**
+   * CDP 运行时探测最近一次确认「正在生成」的时间（主进程写入）。
+   * 与 lastSeenAt（MCP 工具调用心跳）是两条独立的生命证据流：
+   * Agent 跑长任务期间按协议不触碰 MCP，但 Cursor 侧 isGenerating
+   * 持续为真——该证据写回 presence 让 processing 窗口持续续命。
+   */
+  runtimeActiveAt?: number
   updatedAt: number
 }
 
@@ -105,6 +112,35 @@ export function isExplicitlyStoppedPhase(connectionPhase: string): boolean {
  * 14:19:58 即被清扫器判定主控终止）。
  */
 export const PRESENCE_REVIVED_PHASE = 'reviving'
+
+/**
+ * presence 活性判定的唯一权威（主进程 relay 与 MCP server 共用，跨进程一致）：
+ * 1. 明确终止相位（cursor_stopped/tool_aborted）且未被更新的生命证据推翻 → 离线；
+ * 2. processing/need_reply_sync 分相：5 分钟宽限窗口（长任务在途）；
+ * 3. 其余相位（waiting/keepalive/reviving 等）严格 120s 窗口。
+ * 两个窗口的证据基准都是 max(lastSeenAt, runtimeActiveAt)：MCP 工具调用心跳与
+ * CDP 运行时探测（生成期 150ms fast loop 直采）是两条独立生命证据流，取较新
+ * 者——Agent 长回合生成中不调用任何 MCP 工具时，CDP 证据单独维持在线，
+ * 通道间不再互相误判离线。
+ *
+ * 模型不变式：死亡证据必须新鲜于生命证据。写入层（touchPresence 心跳复活 /
+ * touchRuntimeActivity 活动复活 / markCursorStopped 新鲜度守门）已保证持久的
+ * 终止相位不被更晚的生命证据压制；本函数对「终止相位 + 更新 runtimeActiveAt」
+ * 的组合再做一次读取侧防御，兜底跨进程写序竞争。
+ */
+export function isPresenceOnline(presence: ChannelPresence | undefined, now: number): boolean {
+  if (!presence) return false
+  const runtimeActiveAt = presence.runtimeActiveAt ?? 0
+  if (isExplicitlyStoppedPhase(presence.connectionPhase)) {
+    // 终止相位之后 CDP 又观测到生成：死亡证据已过时，按时间窗口继续判定。
+    if (runtimeActiveAt <= presence.lastSeenAt) return false
+  }
+  const lastLifeAt = Math.max(presence.lastSeenAt, runtimeActiveAt)
+  const staleMs = isProcessingPhase(presence.connectionPhase)
+    ? CHANNEL_PROCESSING_STALE_MS
+    : CHANNEL_PRESENCE_STALE_MS
+  return now - lastLifeAt <= staleMs
+}
 
 /**
  * 已取走真实消息的执行租约。

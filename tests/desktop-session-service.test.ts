@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   DesktopSessionService,
@@ -9,7 +12,8 @@ import { emptyCursorTelemetrySnapshot, type CursorTelemetrySnapshot } from '../s
 import { emptyTeamControlSnapshot, type TeamControlSnapshot } from '../src/domain/team-control'
 import type { DesktopSnapshot } from '../src/shared/desktop-api'
 import type { CursorComposerTelemetrySource } from '../src/infrastructure/cursor/cursor-composer-telemetry'
-import type { ChannelMessageRelay } from '../src/application/channel-message-relay'
+import { ChannelMessageRelay } from '../src/application/channel-message-relay'
+import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
 
 function bridgeSnapshot(): DesktopSnapshot {
   return {
@@ -294,6 +298,54 @@ describe('desktop Cursor session enrichment', () => {
       await vi.waitFor(() => expect(service.getSnapshot().liveAgentResponses?.['1']?.text).toBe('事件驱动'))
     } finally {
       service.dispose()
+    }
+  })
+
+  it('writes CDP runtime activity of generating composers back into presence (P0-1)', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const repository = new SqliteChannelMessageRepository(
+      join(mkdtempSync(join(tmpdir(), 'qingtian-p01-')), 'channel.sqlite3')
+    )
+    const relay = new ChannelMessageRelay(repository)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
+      // Agent 取走消息进入长任务：MCP 心跳停在 1_000，此后不再调用任何工具。
+      repository.touchPresence('1', { waiting: false, connectionPhase: 'processing', lastSeenAt: 1_000 }, 1_000)
+      const service = new DesktopSessionService(
+        new FakeBridge(),
+        new FakeTeam(active),
+        { readWorkspace: () => ({ ...telemetry(), composers: [] }) },
+        relay,
+        {
+          inspectComposerRuntime: async () => ({
+            'composer-alpha-123': {
+              composerId: 'composer-alpha-123', state: 'active', detail: '正在生成',
+              observedAt: 123_456, isGenerating: true
+            }
+          })
+        }
+      )
+      try {
+        service.refreshTelemetry()
+        // CDP 生成证据必须落 presence（此前只停留在内存 telemetry）：
+        // runtimeActiveAt 推进，MCP 心跳与协议相位不被污染。
+        await vi.waitFor(() => {
+          expect(repository.getPresence('1')?.runtimeActiveAt).toBe(123_456)
+        })
+        expect(repository.getPresence('1')).toMatchObject({
+          lastSeenAt: 1_000,
+          connectionPhase: 'processing'
+        })
+      } finally {
+        service.dispose()
+      }
+    } finally {
+      repository.close()
     }
   })
 

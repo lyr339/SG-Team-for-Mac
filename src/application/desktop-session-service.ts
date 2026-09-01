@@ -627,6 +627,12 @@ export class DesktopSessionService implements DesktopSessionBridge {
           if (live?.state === 'stopped') {
             this.embeddedRelay?.markCursorStopped(binding.channelId, live.observedAt)
           }
+          if (live?.state === 'active') {
+            // P0-1：生成中的 CDP 证据写回 presence（runtimeActiveAt）——长任务
+            // （>5min shell/推理）期间 MCP 心跳停刷，此前该证据只停留在内存
+            // telemetry，processing 窗口 5 分钟后照样误判离线。
+            this.embeddedRelay?.noteRuntimeActivity(binding.channelId, live.observedAt)
+          }
           if (live) {
             liveChanged = this.updateLiveAgentResponse(binding.channelId, live) || liveChanged
             liveChanged = this.updateLiveCursorProcess(binding.channelId, live) || liveChanged

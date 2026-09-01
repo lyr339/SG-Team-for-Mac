@@ -225,6 +225,105 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('renews the processing window with CDP runtime activity through long tasks (P0-1)', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      // Agent 取走消息进入长任务：MCP 心跳停在 10_000，此后 9 分钟不触碰任何
+      // MCP 工具（跑 shell/构建）。无 CDP 证据时 5 分钟即误判离线。
+      repository.touchPresence('1', { waiting: false, connectionPhase: 'processing', lastSeenAt: 10_000 }, 10_000)
+
+      // CDP 探测每轮确认生成中（生产环境 150ms fast loop 直采）：
+      // runtimeActiveAt 持续推进，processing 窗口持续续命。
+      for (let minute = 1; minute <= 9; minute += 1) {
+        const at = 10_000 + minute * 60_000
+        relay.noteRuntimeActivity('1', at)
+        setNow(at)
+        expect(relay.applyTo(baseSnapshot()).sessions[0]?.online).toBe(true)
+      }
+      expect(repository.getPresence('1')?.runtimeActiveAt).toBe(10_000 + 9 * 60_000)
+      // MCP 心跳语义不被污染：lastSeenAt 仍是 Agent 最后一次工具调用时间。
+      expect(repository.getPresence('1')?.lastSeenAt).toBe(10_000)
+
+      // 生成停止（CDP 不再推进、Agent 也无 MCP 调用）：宽限耗尽即离线。
+      setNow(10_000 + 9 * 60_000 + CHANNEL_PROCESSING_STALE_MS + 1)
+      const stale = relay.applyTo(baseSnapshot()).sessions[0]
+      expect(stale).toMatchObject({ online: false, runtimeEvidence: 'suspected' })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('keeps a waiting-phase channel online while CDP confirms generation (no MCP calls)', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      // 事故另一半根因：Agent 长回合生成中不调用工具，相位停在 waiting，
+      // 心跳停刷超 120s 后被对端通道判离线（CH-1/CH-2 互不认识）。
+      repository.touchPresence('1', { waiting: true, connectionPhase: 'waiting', lastSeenAt: 10_000 }, 10_000)
+
+      // 生成期间 CDP 每轮确认：严格 120s 窗口同样以 max(lastSeenAt, runtimeActiveAt)
+      // 为证据基准，正面生命证据单独维持在线。
+      for (let second = 30; second <= 300; second += 30) {
+        const at = 10_000 + second * 1_000
+        relay.noteRuntimeActivity('1', at)
+        setNow(at)
+        expect(relay.applyTo(baseSnapshot()).sessions[0]?.online).toBe(true)
+      }
+
+      // 生成停止且无 MCP 调用：120s 后恢复严格判定。
+      setNow(10_000 + 300_000 + CHANNEL_PRESENCE_STALE_MS + 1)
+      expect(relay.applyTo(baseSnapshot()).sessions[0]?.online).toBe(false)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('revives a terminal phase when newer CDP activity overturns the death evidence', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      repository.touchPresence('1', {
+        waiting: false, connectionPhase: 'cursor_stopped', lastSeenAt: 10_000
+      }, 10_000)
+      setNow(10_001)
+      expect(relay.applyTo(baseSnapshot()).sessions[0]).toMatchObject({
+        online: false, runtimeEvidence: 'stopped'
+      })
+
+      // 更晚的 CDP 生成观测推翻停止标记（用户向该 Composer 重新发了消息）。
+      relay.noteRuntimeActivity('1', 11_000)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('reviving')
+      setNow(11_001)
+      expect(relay.applyTo(baseSnapshot()).sessions[0]).toMatchObject({
+        online: true, runtimeEvidence: 'active'
+      })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('markCursorStopped refuses to override fresher CDP runtime activity', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      // CDP 在 12_000 确认生成；迟到的停止观测 11_000 不得把健康 Agent 判死。
+      repository.touchPresence('1', {
+        waiting: false, connectionPhase: 'processing', lastSeenAt: 10_000
+      }, 10_000)
+      relay.noteRuntimeActivity('1', 12_000)
+      setNow(12_000)
+      expect(relay.markCursorStopped('1', 11_000)).toBe(false)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('processing')
+
+      // 观测时间新于全部生命证据：正常标记。
+      expect(relay.markCursorStopped('1', 13_000)).toBe(true)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('cursor_stopped')
+    } finally {
+      repository.close()
+    }
+  })
+
   it('does not duplicate timeline or queue entries when the same text is submitted twice quickly', () => {
     const { repository, relay, advance } = fixture()
     try {
