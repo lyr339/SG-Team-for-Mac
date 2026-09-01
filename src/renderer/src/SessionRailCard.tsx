@@ -1,4 +1,5 @@
 import { memo } from 'react'
+import type { DragEvent } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
 import {
   contextPercent,
@@ -14,6 +15,10 @@ interface SessionRailCardProps {
   session: AgentSession
   selected: boolean
   onOpen: (channelId: string) => void
+  /** 拖拽重排透传（侧栏「全部」视图启用；HTML5 DnD 事件直接落在卡片按钮上）。 */
+  draggable?: boolean
+  onDragStart?: (event: DragEvent<HTMLButtonElement>) => void
+  onDragEnd?: (event: DragEvent<HTMLButtonElement>) => void
 }
 
 /** 状态徽章色调：待命→绿；启动/执行→蓝（呼吸点）；空闲/阻塞/待验收/恢复→琥珀；离线/停止→灰。 */
@@ -28,7 +33,10 @@ function stateTone(session: AgentSession): 'waiting' | 'active' | 'attention' | 
 function SessionRailCardView({
   session,
   selected,
-  onOpen
+  onOpen,
+  draggable = false,
+  onDragStart,
+  onDragEnd
 }: SessionRailCardProps): React.JSX.Element {
   const telemetryDetail = session.telemetry?.detail || '尚未接入 Cursor 本机遥测'
   const runtimeKnown = Boolean(session.modelName || session.executionProfile)
@@ -46,6 +54,9 @@ function SessionRailCardView({
       className={`rail-session-card rail-session-card--${session.status} ${selected ? 'is-active' : ''}`}
       onClick={() => onOpen(session.channelId)}
       title={session.composerTitle ? `${telemetryDetail} · ${session.composerTitle}` : telemetryDetail}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
     >
       <span className="rail-session-card__body">
         <span className="rail-session-card__topline">

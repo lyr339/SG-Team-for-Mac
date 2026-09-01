@@ -115,7 +115,7 @@ export function SessionUsageStat({ usage }: SessionUsageStatProps): React.JSX.El
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={ready
-          ? `真实计费 token ${tokens}，等价 API 费用估算 ${cost}，${usage!.turns} 次请求，查看明细`
+          ? `计费 token ${tokens}，等价 API 费用估算 ${cost}，${usage!.turns} 次请求，查看明细`
           : '用量待读取'}
         onClick={() => setOpen((value) => !value)}
       >

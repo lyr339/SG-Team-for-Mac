@@ -531,6 +531,12 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 
 .session-list { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 5px; padding: 2px 10px 12px; overflow-y: auto; }
 .session-list__empty { padding: 40px 10px; color: var(--muted); text-align: center; font-size: var(--fs-11); }
+/* 拖拽重排：源卡片半透明 + 落点插入线（拾光蓝，与全应用焦点语义一致） */
+.session-list__slot { display: grid; min-width: 0; }
+.session-list__slot.is-dragging { opacity: .35; }
+.session-list__slot.is-dragging .rail-session-card { cursor: grabbing; }
+.session-list__slot .rail-session-card[draggable="true"] { cursor: grab; }
+.session-list__drop-marker { height: 2px; margin: -1px 6px 2px; background: var(--accent); border-radius: var(--border-radius-full); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; }
 
 /* ---------- 会话列表卡片 ---------- */
 .rail-session-card {
