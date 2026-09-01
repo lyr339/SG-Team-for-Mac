@@ -5,6 +5,7 @@ import {
   formatCostUsd,
   formatTokenCount,
   priceForModel,
+  totalUsageTokens,
   type CursorUsageEvent
 } from '../src/domain/cursor-usage'
 
@@ -50,6 +51,28 @@ describe('estimateTurnCostUsd', () => {
     expect(estimateTurnCostUsd({ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, occurredAt: 0 }, price)).toBeCloseTo(3, 6)
     expect(estimateTurnCostUsd({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000, cacheWriteTokens: 0, occurredAt: 0 }, price)).toBeCloseTo(0.3, 6)
     expect(estimateTurnCostUsd({ inputTokens: 0, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0, occurredAt: 0 }, price)).toBeCloseTo(1.5, 6)
+  })
+})
+
+describe('token 口径（缓存读/写 ⊂ 输入，2026-09-01 实证定稿）', () => {
+  it('总 token = 输入 + 输出，缓存子集不重复计入', () => {
+    // 事故会话形态：input 6.2M 中 5.82M 命中缓存读——旧口径曾报 12.06M（虚高一倍）。
+    expect(totalUsageTokens({ inputTokens: 6_199_999, outputTokens: 44_859, cacheReadTokens: 5_819_074, cacheWriteTokens: 0 }))
+      .toBe(6_244_858)
+    expect(totalUsageTokens({ inputTokens: 100, outputTokens: 10, cacheReadTokens: 60, cacheWriteTokens: 5 })).toBe(110)
+  })
+
+  it('费用只对未缓存输入收全价：缓存读 1/10、缓存写 1.25×（旧口径虚报 6 倍）', () => {
+    const price = priceForModel('claude-sonnet-4-5')
+    // 1M 输入中 900K 命中缓存读：100K×$3 + 900K×$0.3 = $0.57（旧并列口径错算 $3.27）。
+    expect(estimateTurnCostUsd({ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 900_000, cacheWriteTokens: 0, occurredAt: 0 }, price))
+      .toBeCloseTo(0.57, 6)
+    // 事故会话整笔复核：$3.56 而非 $21.02。
+    expect(estimateTurnCostUsd({ inputTokens: 6_199_999, outputTokens: 44_859, cacheReadTokens: 5_819_074, cacheWriteTokens: 0, occurredAt: 0 }, price))
+      .toBeCloseTo(3.56, 2)
+    // 上游口径异常（缓存 > 输入）时 clamp 到 0，不产生负费。
+    expect(estimateTurnCostUsd({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000, cacheWriteTokens: 0, occurredAt: 0 }, price))
+      .toBeCloseTo(0.3, 6)
   })
 })
 

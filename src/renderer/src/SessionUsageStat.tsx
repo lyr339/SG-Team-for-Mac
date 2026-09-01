@@ -19,13 +19,19 @@ interface SessionUsageStatProps {
   bound?: boolean
 }
 
-/** 用量构成段：颜色与悬浮卡里的分段条、明细行一一对应。 */
-const USAGE_SEGMENTS = [
-  { key: 'input', label: '输入', tone: 'is-input', value: (usage: CursorSessionUsage) => usage.inputTokens },
-  { key: 'output', label: '输出', tone: 'is-output', value: (usage: CursorSessionUsage) => usage.outputTokens },
-  { key: 'cacheRead', label: '缓存读', tone: 'is-cacheread', value: (usage: CursorSessionUsage) => usage.cacheReadTokens },
-  { key: 'cacheWrite', label: '缓存写', tone: 'is-cachewrite', value: (usage: CursorSessionUsage) => usage.cacheWriteTokens }
-] as const
+/**
+ * 用量构成段（互斥分解）：缓存读/写是输入的子集（Cursor 归一口径），
+ * 分段条按「未缓存输入 / 缓存读 / 缓存写 / 输出」四块互斥呈现，总和即总 token。
+ */
+function usageSegments(usage: CursorSessionUsage): Array<{ key: string; label: string; tone: string; tokens: number }> {
+  const uncachedInput = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens)
+  return [
+    { key: 'uncached', label: '输入 · 未缓存', tone: 'is-input', tokens: uncachedInput },
+    { key: 'cacheread', label: '缓存读', tone: 'is-cacheread', tokens: usage.cacheReadTokens },
+    { key: 'cachewrite', label: '缓存写', tone: 'is-cachewrite', tokens: usage.cacheWriteTokens },
+    { key: 'output', label: '输出', tone: 'is-output', tokens: usage.outputTokens }
+  ]
+}
 
 /**
  * 会话页头用量度量组（Orbit「静默度量」）+ 悬浮明细卡：
@@ -89,9 +95,7 @@ export function SessionUsageStat({ usage, bound = false }: SessionUsageStatProps
     }
   }, [open])
 
-  const segments = ready
-    ? USAGE_SEGMENTS.map((segment) => ({ ...segment, tokens: segment.value(usage!) }))
-    : []
+  const segments = ready ? usageSegments(usage!) : []
   return (
     <div
       className="usage-meter"
@@ -165,7 +169,7 @@ export function SessionUsageStat({ usage, bound = false }: SessionUsageStatProps
               </ul>
               <footer>
                 <span>{usage!.pricedModel}</span>
-                <span>输入+输出+缓存读/写合计 · 结束后冻结</span>
+                <span>基于当前API定价实时计算</span>
               </footer>
             </>
           ) : (

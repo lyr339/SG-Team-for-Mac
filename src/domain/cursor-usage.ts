@@ -7,6 +7,16 @@
  * inputTokens / outputTokens / cacheReadTokens / cacheWriteTokens。
  * （渲染进程原生只把值写入内存态 turnTokenUsage，不落盘 state.vscdb。）
  *
+ * 口径（2026-09-01 三重证据定稿）：cacheReadTokens / cacheWriteTokens 是
+ * inputTokens 的【子集】，不是并列桶——
+ * ① Cursor 遥测 gen_ai.usage.total_tokens = inputTokens + outputTokens，不含缓存字段；
+ * ② 事故会话实测（input 6.2M / cacheRead 5.82M）：子集解读缓存命中率 93.9%
+ *   （agentic 长会话典型曲线）；并列解读 48.4%，与对话每 2~3 秒仅增长数百
+ *   token、缓存 TTL 5 分钟的物理规律矛盾；
+ * ③ OpenAI 归一口径（cached_tokens ⊂ prompt_tokens）正是 Cursor 的统一形态。
+ * 因此：总 token = 输入 + 输出；费用 = 未缓存输入全价 + 缓存读 1/10 价
+ * + 缓存写 1.25× 价 + 输出价。
+ *
  * 费用估算：按公开 API 牌价（USD / 百万 token）折算，与 Cursor 实际
  * 计费口径（请求计费/混合额度）不同——是「等价 API 成本」参考值。
  */
@@ -87,13 +97,18 @@ export function priceForModel(modelId: string | undefined): ModelTokenPrice {
     : DEFAULT_PRICE
 }
 
-/** 单回合费用估算（USD）。 */
+/**
+ * 单回合费用估算（USD）。缓存读/写是输入的子集：只有未命中缓存的部分按
+ * 输入全价，缓存读/写按各自折扣价——把四桶直接相加会重复计费（旧口径曾把
+ * 事故会话成本虚报 6 倍）。clamp 防御上游口径异常（缓存 > 输入）。
+ */
 export function estimateTurnCostUsd(event: Omit<CursorUsageEvent, 'composerId'>, price: ModelTokenPrice): number {
+  const uncachedInput = Math.max(0, event.inputTokens - event.cacheReadTokens - event.cacheWriteTokens)
   return (
-    event.inputTokens / 1e6 * price.inputPerM
-    + event.outputTokens / 1e6 * price.outputPerM
+    uncachedInput / 1e6 * price.inputPerM
     + event.cacheReadTokens / 1e6 * price.cacheReadPerM
     + event.cacheWriteTokens / 1e6 * price.cacheWritePerM
+    + event.outputTokens / 1e6 * price.outputPerM
   )
 }
 
@@ -131,10 +146,10 @@ export function accumulateUsage(
   }
 }
 
-/** 总计费 token：输入 + 输出 + 缓存读 + 缓存写。 */
+/** 总计费 token：输入 + 输出（缓存读/写是输入的子集，不重复计入）。 */
 export function totalUsageTokens(usage: Pick<CursorSessionUsage,
   'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens'>): number {
-  return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
+  return usage.inputTokens + usage.outputTokens
 }
 
 /**
@@ -161,10 +176,9 @@ export function applyTurnUsage(
   }
   const price = priceForModel(pricedModel)
   const snapshotCost = estimateTurnCostUsd(snapshot, price)
+  // 回合边界判定同样用「输入+输出」口径（缓存是子集，不参与单调性比较的语义）。
   const snapshotTokens = snapshot.inputTokens + snapshot.outputTokens
-    + snapshot.cacheReadTokens + snapshot.cacheWriteTokens
   const currentTurnTokens = base.inputTokens + base.outputTokens
-    + base.cacheReadTokens + base.cacheWriteTokens
   // 回合内单调覆盖：不增回合数，直接以快照为准（费用按快照重估，口径一致）。
   if (snapshotTokens >= currentTurnTokens) {
     return {
@@ -219,5 +233,5 @@ export function formatCostUsd(costUsd: number): string {
 }
 
 export function cursorUsageDetail(usage: CursorSessionUsage): string {
-  return `本轮 TeamRun 的 Cursor 会话真实计费 token（${usage.pricedModel}，${usage.turns} 回合）：输入 ${usage.inputTokens.toLocaleString()} · 输出 ${usage.outputTokens.toLocaleString()} · 缓存读 ${usage.cacheReadTokens.toLocaleString()} · 缓存写 ${usage.cacheWriteTokens.toLocaleString()}；等价 API 成本估算 ${formatCostUsd(usage.estimatedCostUsd)}；团队结束后冻结，下轮启动时清零`
+  return `本轮 TeamRun 真实计费 token（${usage.pricedModel}，${usage.turns} 回合）：输入 ${usage.inputTokens.toLocaleString()}（含缓存读 ${usage.cacheReadTokens.toLocaleString()}、缓存写 ${usage.cacheWriteTokens.toLocaleString()}）· 输出 ${usage.outputTokens.toLocaleString()}；总计 ${totalUsageTokens(usage).toLocaleString()}；等价 API 成本估算 ${formatCostUsd(usage.estimatedCostUsd)}（基于当前 API 定价实时计算）；团队结束后冻结，下轮启动时清零`
 }

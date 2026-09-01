@@ -245,17 +245,17 @@ describe('SessionWorkspace', () => {
       }
     })
 
-    expect(html).toContain('16.2K')
+    expect(html).toContain('12.2K')
     expect(html).toContain('$0.042')
     expect(html).toContain('Tokens')
     expect(html).not.toContain('≈$')
     expect(html.match(/class="session-usage"/g)).toHaveLength(1)
     expect(html.indexOf('session-usage')).toBeGreaterThan(html.indexOf('workspace-header'))
     expect(html.indexOf('session-usage')).toBeLessThan(html.indexOf('</header>'))
-    expect(html).toMatch(/session-usage__label">Tokens<\/span><b class="session-usage__value">16\.2K<\/b>/)
+    expect(html).toMatch(/session-usage__label">Tokens<\/span><b class="session-usage__value">12\.2K<\/b>/)
     expect(html).toMatch(/session-usage__label">Cost<\/span><b class="session-usage__value">\$0\.042<\/b>/)
     expect(html).toContain('session-usage__sep')
-    expect(html).toContain('aria-label="真实计费 token 16.2K，等价 API 费用估算 $0.042，4 回合，查看明细"')
+    expect(html).toContain('aria-label="真实计费 token 12.2K，等价 API 费用估算 $0.042，4 回合，查看明细"')
 
     const idle = renderWorkspace({
       session: {
