@@ -216,6 +216,9 @@ export function SessionWorkspace({
     ))
   }, [visibleEntries, visibleLiveProcess, visibleLiveResponse, showRunningPlaceholder, session.id, lastVisibleTimestamp])
   const canSend = (session.online || queuedTransport) && !submitting
+  // 独立席位：solo 角色模板的 roleTemplateKey 流经 AgentSession（团队席为
+  // lead/frontend 等真实模板键）。措辞分支用它，避免把 solo 会话表述成团队协作一环。
+  const soloSeat = session.roleTemplateKey === 'solo'
   const disconnected = agentOffline && !queuedTransport
   const queuedOffline = agentOffline && queuedTransport
   const notWaiting = !disconnected && !queuedOffline && !session.waiting && session.status !== 'running'
@@ -566,16 +569,22 @@ export function SessionWorkspace({
             : 'workspace-warning workspace-warning--hidden'}
         aria-hidden={!disconnected && !queuedOffline && !notWaiting}
       >
+        {/* solo 独立席与团队席同服（统一 SG Team 服务器），但措辞按席位区分：
+            solo 是「你的专属会话」语义，不该被表述成团队协作的一环。 */}
         <strong>{queuedOffline
           ? 'Cursor Agent 已离线，消息会先进入队列'
           : agentOffline
           ? 'Cursor Agent 已离线，这条会话此刻不能发送'
           : 'Cursor Agent 在线，但没有进入待命'}</strong>
         <span>{queuedOffline
-          ? '只要该 Cursor 会话继续调用 SG Team 的 check_messages，就会自动取走；不会因为心跳过期阻止发送。'
+          ? (soloSeat
+            ? '只要该 Cursor 会话继续调用 check_messages 轮询，消息就会自动取走；不会因为心跳过期阻止发送。'
+            : '只要该 Cursor 会话继续调用 SG Team 的 check_messages，就会自动取走；不会因为心跳过期阻止发送。')
           : disconnected
           ? '会话与本地时间线仍保留，重新启动对应 Cursor Agent 后可以继续。'
-          : `消息会排队，直到对应 Cursor 会话调用 SG Team 的 check_messages。`}</span>
+          : (soloSeat
+            ? '消息会排队，直到该 Cursor 会话调用 check_messages 取走。'
+            : `消息会排队，直到对应 Cursor 会话调用 SG Team 的 check_messages。`)}</span>
       </div>
 
       <div className="workspace-timeline-wrap">

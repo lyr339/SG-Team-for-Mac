@@ -119,6 +119,34 @@ describe('SessionWorkspace', () => {
     expect(html.match(/live-process-row/g)).toHaveLength(1)
   })
 
+  it('queues offline solo seats without framing them as team collaboration', () => {
+    const solo = renderWorkspace({
+      session: {
+        roleTemplateKey: 'solo',
+        online: false,
+        connected: false,
+        waiting: false,
+        status: 'offline',
+        deliveryMode: 'queued'
+      }
+    })
+    expect(solo).toContain('消息会先进入队列')
+    expect(solo).toContain('只要该 Cursor 会话继续调用 check_messages 轮询')
+    expect(solo).not.toContain('SG Team 的 check_messages')
+    // 团队席保留原措辞（工具经 SG Team 服务器）。
+    const team = renderWorkspace({
+      session: {
+        roleTemplateKey: 'frontend',
+        online: false,
+        connected: false,
+        waiting: false,
+        status: 'offline',
+        deliveryMode: 'queued'
+      }
+    })
+    expect(team).toContain('SG Team 的 check_messages')
+  })
+
   it('completed live responses carry no trailing status text', () => {
     const html = renderWorkspace({
       liveAgentResponse: {

@@ -21,15 +21,15 @@ interface SessionUsageStatProps {
 
 /**
  * 用量构成段（互斥分解）：缓存读/写是输入的子集（Cursor 归一口径），
- * 分段条按「未缓存输入 / 缓存读 / 缓存写 / 输出」四块互斥呈现，总和即总 token。
+ * 分段条按 Input / Cache Read / Cache Write / Output 四块互斥呈现，总和即总 token。
  */
 function usageSegments(usage: CursorSessionUsage): Array<{ key: string; label: string; tone: string; tokens: number }> {
-  const uncachedInput = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens)
+  const freshInput = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens)
   return [
-    { key: 'uncached', label: '输入 · 未缓存', tone: 'is-input', tokens: uncachedInput },
-    { key: 'cacheread', label: '缓存读', tone: 'is-cacheread', tokens: usage.cacheReadTokens },
-    { key: 'cachewrite', label: '缓存写', tone: 'is-cachewrite', tokens: usage.cacheWriteTokens },
-    { key: 'output', label: '输出', tone: 'is-output', tokens: usage.outputTokens }
+    { key: 'input', label: 'Input', tone: 'is-input', tokens: freshInput },
+    { key: 'cacheread', label: 'Cache Read', tone: 'is-cacheread', tokens: usage.cacheReadTokens },
+    { key: 'cachewrite', label: 'Cache Write', tone: 'is-cachewrite', tokens: usage.cacheWriteTokens },
+    { key: 'output', label: 'Output', tone: 'is-output', tokens: usage.outputTokens }
   ]
 }
 
