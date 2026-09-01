@@ -494,6 +494,13 @@ describe('CursorAccountSwitcher', () => {
     await fixture.switcherFor().switchAccount(fixture.input())
     expect(itemTableValue(fixture.stateDbPath, APPLICATION_USER_KEY)).toBeUndefined()
 
+    // 空串值：与损坏 JSON 同处置（整键删除），不静默保留未知形态
+    const empty = new DatabaseSync(fixture.stateDbPath)
+    empty.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)').run(APPLICATION_USER_KEY, '')
+    empty.close()
+    await fixture.switcherFor().switchAccount(fixture.input())
+    expect(itemTableValue(fixture.stateDbPath, APPLICATION_USER_KEY)).toBeUndefined()
+
     // 键缺失（上一轮已清/全新安装）：照常切换，不崩不写
     const second = await fixture.switcherFor().switchAccount(fixture.input())
     expect(second.switched).toBe(true)

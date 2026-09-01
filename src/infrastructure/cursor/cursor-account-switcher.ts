@@ -505,7 +505,8 @@ export class CursorAccountSwitcher {
       : row.value instanceof Uint8Array
         ? Buffer.from(row.value).toString('utf8')
         : ''
-    if (!text) return
+    // 空串/非文本值与损坏 JSON 同处置：无法安全摘除即整键删除（旧行为），
+    // 不给未知形态的账号痕迹留静默存活的缝。
     let parsed: unknown
     try {
       parsed = JSON.parse(text)
