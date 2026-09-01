@@ -60,8 +60,8 @@ const RATE_LIMIT_WINDOW_MS = 300_000
  * 账号自动化编排器（玩法 A）：一键创建会话全部提交成功后触发。
  *
  * 链条（每步失败即中止并保留本地账号记录）：
- *   倒计时（可取消；末段预热奥仔登录）→ 奥仔自助处理（扣 1 次）
- *   → AppleScript 秒级删除（首选：外部浏览器会话内直接删，~3s）
+ *   处理前倒计时（可取消；末段预热奥仔登录）→ 奥仔自助处理（扣 1 次）
+ *   → 加固前倒计时（可取消）→ 秒级删除（首选：浏览器会话内直接删，~3s）
  *   → cookie 轮换（换发新 token 入库后用新会话删除，~15-30s；含退团/限流自愈重试；
  *     轮换超时且旧会话仍有效时兜底直删——奥仔副作用延迟场景）
  *   → 移除拾光本地记录
@@ -111,9 +111,9 @@ export class AccountAutomationService {
     void this.execute(planId)
   }
 
-  /** 仅倒计时阶段可取消；进入处理后不可中止（奥仔扣次/删号无回滚）。 */
+  /** 两段倒计时均可取消；处理/删除请求已发出后不可中止（奥仔扣次/删号无回滚）。 */
   cancel(): AccountAutomationRun {
-    if (this.run.phase !== 'countdown') return this.getRun()
+    if (this.run.phase !== 'countdown' && this.run.phase !== 'hardening-countdown') return this.getRun()
     this.cancelRequested = true
     return this.getRun()
   }
@@ -169,6 +169,35 @@ export class AccountAutomationService {
       }
       return result
     }
+  }
+
+  /** 共用倒计时循环：0.5s 步进，可取消、可被新一轮取代。 */
+  private async waitCountdown(input: {
+    mySeq: number
+    phase: 'countdown' | 'hardening-countdown'
+    durationSec: number
+    tickMessage: (left: number) => string
+    cancelledMessage: string
+    onTick?: (left: number) => void
+  }): Promise<'completed' | 'cancelled' | 'superseded'> {
+    for (let left = input.durationSec; left > 0; left -= 0.5) {
+      if (this.runSeq !== input.mySeq) return 'superseded'
+      this.setRun({ phase: input.phase, remainingSec: left, message: input.tickMessage(left) })
+      input.onTick?.(left)
+      await this.sleep(TICK_MS)
+      if (this.runSeq !== input.mySeq) return 'superseded'
+      if (this.cancelRequested) {
+        this.setRun({
+          phase: 'cancelled',
+          message: input.cancelledMessage,
+          remainingSec: undefined,
+          finishedAt: this.now()
+        })
+        return 'cancelled'
+      }
+    }
+    this.setRun({ remainingSec: undefined })
+    return 'completed'
   }
 
   /**
@@ -267,21 +296,18 @@ export class AccountAutomationService {
         return
       }
 
-      for (let left = settings.delaySec; left > 0; left -= 0.5) {
-        if (this.runSeq !== mySeq) return // 已被新一轮触发取代，静默退出
-        this.setRun({ remainingSec: left, message: `将在 ${left}s 后自动处理当前账号（可取消）` })
+      const beforeProcess = await this.waitCountdown({
+        mySeq,
+        phase: 'countdown',
+        durationSec: settings.delaySec,
+        tickMessage: (left) => `将在 ${left}s 后自动处理当前账号（可取消）`,
+        cancelledMessage: '已取消本次自动化',
         // 倒计时末段预热奥仔登录：执行时直接进入提交，省一次往返
-        if (left === Math.min(3, settings.delaySec)) {
-          void this.deps.aozai.warmup().catch(() => {})
+        onTick: (left) => {
+          if (left === Math.min(3, settings.delaySec)) void this.deps.aozai.warmup().catch(() => {})
         }
-        await this.sleep(TICK_MS)
-        if (this.runSeq !== mySeq) return
-        if (this.cancelRequested) {
-          this.setRun({ phase: 'cancelled', message: '已取消本次自动化', remainingSec: undefined, finishedAt: this.now() })
-          return
-        }
-      }
-      this.setRun({ remainingSec: undefined })
+      })
+      if (beforeProcess !== 'completed') return
       const issue = await preflight()
       if (issue) {
         this.setRun({ phase: 'failed', message: issue, finishedAt: this.now() })
@@ -307,6 +333,16 @@ export class AccountAutomationService {
         this.setRun({ phase: 'failed', message: `奥仔处理失败：${processed.message}（本地账号已保留）`, finishedAt: this.now() })
         return
       }
+
+      // 加固前第二段倒计时：奥仔已完成（卡密已扣），此段取消只跳过加固、保留本地账号。
+      const beforeHardening = await this.waitCountdown({
+        mySeq,
+        phase: 'hardening-countdown',
+        durationSec: settings.postProcessDelaySec,
+        tickMessage: (left) => `奥仔已完成，将在 ${left}s 后加固当前账号（可取消）`,
+        cancelledMessage: '奥仔处理已完成；已取消后续账号加固，本地账号保留'
+      })
+      if (beforeHardening !== 'completed') return
 
       const inBrowser = this.deps.inBrowserDeleter
 

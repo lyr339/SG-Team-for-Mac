@@ -111,7 +111,7 @@ export function App(): React.JSX.Element {
   const [aozaiProgress, setAozaiProgress] = useState<AozaiProgressEvent | null>(null)
   const [aozaiFeedback, setAozaiFeedback] = useState<{ ok: boolean; message: string } | null>(null)
   const [agentLaunchPlan, setAgentLaunchPlan] = useState<AgentLaunchPlan | undefined>(undefined)
-  const [accountAutomationSettings, setAccountAutomationSettings] = useState<AccountAutomationSettings>({ enabled: false, delaySec: 30 })
+  const [accountAutomationSettings, setAccountAutomationSettings] = useState<AccountAutomationSettings>({ enabled: false, delaySec: 30, postProcessDelaySec: 30 })
   const [accountAutomationRun, setAccountAutomationRun] = useState<AccountAutomationRun | undefined>(undefined)
   // 指纹浏览器窗口列表（账号自动化链的浏览器宿主；用户按当次网络选「代理/直连」窗口。
   // 提供方恒 RoxyBrowser，与平台无关）
@@ -1004,6 +1004,10 @@ export function App(): React.JSX.Element {
               try { await window.qingtianDesktop.openFingerprintLoginPage() }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
+            },
+            onCleanupFingerprintEnvironment: async () => {
+              // 清理只影响指纹浏览器 profile，不锁账号操作（面板内自有 busy/反馈态）。
+              await window.qingtianDesktop.cleanupFingerprintEnvironment()
             },
             onRestartWithAccount: async (accountId) => {
               setCursorAccountBusy(true); setCursorAccountError('')

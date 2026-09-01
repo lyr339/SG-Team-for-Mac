@@ -24,6 +24,7 @@ const api: QingtianDesktopApi = {
   importCursorAccountFromBrowser: () => ipcRenderer.invoke(IPC.cursorAccountsImportFromBrowser),
   importCursorAccountFromFingerprint: () => ipcRenderer.invoke(IPC.cursorAccountsImportFromFingerprint),
   openFingerprintLoginPage: () => ipcRenderer.invoke(IPC.cursorAccountsOpenFingerprintLogin),
+  cleanupFingerprintEnvironment: () => ipcRenderer.invoke(IPC.cursorAccountsCleanupFingerprintEnvironment),
   acknowledgeCursorModelDataPolicies: () => ipcRenderer.invoke(IPC.cursorAccountsAcknowledgeModelDataPolicies),
   restartCursorWithAccount: (accountId) => ipcRenderer.invoke(IPC.cursorAccountsRestartWith, accountId),
   verifyCursorRuntimeAccount: () => ipcRenderer.invoke(IPC.cursorAccountsVerifyRuntime),

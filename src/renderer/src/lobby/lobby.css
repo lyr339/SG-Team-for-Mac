@@ -1231,6 +1231,20 @@
 .account-browser__refresh:hover:not(:disabled) { color: var(--accent-deep); border-color: var(--accent-border); }
 .account-browser__refresh:disabled { opacity: .5; }
 .account-browser__error { margin: 0; padding: 7px 9px; color: var(--red); background: var(--red-soft); border: 1px solid var(--red-border); border-radius: 8px; font-size: var(--fs-10); }
+/* 环境清理行：与连接行同一表面语言（次级底 + hairline），按钮走中性态、
+   确认态切琥珀（与全应用「二次确认」色彩语义一致）。 */
+.account-browser__cleanup { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 9px; background: var(--color-background-secondary); border: 1px solid var(--color-border-tertiary); border-radius: 10px; }
+.account-browser__cleanup-text { min-width: 0; display: grid; gap: 2px; }
+.account-browser__cleanup-text b { color: var(--text); font-size: var(--fs-10); font-weight: 650; }
+.account-browser__cleanup-text small { overflow: hidden; color: var(--muted); font-size: var(--fs-10); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.account-browser__cleanup-button { flex: 0 0 auto; min-height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; color: var(--text-soft); background: var(--surface-pure); border: 1px solid var(--color-border-tertiary); border-radius: 8px; font-size: var(--fs-10); font-weight: 600; white-space: nowrap; }
+.account-browser__cleanup-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+.account-browser__cleanup-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+.account-browser__cleanup-button:disabled { opacity: .5; }
+.account-browser__cleanup-button.is-confirming { color: var(--amber); background: var(--amber-soft); border-color: var(--amber-border); }
+.account-browser__cleanup-note { margin: 0; padding: 7px 9px; border-radius: 8px; font-size: var(--fs-10); line-height: 1.5; }
+.account-browser__cleanup-note.is-ok { color: var(--color-text-success); background: var(--color-background-success); }
+.account-browser__cleanup-note.is-fail { color: var(--red); background: var(--red-soft); }
 .account-browser__system-note { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 9px; margin: 0 8px 8px; padding: 9px 10px; color: var(--color-text-info); background: var(--color-background-info); border: 1px solid color-mix(in srgb, var(--color-border-info) 58%, transparent); border-radius: 10px; }
 .account-browser__system-note > span { min-width: 0; display: grid; gap: 2px; }
 .account-browser__system-note strong { font-size: var(--fs-10); }

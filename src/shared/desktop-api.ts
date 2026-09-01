@@ -181,6 +181,7 @@ export interface QingtianDesktopApi {
   importCursorAccountFromFingerprint(): Promise<CursorAccountMetadata[]>
   /** 打开选定的指纹浏览器窗口并导航到 cursor.com：用户可提前登录（cookie 落 profile，窗口不自动关）。 */
   openFingerprintLoginPage(): Promise<void>
+  cleanupFingerprintEnvironment(): Promise<void>
   /** 查询并幂等确认当前指纹浏览器账号所需的受限模型数据政策。 */
   acknowledgeCursorModelDataPolicies(): Promise<{
     changed: boolean
@@ -290,6 +291,7 @@ export const IPC = {
   cursorAccountsImportFromBrowser: 'cursor-accounts:import-from-browser',
   cursorAccountsImportFromFingerprint: 'cursor-accounts:import-from-fingerprint',
   cursorAccountsOpenFingerprintLogin: 'cursor-accounts:open-fingerprint-login',
+  cursorAccountsCleanupFingerprintEnvironment: 'cursor-accounts:cleanup-fingerprint-environment',
   cursorAccountsAcknowledgeModelDataPolicies: 'cursor-accounts:acknowledge-model-data-policies',
   cursorAccountsRestartWith: 'cursor-accounts:restart-with',
   cursorAccountsVerifyRuntime: 'cursor-accounts:verify-runtime',

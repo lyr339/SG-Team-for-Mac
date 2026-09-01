@@ -54,6 +54,7 @@ export interface CursorAccountIpcOptions {
    * 窗口不自动关；未选窗口/指纹浏览器不可达时抛带引导信息的错误。
    */
   openFingerprintLogin?: () => Promise<void>
+  cleanupFingerprintEnvironment?: () => Promise<void>
   /** 当前指纹 profile 的模型数据政策确认；返回导航后的最新 token。 */
   acknowledgeModelDataPolicies?: () => Promise<{
     token: string
@@ -139,6 +140,11 @@ export function registerCursorAccountIpc(
     assertTrustedSender(event, getWindow)
     if (!options.openFingerprintLogin) throw new Error('指纹浏览器通道未装配')
     await options.openFingerprintLogin()
+  })
+  ipcMain.handle(IPC.cursorAccountsCleanupFingerprintEnvironment, async (event) => {
+    assertTrustedSender(event, getWindow)
+    if (!options.cleanupFingerprintEnvironment) throw new Error('指纹浏览器通道未装配')
+    await options.cleanupFingerprintEnvironment()
   })
   ipcMain.handle(IPC.cursorAccountsAcknowledgeModelDataPolicies, async (event) => {
     assertTrustedSender(event, getWindow)
@@ -227,6 +233,7 @@ export function registerCursorAccountIpc(
     ipcMain.removeHandler(IPC.cursorAccountsImportFromBrowser)
     ipcMain.removeHandler(IPC.cursorAccountsImportFromFingerprint)
     ipcMain.removeHandler(IPC.cursorAccountsOpenFingerprintLogin)
+    ipcMain.removeHandler(IPC.cursorAccountsCleanupFingerprintEnvironment)
     ipcMain.removeHandler(IPC.cursorAccountsAcknowledgeModelDataPolicies)
     ipcMain.removeHandler(IPC.cursorAccountsRestartWith)
     ipcMain.removeHandler(IPC.cursorAccountsVerifyRuntime)

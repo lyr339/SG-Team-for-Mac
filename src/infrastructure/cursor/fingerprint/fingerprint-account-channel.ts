@@ -562,15 +562,39 @@ export class FingerprintAccountChannel implements AccountAutomationBrowserHost {
   async finalizeDeletedAccount(): Promise<void> {
     // 锚定本轮 profile 身份：清场期间用户切窗/CDP 失效都不影响后续本地 API。
     const anchor = this.session ?? await this.ensureSession()
-    const { client, profileId } = anchor
     try {
       await this.clearSiteData()
     } catch {
       // 页面内清理失败不阻断：Roxy 本地缓存清理会覆盖同样的数据面。
     }
     await this.releaseSession()
+    await this.finalizeProfileWithRetry(anchor.client, anchor.profileId)
+  }
+
+  /**
+   * 手动环境清理（账号管线「一键清理」入口）：与 finalizeDeletedAccount 同一
+   * Roxy 关窗事务，但不强制开窗——无活会话时直接对关闭状态的 profile 执行
+   * clear_local_cache / clear_server_cache / random_env。有活会话时先做页面级
+   * 卸载清理再走事务。清理后该 profile 的 cursor.com 登录态清空（需重新登录），
+   * 指纹轮换为全新环境——用于多账号隔离兜底与残场重置。
+   */
+  async cleanupEnvironment(): Promise<void> {
+    if (this.session) {
+      try {
+        await this.clearSiteData()
+      } catch {
+        // 页面级清理尽力而为；Roxy 本地缓存清理覆盖同样的数据面。
+      }
+      await this.releaseSession()
+    }
+    const client = this.resolveClient()
+    const profileId = this.requireProfileId()
+    await this.finalizeProfileWithRetry(client, profileId)
+  }
+
+  /** Roxy profile 清场事务（带一次重试）；旧客户端无事务能力时退化为仅关窗。 */
+  private async finalizeProfileWithRetry(client: FingerprintBrowser, profileId: string): Promise<void> {
     if (!client.finalizeProfile) {
-      // 旧客户端无事务能力：退化为仅关窗（保持旧行为，不误报）。
       await client.closeWindow(profileId).catch(() => undefined)
       return
     }

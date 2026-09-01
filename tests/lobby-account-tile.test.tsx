@@ -85,6 +85,15 @@ describe('accountFlowStatesFor', () => {
       phase: 'cancelled', hasAccount: true, automationEnabled: true, aozaiReady: true, lastActiveStep: 'countdown'
     })).toEqual({ acquire: 'done', countdown: 'cancelled', processing: 'waiting', deleting: 'waiting', finish: 'cancelled' })
   })
+
+  it('marks hardening-countdown as the deleting step, and its cancel keeps prior steps done', () => {
+    expect(accountFlowStatesFor({
+      phase: 'hardening-countdown', hasAccount: true, automationEnabled: true, aozaiReady: true, lastActiveStep: 'deleting'
+    })).toEqual({ acquire: 'done', countdown: 'done', processing: 'done', deleting: 'running', finish: 'waiting' })
+    expect(accountFlowStatesFor({
+      phase: 'cancelled', hasAccount: true, automationEnabled: true, aozaiReady: true, lastActiveStep: 'deleting'
+    })).toEqual({ acquire: 'done', countdown: 'done', processing: 'done', deleting: 'cancelled', finish: 'cancelled' })
+  })
 })
 
 describe('automationDurationText', () => {
@@ -192,7 +201,9 @@ describe('LobbyAccountTile', () => {
   it('延时滑杆与自动化开关同行呈现', () => {
     const html = renderToStaticMarkup(<LobbyAccountTile {...propsFor()} />)
     expect(html).toContain('<div class="account-automation__row"><label class="toggle-switch')
-    expect(html).toMatch(/account-automation__delay"><span>延时<\/span>[\s\S]*?type="range"/)
+    // 双倒计时竖排列于开关右侧：处理前 + 加固前各一根滑杆
+    expect(html).toMatch(/account-automation__delays"><div class="account-automation__delay"><span>处理前<\/span>[\s\S]*?type="range"/)
+    expect(html).toMatch(/account-automation__delay"><span>加固前<\/span>[\s\S]*?type="range"/)
   })
 
   it('合并状态行：mismatch 红点精简文案，title 携带双账号明细', () => {
@@ -350,6 +361,8 @@ describe('LobbyAccountTile', () => {
     expect(automationFailedStepHint('尚未选择 Cursor 账号，自动化中止')).toBe('countdown')
     // preflight 类失败含「会话」但发生在倒计时阶段，不能误标到删除步骤
     expect(automationFailedStepHint('浏览器会话读取失败，请先登录')).toBe('countdown')
+    // 加固前倒计时取消的消息归属到删除步骤
+    expect(automationFailedStepHint('奥仔处理已完成；已取消后续账号加固，本地账号保留')).toBe('deleting')
   })
 
   it('marks a cancelled run without pretending progress', () => {

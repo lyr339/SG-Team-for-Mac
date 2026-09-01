@@ -32,6 +32,8 @@ interface FastChannelSpec {
 interface HarnessOptions {
   enabled?: boolean
   delaySec?: number
+  /** 加固前第二段倒计时（缺省回落 delaySec，与旧设置迁移语义一致）。 */
+  postProcessDelaySec?: number
   cardSaved?: boolean
   accounts?: FakeAccount[]
   processResult?: { ok: boolean; message: string; remaining?: number }
@@ -53,7 +55,11 @@ interface HarnessOptions {
 function createHarness(options: HarnessOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'account-automation-test-'))
   const store = new AccountAutomationSettingsStore(join(dir, 'settings.json'))
-  store.save({ enabled: options.enabled ?? true, delaySec: options.delaySec ?? 7 })
+  store.save({
+    enabled: options.enabled ?? true,
+    delaySec: options.delaySec ?? 7,
+    ...(options.postProcessDelaySec !== undefined ? { postProcessDelaySec: options.postProcessDelaySec } : {})
+  })
 
   const accounts = (options.accounts ?? [{ id: 'acc-1', label: 'A', active: true, token: 'old-token' }])
     .map((account) => ({ ...account }))
@@ -382,6 +388,34 @@ describe('AccountAutomationService', () => {
     expect(harness.processCalls).toHaveLength(0)
   })
 
+  it('加固前倒计时可取消：奥仔已完成（卡密已扣）、不执行删除、本地账号保留', async () => {
+    const harness = createHarness({ postProcessDelaySec: 7 })
+    cleanup = harness.cleanup
+    harness.service.onAllSessionsTriggered('plan-1')
+    for (let i = 0; i < 1_000 && harness.service.getRun().phase !== 'hardening-countdown'; i += 1) {
+      await Promise.resolve()
+    }
+    expect(harness.service.getRun().phase).toBe('hardening-countdown')
+    harness.service.cancel()
+    const run = await waitForTerminal(harness.service)
+    expect(run.phase).toBe('cancelled')
+    expect(run.message).toContain('已取消后续账号加固')
+    expect(harness.processCalls).toEqual(['old-token'])
+    expect(harness.deleteCalls).toHaveLength(0)
+    expect(harness.accounts[0]?.removed).not.toBe(true)
+  })
+
+  it('加固前倒计时独立计时：第二段走完后照常执行删除', async () => {
+    const harness = createHarness({ delaySec: 7, postProcessDelaySec: 3 })
+    cleanup = harness.cleanup
+    harness.service.onAllSessionsTriggered('plan-1')
+    const run = await waitForTerminal(harness.service)
+    expect(run.phase).toBe('done')
+    expect(harness.runMessages.some((message) => message.includes('3s 后加固当前账号'))).toBe(true)
+    expect(harness.deleteCalls).toEqual(['old-token'])
+    expect(harness.accounts[0]?.removed).toBe(true)
+  })
+
   it('未配置卡密 → 倒计时后明确失败，不动账号', async () => {
     const harness = createHarness({ cardSaved: false })
     cleanup = harness.cleanup
@@ -613,6 +647,8 @@ describe('AccountAutomationService', () => {
     expect(harness.store.load()).toEqual({
       enabled: true,
       delaySec: 60,
+      // 旧设置迁移：postProcessDelaySec 缺省沿用 delaySec（同步钳制）
+      postProcessDelaySec: 60,
       browserHost: 'fingerprint',
       autoAcknowledgeModelDataPolicies: true
     })
@@ -679,9 +715,10 @@ describe('AccountAutomationService', () => {
     // 同一 token 原地重试（限流时会话仍有效，不轮换）
     expect(harness.deleteCalls).toEqual(['old-token', 'old-token', 'old-token'])
     expect(harness.refreshCalls).toHaveLength(0)
-    // 倒计时 7s 后首次删除；第一次等 Retry-After 20s；此后每次限流退避翻倍（5s→10s），
-    // 即第二次等 10s（hint 只覆盖当次等待，不退化客户端退避进度）
-    expect(harness.deleteCallClocks).toEqual([7_000, 27_000, 37_000])
+    // 处理前倒计时 7s + 加固前倒计时 7s（缺省沿用 delaySec）后首次删除；第一次等
+    // Retry-After 20s；此后每次限流退避翻倍（5s→10s），即第二次等 10s
+    //（hint 只覆盖当次等待，不退化客户端退避进度）
+    expect(harness.deleteCallClocks).toEqual([14_000, 34_000, 44_000])
     expect(harness.runMessages).toContain('官网限流，20s 后重试（第 1 次）')
     expect(harness.runMessages).toContain('官网限流，10s 后重试（第 2 次）')
     expect(harness.accounts[0]?.removed).toBe(true)
@@ -716,8 +753,8 @@ describe('AccountAutomationService', () => {
     const run = await waitForTerminal(harness.service)
     expect(run.phase).toBe('done')
     expect(harness.deleteCalls).toEqual(['old-token', 'old-token', 'old-token'])
-    // 退团等待 2s → 限流退避 5s
-    expect(harness.deleteCallClocks).toEqual([7_000, 9_000, 14_000])
+    // 双倒计时各 7s 后首次删除 → 退团等待 2s → 限流退避 5s
+    expect(harness.deleteCallClocks).toEqual([14_000, 16_000, 21_000])
     expect(harness.accounts[0]?.removed).toBe(true)
   })
 })

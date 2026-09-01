@@ -554,6 +554,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
       // 用户提前登录入口：打开选定窗口并导航 cursor.com，不关窗、会话留缓存
       //（登录后点导入直接热连接读 cookie；用户手动关窗由断链感知自动失效缓存）。
       openFingerprintLogin: () => fingerprintAccountChannel.openLoginPage(),
+      cleanupFingerprintEnvironment: () => fingerprintAccountChannel.cleanupEnvironment(),
       acknowledgeModelDataPolicies: () => fingerprintAccountChannel.acknowledgeRequiredModelDataPolicies()
     }
   )

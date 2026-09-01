@@ -367,7 +367,7 @@ const api: QingtianDesktopApi = {
   }),
   cancelCdpAutoHealCountdown: async () => {},
   onCdpAutoHealEvent: () => () => {},
-  getAccountAutomationSettings: async () => ({ enabled: Boolean(automationSceneRun), delaySec: 10 }),
+  getAccountAutomationSettings: async () => ({ enabled: Boolean(automationSceneRun), delaySec: 10, postProcessDelaySec: 10 }),
   saveAccountAutomationSettings: async (settings) => settings,
   getAccountAutomationRun: async () => automationSceneRun ?? { phase: 'idle' as const, message: '', startedAt: 0 },
   cancelAccountAutomation: async () => ({ phase: 'cancelled' as const, message: '已取消本次自动化', startedAt: 0, finishedAt: Date.now() }),
@@ -387,6 +387,7 @@ const api: QingtianDesktopApi = {
     })
   },
   openFingerprintLoginPage: async () => {},
+  cleanupFingerprintEnvironment: async () => {},
   acknowledgeCursorModelDataPolicies: async () => ({
     changed: false,
     tokenUpdated: false,

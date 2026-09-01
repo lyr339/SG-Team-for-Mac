@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AccountAutomationSettings } from '../../../domain/account-automation'
 import { MenuSelect } from './MenuSelect'
 
@@ -13,6 +13,8 @@ interface AccountBrowserPanelProps {
   onSettingsChange: (settings: AccountAutomationSettings) => void
   onRefreshProfiles?: () => void
   onSaveApiKey?: (key: string) => Promise<void>
+  /** 一键清理：选定 profile 的 Cursor 站点数据 + Roxy 本地/云端缓存 + 指纹轮换。 */
+  onCleanupEnvironment?: () => Promise<void>
 }
 
 function BrowserGlyph({ kind }: { kind: 'fingerprint' | 'system' }): React.JSX.Element {
@@ -20,6 +22,12 @@ function BrowserGlyph({ kind }: { kind: 'fingerprint' | 'system' }): React.JSX.E
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5a7.5 7.5 0 0 0-7.5 7.5M12 6.5A4.5 4.5 0 0 0 7.5 11M12 9.5A1.5 1.5 0 0 0 10.5 11c0 4.3-1.4 6.7-3.2 8.2M13.5 11c0 4.9-1.1 7.7-2.5 9.5M16.5 11c0 4.7-.7 7.2-1.7 9M19.5 11A7.5 7.5 0 0 0 12 3.5" /></svg>
   ) : (
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.2" /><path d="M3.8 9h16.4M7 7h.1M10 7h.1" /></svg>
+  )
+}
+
+function CleanupGlyph(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12.8 3.2 16.8 7.2M4.5 15.5l-1 1a1.4 1.4 0 0 0 2 2l1-1M11 5 15 9l-7.6 7.6a2.4 2.4 0 0 1-3.4-3.4ZM13.2 2.8l4 4" /></svg>
   )
 }
 
@@ -33,12 +41,39 @@ export function AccountBrowserPanel({
   apiKeyStatus,
   onSettingsChange,
   onRefreshProfiles,
-  onSaveApiKey
+  onSaveApiKey,
+  onCleanupEnvironment
 }: AccountBrowserPanelProps): React.JSX.Element {
   const [keyInput, setKeyInput] = useState('')
   const [keySaving, setKeySaving] = useState(false)
+  const [cleanupArmed, setCleanupArmed] = useState(false)
+  const [cleanupBusy, setCleanupBusy] = useState(false)
+  const [cleanupNote, setCleanupNote] = useState('')
+  const cleanupArmTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(cleanupArmTimer.current), [])
+  // 环境或选择变化即解除确认态（避免切窗口后误触旧确认）。
+  useEffect(() => { setCleanupArmed(false); setCleanupNote('') }, [settings.bitProfileId, settings.browserHost])
   const host = settings.browserHost ?? 'fingerprint'
   const selectedProfile = profiles?.find((profile) => profile.id === settings.bitProfileId)
+
+  const runCleanup = (): void => {
+    if (!onCleanupEnvironment || cleanupBusy) return
+    if (!cleanupArmed) {
+      setCleanupArmed(true)
+      setCleanupNote('')
+      clearTimeout(cleanupArmTimer.current)
+      cleanupArmTimer.current = setTimeout(() => setCleanupArmed(false), 10_000)
+      return
+    }
+    clearTimeout(cleanupArmTimer.current)
+    setCleanupArmed(false)
+    setCleanupBusy(true)
+    setCleanupNote('')
+    void onCleanupEnvironment()
+      .then(() => setCleanupNote(`「${selectedProfile?.name ?? '选定窗口'}」已清理并轮换指纹；下次使用需重新登录 cursor.com`))
+      .catch((reason) => setCleanupNote(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setCleanupBusy(false))
+  }
 
   return (
     <section className="account-browser" aria-label="浏览器导入来源">
@@ -136,6 +171,31 @@ export function AccountBrowserPanel({
             ) : null}
           </div>
           {profilesMessage ? <p className="account-browser__error" role="alert">{profilesMessage}</p> : null}
+          {onCleanupEnvironment ? (
+            <div className="account-browser__cleanup">
+              <span className="account-browser__cleanup-text">
+                <b>环境清理</b>
+                <small>清除该窗口的 Cursor 站点数据、Roxy 本地/云端缓存并轮换指纹；清理后需重新登录</small>
+              </span>
+              <button
+                type="button"
+                className={`account-browser__cleanup-button${cleanupArmed ? ' is-confirming' : ''}`}
+                disabled={disabled || cleanupBusy || !settings.bitProfileId}
+                title={!settings.bitProfileId
+                  ? '请先选择指纹浏览器执行窗口'
+                  : cleanupArmed
+                    ? '再次点击确认清理（不可撤销）：关闭窗口 → 清空 Cursor 站点数据与 Roxy 缓存 → 轮换指纹'
+                    : '一键清理选定窗口的 Cursor 相关缓存并轮换指纹（首次点击进入确认状态）'}
+                onClick={runCleanup}
+              >
+                <CleanupGlyph />
+                {cleanupBusy ? '清理中…' : cleanupArmed ? '确认清理' : '一键清理'}
+              </button>
+            </div>
+          ) : null}
+          {cleanupNote ? (
+            <p className={`account-browser__cleanup-note${cleanupBusy ? '' : cleanupNote.includes('已清理') ? ' is-ok' : ' is-fail'}`} role="status">{cleanupNote}</p>
+          ) : null}
         </div>
       ) : (
         <div className="account-browser__system-note">

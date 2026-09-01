@@ -31,6 +31,11 @@ export interface AccountAutomationBrowserHost {
    * 在关窗后清理（页面回写源切断）；外部浏览器宿主不实现。
    */
   finalizeDeletedAccount?(): Promise<void>
+  /**
+   * 手动环境清理（账号管线一键清理入口）：对选定 profile 执行同一 Roxy 关窗
+   * 事务（不强制开窗）。清理后登录态清空、指纹轮换；外部浏览器宿主不实现。
+   */
+  cleanupEnvironment?(): Promise<void>
   /** 一轮自动化结束清理（指纹=关窗断连；外部=noop——不能关用户的浏览器）。 */
   dispose(): Promise<void>
 }

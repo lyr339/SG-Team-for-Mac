@@ -121,6 +121,7 @@ export interface LobbyAccountTileProps {
   onImportFromFingerprint?: () => Promise<void>
   /** 打开选定的指纹浏览器窗口并导航 cursor.com（用户提前登录入口；窗口不自动关）。 */
   onOpenFingerprintLogin?: () => Promise<void>
+  onCleanupFingerprintEnvironment?: () => Promise<void>
   aozaiStatus?: AozaiCardStatus
   aozaiBusy?: boolean
   aozaiError?: string
@@ -182,13 +183,15 @@ const FLOW_STATE_LABEL: Record<AccountFlowState, string> = {
 const ACTIVE_PHASE_STEP: Partial<Record<AccountAutomationPhase, AccountFlowStepKey>> = {
   countdown: 'countdown',
   processing: 'processing',
+  'hardening-countdown': 'deleting',
   importing: 'deleting',
   deleting: 'deleting',
   cleaning: 'deleting'
 }
 
 export function isActiveAutomationPhase(phase: AccountAutomationPhase): boolean {
-  return phase === 'countdown' || phase === 'processing' || phase === 'importing' || phase === 'deleting' || phase === 'cleaning'
+  return phase === 'countdown' || phase === 'processing' || phase === 'hardening-countdown'
+    || phase === 'importing' || phase === 'deleting' || phase === 'cleaning'
 }
 
 /** 由运行相位推导五个流程步骤的状态，纯函数便于 SSR 测试。 */
@@ -213,6 +216,16 @@ export function accountFlowStatesFor(input: {
     return { acquire: 'done', countdown: 'done', processing: 'done', deleting: 'done', finish: 'done' }
   }
   if (phase === 'cancelled') {
+    // 加固前倒计时取消：奥仔已完成（处理/倒计时均 done），仅删除步被取消。
+    if (lastActiveStep === 'deleting') {
+      return {
+        acquire: 'done',
+        countdown: 'done',
+        processing: 'done',
+        deleting: 'cancelled',
+        finish: 'cancelled'
+      }
+    }
     return {
       acquire: hasAccount ? 'done' : 'waiting',
       countdown: 'cancelled',
@@ -249,6 +262,7 @@ export function automationDurationText(run: AccountAutomationRun): string {
 
 /** 持久化/直出的失败运行没有活跃步骤轨迹时，按服务消息文案推断失败归属（仅影响展示，完整错误始终展示）。 */
 export function automationFailedStepHint(message: string): AccountFlowStepKey {
+  if (/取消后续账号加固|加固前/.test(message)) return 'deleting'
   if (/奥仔处理失败/.test(message)) return 'processing'
   // 删除链路的失败必含新凭据或删除语义；裸「会话」会误吞 preflight 失败（如浏览器会话读取失败），不用。
   if (/新 Token|删除|官网|入库/.test(message)) return 'deleting'
@@ -266,6 +280,7 @@ export function LobbyAccountTile({
   onImportFromLocal,
   onImportFromBrowser,
   onOpenFingerprintLogin,
+  onCleanupFingerprintEnvironment,
   onImportFromFingerprint,
   aozaiStatus,
   aozaiBusy = false,
@@ -491,6 +506,7 @@ export function LobbyAccountTile({
                 onSettingsChange={onSaveAutomationSettings}
                 onRefreshProfiles={onRefreshBitProfiles}
                 onSaveApiKey={onSaveRoxyApiKey}
+                onCleanupEnvironment={onCleanupFingerprintEnvironment}
               />
             ) : null}
             <div className="lobby-account__quick" aria-label="获取账号来源">
@@ -549,7 +565,9 @@ export function LobbyAccountTile({
           </>
         ))}
 
-        {stepShell('countdown', 1, '倒计时', automationEnabled && automationSettings ? `延时 ${automationSettings.delaySec} 秒` : '', (
+        {stepShell('countdown', 1, '倒计时', automationEnabled && automationSettings
+          ? `处理前 ${automationSettings.delaySec} 秒 · 加固前 ${automationSettings.postProcessDelaySec} 秒`
+          : '', (
           <>
             {automationControlsReady && automationSettings && onSaveAutomationSettings ? (
               <div className="account-automation lobby-account__automation">
@@ -562,18 +580,33 @@ export function LobbyAccountTile({
                     会话创建后自动处理账号
                   </ToggleSwitch>
                   {automationSettings.enabled ? (
-                    <div className="account-automation__delay">
-                      <span>延时</span>
-                      <RangeField
-                        value={automationSettings.delaySec}
-                        min={ACCOUNT_AUTOMATION_DELAY_MIN_SEC}
-                        max={ACCOUNT_AUTOMATION_DELAY_MAX_SEC}
-                        step={0.5}
-                        unit="秒"
-                        disabled={aozaiBusy}
-                        label="自动处理延时秒数"
-                        onChange={(delaySec) => onSaveAutomationSettings({ ...automationSettings, delaySec })}
-                      />
+                    <div className="account-automation__delays">
+                      <div className="account-automation__delay">
+                        <span>处理前</span>
+                        <RangeField
+                          value={automationSettings.delaySec}
+                          min={ACCOUNT_AUTOMATION_DELAY_MIN_SEC}
+                          max={ACCOUNT_AUTOMATION_DELAY_MAX_SEC}
+                          step={0.5}
+                          unit="秒"
+                          disabled={aozaiBusy}
+                          label="奥仔处理前倒计时秒数"
+                          onChange={(delaySec) => onSaveAutomationSettings({ ...automationSettings, delaySec })}
+                        />
+                      </div>
+                      <div className="account-automation__delay">
+                        <span>加固前</span>
+                        <RangeField
+                          value={automationSettings.postProcessDelaySec}
+                          min={ACCOUNT_AUTOMATION_DELAY_MIN_SEC}
+                          max={ACCOUNT_AUTOMATION_DELAY_MAX_SEC}
+                          step={0.5}
+                          unit="秒"
+                          disabled={aozaiBusy}
+                          label="奥仔完成后账号加固前倒计时秒数"
+                          onChange={(postProcessDelaySec) => onSaveAutomationSettings({ ...automationSettings, postProcessDelaySec })}
+                        />
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -670,7 +703,16 @@ export function LobbyAccountTile({
         {stepShell('deleting', 3, '账号加固', '', (
           <>
             <p className="flow-step__desc">处理完成后秒级完成账号加固（不可撤销），必要时自动刷新会话获取新 Token。</p>
-            {phase === 'deleting' || phase === 'importing' ? (
+            {phase === 'hardening-countdown' && automationRun ? (
+              <div className="flow-step__countdown" aria-live="polite" aria-label="账号加固倒计时">
+                <b>{typeof automationRun.remainingSec === 'number' ? automationRun.remainingSec : '—'}</b>
+                <span>秒后加固当前账号</span>
+                {onCancelAutomation ? (
+                  <button className="flow-step__cancel" onClick={onCancelAutomation}>取消</button>
+                ) : null}
+              </div>
+            ) : null}
+            {phase === 'hardening-countdown' || phase === 'deleting' || phase === 'importing' || phase === 'cleaning' ? (
               <p className="flow-step__live" aria-live="polite">{runMessage}</p>
             ) : null}
             {states.deleting === 'failed' && runMessage ? (
