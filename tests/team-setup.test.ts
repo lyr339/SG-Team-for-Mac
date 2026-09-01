@@ -29,7 +29,12 @@ const draft: TeamSetupDraft = {
         { value: 'low', displayName: 'Low', increasesCost: false },
         { value: 'high', displayName: 'High', increasesCost: true }
       ]
-    }]
+    }],
+    // 真实运行态目录形态：全部 variants 均为 maxMode:false，MAX Mode 为正交开关
+    variants: [
+      { parameters: [{ id: 'reasoning', value: 'low' }], maxMode: false },
+      { parameters: [{ id: 'reasoning', value: 'high' }], maxMode: false }
+    ]
   }, {
     modelId: 'gpt-5.3-codex', displayName: 'Codex 5.3', selected: false,
     parameters: [{ id: 'reasoning', value: 'medium' }], optionLabels: [],
@@ -122,6 +127,58 @@ describe('resolveTeamSetupMembers', () => {
       maxMode: true,
       parameters: [{ id: 'reasoning', value: 'high' }]
     })
+  })
+
+  it('orthogonal catalog (all-false variants) accepts MAX Mode on any parameter combo, constrained catalog still enforces', () => {
+    // Kimi K3 形态：目录全 false + supportsMaxMode——maxMode 不参与组合约束
+    expect(() => resolveTeamSetupMembers(draft, {
+      draftId: draft.draftId,
+      members: [{
+        channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [],
+        modelSelection: {
+          modelId: 'kimi-k3', displayName: 'Kimi K3', maxMode: true,
+          parameters: [{ id: 'reasoning', value: 'low' }]
+        }
+      }]
+    })).not.toThrow()
+
+    // 约束型目录（含 true 条目）：不存在的组合仍然拒绝
+    const constrained: TeamSetupDraft = {
+      ...draft,
+      cursorModels: [{
+        modelId: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', selected: true,
+        parameters: [{ id: 'context', value: '272k' }], optionLabels: [],
+        maxMode: false, supportsMaxMode: true, supportsNonMaxMode: true,
+        parameterDefinitions: [{ id: 'context', displayName: 'Context', kind: 'enum', values: [
+          { value: '272k', displayName: '272K', increasesCost: false },
+          { value: '1m', displayName: '1M', increasesCost: true }
+        ] }],
+        variants: [
+          { parameters: [{ id: 'context', value: '272k' }], maxMode: false },
+          { parameters: [{ id: 'context', value: '1m' }], maxMode: true }
+        ]
+      }]
+    }
+    expect(() => resolveTeamSetupMembers(constrained, {
+      draftId: constrained.draftId,
+      members: [{
+        channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [],
+        modelSelection: {
+          modelId: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', maxMode: true,
+          parameters: [{ id: 'context', value: '272k' }]
+        }
+      }]
+    })).toThrowError(/模型参数组合不可用/)
+    expect(() => resolveTeamSetupMembers(constrained, {
+      draftId: constrained.draftId,
+      members: [{
+        channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skillIds: [],
+        modelSelection: {
+          modelId: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', maxMode: true,
+          parameters: [{ id: 'context', value: '1m' }]
+        }
+      }]
+    })).not.toThrow()
   })
 
   it('rejects unavailable channels, duplicates and uninstalled recommendations', () => {

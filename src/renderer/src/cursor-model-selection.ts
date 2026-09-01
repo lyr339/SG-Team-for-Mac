@@ -4,6 +4,10 @@ import type {
   CursorModelSelection,
   CursorModelVariant
 } from '../../domain/cursor-model'
+import {
+  cursorVariantResolvedMode,
+  cursorVariantSupportsMode
+} from '../../domain/cursor-model-variants'
 import { formatTokenCount } from './format'
 
 export function cursorModelSelectionFromOption(
@@ -58,7 +62,7 @@ export function withCursorModelMaxMode(
   maxMode: boolean
 ): CursorModelSelection {
   const variant = bestCursorVariant(option, selection, { maxMode })
-  if (variant) return selectionFromVariant(selection, option, variant)
+  if (variant) return selectionFromVariant(selection, option, variant, maxMode)
   return {
     ...selection,
     maxMode: option.supportsNonMaxMode === false ? true : option.supportsMaxMode === true && maxMode
@@ -72,7 +76,8 @@ function parameterMap(selection: Pick<CursorModelSelection, 'parameters'>): Map<
 function selectionFromVariant(
   selection: CursorModelSelection,
   option: CursorModelOption,
-  variant: CursorModelVariant
+  variant: CursorModelVariant,
+  preferredMaxMode = selection.maxMode === true
 ): CursorModelSelection {
   const values = parameterMap(variant)
   return {
@@ -83,7 +88,7 @@ function selectionFromVariant(
       const value = values.get(definition.id)
       return value === undefined ? [] : [{ id: definition.id, value }]
     }),
-    maxMode: variant.maxMode
+    maxMode: cursorVariantResolvedMode(option, variant, preferredMaxMode)
   }
 }
 
@@ -97,14 +102,14 @@ function bestCursorVariant(
   const current = parameterMap(selection)
   const candidates = variants.filter((variant) => {
     if (!constraint) return true
-    if ('maxMode' in constraint) return variant.maxMode === constraint.maxMode
+    if ('maxMode' in constraint) return cursorVariantSupportsMode(option, variant, constraint.maxMode)
     return parameterMap(variant).get(constraint.parameterId) === constraint.value
   })
   let best: CursorModelVariant | undefined
   let bestScore = Number.NEGATIVE_INFINITY
   for (const variant of candidates) {
     const values = parameterMap(variant)
-    let score = variant.maxMode === selection.maxMode ? 4 : 0
+    let score = cursorVariantResolvedMode(option, variant, selection.maxMode === true) === (selection.maxMode === true) ? 4 : 0
     for (const definition of option.parameterDefinitions) {
       if (constraint && 'parameterId' in constraint && definition.id === constraint.parameterId) continue
       if (values.get(definition.id) === current.get(definition.id)) score += 20
@@ -130,9 +135,9 @@ export function normalizeCursorModelSelection(
     const values = parameterMap(variant)
     return option.parameterDefinitions.every((definition) => (
       values.get(definition.id) === current.get(definition.id)
-    )) && variant.maxMode === selection.maxMode
+    )) && cursorVariantSupportsMode(option, variant, selection.maxMode === true)
   })
-  return selectionFromVariant(selection, option, exact ?? bestCursorVariant(option, selection)!)
+  return selectionFromVariant(selection, option, exact ?? bestCursorVariant(option, selection)!, selection.maxMode === true)
 }
 
 /** 返回一次选择导致的 Cursor 自动联动项，仅用于向用户解释联动。 */

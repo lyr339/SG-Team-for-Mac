@@ -1,6 +1,7 @@
 import type { TeamMemberConfiguration } from '../domain/team-control'
 import type { CreateTeamInput, TeamSetupDraft } from '../shared/desktop-api'
 import type { CursorModelOption, CursorModelSelection } from '../domain/cursor-model'
+import { cursorVariantSupportsMode } from '../domain/cursor-model-variants'
 
 function requiredText(value: unknown, field: string, maxLength: number): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maxLength) {
@@ -58,7 +59,7 @@ function resolveModelSelection(
     const selected = new Map(parameters.map((parameter) => [parameter.id, parameter.value]))
     const validVariant = option.variants.some((variant) => {
       const values = new Map(variant.parameters.map((parameter) => [parameter.id, parameter.value]))
-      return variant.maxMode === maxMode
+      return cursorVariantSupportsMode(option, variant, maxMode)
         && option.parameterDefinitions.every((definition) => values.get(definition.id) === selected.get(definition.id))
     })
     if (!validVariant) throw new Error(`Cursor 模型参数组合不可用：${option.displayName}`)

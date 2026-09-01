@@ -300,7 +300,10 @@ describe('SessionWorkspace', () => {
         }
       }
     })
-    expect(idle).not.toContain('session-usage')
+    // 空对话：占位态常驻（不隐藏组件），但绝不显示数字——ghost「—」等待首个计费回合
+    expect(idle).toContain('session-usage is-pending')
+    expect(idle).not.toMatch(/session-usage__value">\d/)
+    expect(idle).toContain('aria-label="用量待读取"')
   })
 
   it('Composer 已绑定但尚无计费帧时保留明确占位，不再整块消失', () => {

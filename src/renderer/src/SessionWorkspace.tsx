@@ -557,7 +557,7 @@ export function SessionWorkspace({
           </p>
         </div>
         <div className="workspace-header__usage">
-          <SessionUsageStat usage={session.usage} bound={session.telemetry?.state === 'bound'} />
+          <SessionUsageStat usage={session.usage} />
         </div>
       </header>
 

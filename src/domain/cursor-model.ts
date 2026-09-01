@@ -24,7 +24,10 @@ export interface CursorModelSelection {
   maxMode?: boolean
 }
 
-/** Cursor 模型目录中的一个真实可选组合；参数间联动以 variants 为唯一依据。 */
+/**
+ * Cursor 模型目录中的一个真实参数组合。目录存在 maxMode=true 条目时 maxMode
+ * 参与组合约束；目录只有 false 条目但模型 supportsMaxMode 时，MAX Mode 是正交开关。
+ */
 export interface CursorModelVariant {
   parameters: CursorModelParameter[]
   maxMode: boolean

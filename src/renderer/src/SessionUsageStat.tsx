@@ -16,7 +16,6 @@ import {
 
 interface SessionUsageStatProps {
   usage?: CursorSessionUsage
-  bound?: boolean
 }
 
 /**
@@ -38,7 +37,7 @@ function usageSegments(usage: CursorSessionUsage): Array<{ key: string; label: s
  * 常态是排版即界面的两段度量（小号大写标签压齐宽数字，hairline 竖分隔，
  * 无底色无描边）；悬浮/聚焦展开分段明细卡，设计语言对齐上下文卡与队列卡。
  */
-export function SessionUsageStat({ usage, bound = false }: SessionUsageStatProps): React.JSX.Element | null {
+export function SessionUsageStat({ usage }: SessionUsageStatProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState({ left: 0, top: 0 })
   const titleId = useId()
@@ -46,8 +45,10 @@ export function SessionUsageStat({ usage, bound = false }: SessionUsageStatProps
   const popoverRef = useRef<HTMLElement>(null)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
+  // 无用量（空对话）恒定渲染占位态：ghost「—」不显示数字，用量就绪后原地替换。
+  // 不得按 bound 早退——早退点位于 useLayoutEffect 之前，bound 翻转会改变 hooks
+  // 数量违反 React 规则，且空对话整个隐藏会被读作「组件坏了」。
   const ready = Boolean(usage && usage.turns > 0)
-  if (!ready && !bound) return null
   const tokens = ready ? formatTokenCount(totalUsageTokens(usage!)) : '—'
   const cost = ready ? formatCostUsd(usage!.estimatedCostUsd) : '—'
 

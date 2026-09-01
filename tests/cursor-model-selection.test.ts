@@ -22,8 +22,17 @@ const kimi: CursorModelOption = {
   optionLabels: [],
   parameterDefinitions: [{
     id: 'reasoning', displayName: 'Reasoning', kind: 'enum',
-    values: [{ value: 'max', displayName: 'Max', increasesCost: false }]
-  }]
+    values: [
+      { value: 'low', displayName: 'Low', increasesCost: false },
+      { value: 'max', displayName: 'Max', increasesCost: false }
+    ]
+  }],
+  // 2026-09 运行态实证：Kimi K3 目录的全部 variants 均为 maxMode:false——
+  // MAX Mode 是模型级正交开关，不参与组合约束。
+  variants: [
+    { parameters: [{ id: 'reasoning', value: 'low' }], maxMode: false },
+    { parameters: [{ id: 'reasoning', value: 'max' }], maxMode: false, isDefaultMaxConfig: true, isDefaultNonMaxConfig: true }
+  ]
 }
 
 describe('Cursor model MAX Mode selection', () => {
@@ -42,6 +51,14 @@ describe('Cursor model MAX Mode selection', () => {
     expect(max.parameters).toEqual([{ id: 'reasoning', value: 'max' }])
     expect(fixedCursorModelContext(kimi, max)).toBe('1.05M · MAX Mode')
     expect(cursorModelSelectionSummary(max, kimi)).toContain('MAX Mode On')
+
+    // 正交目录：改 reasoning 不推翻 MAX Mode 开关
+    const changedReasoning = withCursorModelParameter(max, kimi, 'reasoning', 'low')
+    expect(changedReasoning).toMatchObject({
+      parameters: [{ id: 'reasoning', value: 'low' }],
+      maxMode: true
+    })
+    expect(normalizeCursorModelSelection(changedReasoning, kimi).maxMode).toBe(true)
   })
 })
 
