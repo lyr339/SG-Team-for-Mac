@@ -16,7 +16,7 @@ import type {
   SendMessageAccepted,
   SendMessageInput
 } from '../shared/desktop-api'
-import type { ProcessBlock } from '../domain/conversation-entry'
+import { conversationTextIdentity, type ProcessBlock } from '../domain/conversation-entry'
 import type { CursorComposerTelemetrySource } from '../infrastructure/cursor/cursor-composer-telemetry'
 import type { ChannelMessageRelay } from './channel-message-relay'
 import type { CursorComposerRuntimeEvidence, CursorProcessStream } from '../infrastructure/cursor/cursor-cdp-session-creator'
@@ -701,7 +701,10 @@ export class DesktopSessionService implements DesktopSessionBridge {
         if (!binding.composerId) continue
         if (this.runtimeSource && !this.runtimeInspectedComposerIds.has(binding.composerId)) continue
         const response = composerByIdForReplies.get(binding.composerId)?.lastAssistantResponse
-        if (response) {
+        // 已落库的回复不再走转录兜底：record_reply 成功后转录每次写盘（含
+        // Agent 的 check_messages 轮询）都会更新 mtime，过去会以新 id 反复回灌
+        // 同一回复，且 finalize 时间窗对新 mtime 恒不命中 → 「正在归档…」永挂。
+        if (response && !this.embeddedRelay?.hasPersistedAssistantText(binding.channelId, response.text)) {
           transcriptResponseChanged = this.updateLiveAgentResponse(binding.channelId, {
             composerId: binding.composerId,
             state: 'unknown',
@@ -1221,11 +1224,15 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const now = Date.now()
     const result: Record<string, LiveAgentResponseState> = {}
     for (const [channelId, response] of this.liveAgentResponses) {
+      // 转录兜底是历史恢复：按文本身份判定 finalize（其 startedAt 是转录 mtime，
+      // 恒新于落库回复，时间窗永不命中）。CDP 来源维持原时间窗 + 精确文本。
+      const transcriptSourced = response.id.startsWith('transcript:')
       const finalized = snapshot.conversations[channelId]?.some((entry) => (
         entry.role === 'assistant'
         && entry.status === 'complete'
-        && entry.timestamp >= response.startedAt - 5_000
-        && entry.text.trim() === response.text.trim()
+        && (transcriptSourced
+          ? conversationTextIdentity(entry.text) === conversationTextIdentity(response.text)
+          : entry.timestamp >= response.startedAt - 5_000 && entry.text.trim() === response.text.trim())
       ))
       // completed Cursor 原生回复在 record_reply 落库前就是唯一历史来源；此前 3s
       // 自动删除导致截图中的回复/过程“过一会消失”。仅流式断帧做时效清理，完成态

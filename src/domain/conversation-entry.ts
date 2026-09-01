@@ -1,4 +1,8 @@
-import { sanitizeModelDisplayText, sanitizeModelGeneratedText } from './model-output-sanitizer'
+import {
+  sanitizeModelDisplayText,
+  sanitizeModelGeneratedText,
+  stripRedactionMarkers
+} from './model-output-sanitizer'
 
 export type ConversationRole = 'user' | 'assistant' | 'system' | 'error'
 export type ConversationEntryStatus = 'pending' | 'streaming' | 'complete' | 'failed'
@@ -108,6 +112,17 @@ export function normalizeProcessBlockText(block: ProcessBlock): ProcessBlock {
     command: sanitizeModelGeneratedText(block.command).text,
     output: sanitizeThenNormalize(block.output)
   }
+}
+
+/**
+ * 跨来源回复身份比对：剥脱敏占位符 + 折叠全部空白。
+ * 同一条回复会经过不同净化管线（CDP sanitizeModelDisplayText 剥 [REDACTED]、
+ * 落库 normalizeEscapedNewlines 保留），精确比较会假性不等——用于判定
+ * 「转录兜底的文本是否已由 record_reply 落库」。
+ */
+export function conversationTextIdentity(text: string): string {
+  // 先与落库管线对齐（字面 \n → 真换行，幂等），再剥脱敏 + 折叠空白。
+  return stripRedactionMarkers(normalizeEscapedNewlines(text)).replace(/\s+/g, ' ').trim()
 }
 
 /** 消息附件 */

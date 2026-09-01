@@ -15,6 +15,7 @@ import {
   type ChannelPresence
 } from '../domain/channel-message'
 import {
+  conversationTextIdentity,
   normalizeEscapedNewlines,
   type ConversationEntry,
   type MessageAttachment
@@ -415,6 +416,7 @@ export class ChannelMessageRelay {
 
   start(intervalMs = DEFAULT_POLL_MS): void {
     this.stop()
+    this.hydratePersistedScope()
     this.compactPendingOutbound()
     this.pollReplies()
     this.timer = setInterval(() => {
@@ -440,6 +442,35 @@ export class ChannelMessageRelay {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
+  }
+
+  /**
+   * 重启水合：channel_scope 是上一进程持久化的事实源。内存时间线此前只在
+   * 「运行中 run 切换」时经 resetScope 水合——应用重启后无论 run 进行中还是
+   * 已结束，会话页都会空白（数据在 SQLite 里却不读）。start() 时按持久化
+   * 域回放本轮可见消息，processBlocks 随回复一并恢复。
+   */
+  private hydratePersistedScope(): void {
+    const scope = this.repository.currentScope()
+    if (!scope) return
+    this.scopeRunId = scope.runId
+    this.scopeStartedAt = scope.startedAt
+    this.hydrateScope()
+  }
+
+  /**
+   * 该通道时间线中是否已存在该文本的完整助手回复（跨来源文本身份比对）。
+   * 供转录兜底注入前判断：record_reply 已落库的回复不需要兜底展示。
+   */
+  hasPersistedAssistantText(channelId: string, text: string): boolean {
+    const identity = conversationTextIdentity(text)
+    if (!identity) return true
+    const entries = this.conversations.get(String(channelId).trim())
+    return Boolean(entries?.some((entry) => (
+      entry.role === 'assistant'
+      && entry.status === 'complete'
+      && conversationTextIdentity(entry.text) === identity
+    )))
   }
 
   subscribe(listener: RelayListener): () => void {

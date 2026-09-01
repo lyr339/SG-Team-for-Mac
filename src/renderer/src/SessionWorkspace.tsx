@@ -486,7 +486,9 @@ export function SessionWorkspace({
           ) : null}
           {visibleLiveResponse ? <LiveAgentResponse response={visibleLiveResponse} /> : null}
         </div>
-        {visibleLiveResponse ? (
+        {/* 转录来源是历史恢复而非待归档：不宣称「正在归档」（那是对
+            record_reply 在途的描述，恢复态永等不到归档）。 */}
+        {visibleLiveResponse && !visibleLiveResponse.id.startsWith('transcript:') ? (
           <div className="chat-tail"><span className="chat-state">{visibleLiveResponse.status === 'streaming' ? 'Cursor 实时生成中' : '正在归档…'}</span></div>
         ) : null}
       </div>

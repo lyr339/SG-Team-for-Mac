@@ -426,6 +426,15 @@ export class SqliteChannelMessageRepository {
     return row ? optionalString(row.run_id) : undefined
   }
 
+  /** 持久化会话域（relay 重启水合的事实源）：runId + 起始时间。 */
+  currentScope(): { runId: string; startedAt: number } | undefined {
+    const row = this.database.prepare(
+      'SELECT run_id, started_at FROM channel_scope WHERE id = 1'
+    ).get() as SqliteRow | undefined
+    const runId = row ? optionalString(row.run_id) : undefined
+    return runId && row ? { runId, startedAt: numberOf(row.started_at) } : undefined
+  }
+
   /** 主进程侧：按时间窗口读取已入队的可回放出站消息（含已投递/未投递）。 */
   listOutboundSince(startedAt: number, limit = 500): ChannelOutboundMessage[] {
     const rows = this.database.prepare(`

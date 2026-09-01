@@ -200,6 +200,79 @@ describe('desktop Cursor session enrichment', () => {
     }
   })
 
+  it('suppresses transcript fallback when the reply is already persisted by record_reply', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const repository = new SqliteChannelMessageRepository(
+      join(mkdtempSync(join(tmpdir(), 'qingtian-transcript-gate-')), 'channel.sqlite3')
+    )
+    const relay = new ChannelMessageRelay(repository)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
+      repository.recordReply({ channelId: '1', content: '已完成重构，共三处修改。' }, 5_000)
+      relay.resetScope('run-a', 1)
+      const telemetryWithResponse = {
+        ...telemetry(),
+        composers: [{
+          ...telemetry().composers[0]!,
+          // 转录兜底带新 mtime（Agent 的 check_messages 轮询刚写过转录）：
+          // 文本与已落库回复相同 → 不得注入（否则「正在归档…」永挂）。
+          lastAssistantResponse: { id: 'transcript:composer-alpha-123:9000', text: '已完成重构，共三处修改。', observedAt: 9_000 }
+        }]
+      }
+      const service = new DesktopSessionService(
+        new FakeBridge(),
+        new FakeTeam(active),
+        { readWorkspace: () => telemetryWithResponse },
+        relay,
+        { inspectComposerRuntime: async () => ({}) }
+      )
+      try {
+        service.refreshTelemetry()
+        await vi.waitFor(() => {
+          expect((service as unknown as { runtimeInspectedComposerIds: Set<string> })
+            .runtimeInspectedComposerIds.has('composer-alpha-123')).toBe(true)
+        })
+        service.refreshTelemetry()
+        expect(service.getSnapshot().liveAgentResponses?.['1']).toBeUndefined()
+      } finally {
+        service.dispose()
+      }
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('finalizes transcript fallback by text identity even when the persisted reply is much older', () => {
+    const bridge = new FakeBridge()
+    bridge.setConversations({
+      '1': [{ id: 'reply:old', channelId: '1', role: 'assistant', text: '最终结论', timestamp: 1_000_000, status: 'complete', source: 'cursor' }]
+    })
+    const service = new DesktopSessionService(
+      bridge,
+      new FakeTeam(teamSnapshot('composer-alpha-123')),
+      { readWorkspace: () => telemetry() }
+    )
+    const update = (service as unknown as {
+      updateLiveAgentResponse(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+    }).updateLiveAgentResponse.bind(service)
+    try {
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'unknown', detail: 'transcript', observedAt: 2_000,
+        isGenerating: false, responseId: 'transcript:composer-alpha-123:2000', responseText: '最终结论'
+      })
+      // 转录 startedAt（mtime）远新于落库回复时间：旧时间窗判定永不命中；
+      // 文本身份命中即视为已归档，恢复态不得永挂。
+      expect(service.getSnapshot().liveAgentResponses?.['1']).toBeUndefined()
+    } finally {
+      service.dispose()
+    }
+  })
+
   it('keeps a completed native reply visible when record_reply failed and the Cursor Agent went offline', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000_000)

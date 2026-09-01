@@ -324,6 +324,64 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('rehydrates the persisted conversation scope on start after an app restart', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-restart-')), 'channel.sqlite3')
+    const first = new SqliteChannelMessageRepository(path)
+    try {
+      first.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      const relayA = new ChannelMessageRelay(first, () => 10_000)
+      relayA.resetScope('run-restart', 10_000)
+      relayA.sendMessage({ channelId: '1', text: '重启前的用户消息' })
+      first.recordReply({ channelId: '1', content: '重启前的助手回复' }, 11_000)
+      first.attachReplyProcess({
+        replyId: first.listRepliesSince(0)[0]!.id,
+        turn: 'cursor:user-before-restart',
+        blocks: [{ kind: 'tool', id: 'tool-1', toolName: 'read_file', toolKind: 'read', summary: 'a.ts', status: 'done' }]
+      })
+      relayA.pollReplies()
+      expect(relayA.applyTo(baseSnapshot()).conversations['1']).toHaveLength(2)
+    } finally {
+      first.close()
+    }
+
+    // 模拟应用重启（run 已结束或进行中均适用）：新 relay 实例 + start()
+    // 从 channel_scope 持久化域水合，会话页不再空白，过程块随回复恢复。
+    const second = new SqliteChannelMessageRepository(path)
+    try {
+      const relayB = new ChannelMessageRelay(second, () => 20_000)
+      relayB.start(250)
+      try {
+        const snapshot = relayB.applyTo(baseSnapshot())
+        expect(snapshot.conversations['1']?.map((entry) => [entry.role, entry.text])).toEqual([
+          ['user', '重启前的用户消息'],
+          ['assistant', '重启前的助手回复']
+        ])
+        expect(snapshot.conversations['1']?.[1]?.processBlocks?.[0]?.id).toBe('tool-1')
+        expect(relayB['scopeRunId']).toBe('run-restart')
+      } finally {
+        relayB.stop()
+      }
+    } finally {
+      second.close()
+    }
+  })
+
+  it('matches persisted assistant text across source pipelines by identity', () => {
+    const { repository, relay } = fixture()
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      repository.recordReply({ channelId: '1', content: '结论 [REDACTED] 已完成\n第二行' }, 1_000)
+      relay.resetScope('run-x', 500)
+      // 落库侧保留 [REDACTED] 与真实换行；CDP/转录侧剥脱敏 + 转义换行——身份比对须视为同一条。
+      expect(relay.hasPersistedAssistantText('1', '结论 [REDACTED] 已完成\n第二行')).toBe(true)
+      expect(relay.hasPersistedAssistantText('1', '结论  已完成\\n第二行')).toBe(true)
+      expect(relay.hasPersistedAssistantText('1', '完全不同的回复')).toBe(false)
+      expect(relay.hasPersistedAssistantText('1', '')).toBe(true)
+    } finally {
+      repository.close()
+    }
+  })
+
   it('does not duplicate timeline or queue entries when the same text is submitted twice quickly', () => {
     const { repository, relay, advance } = fixture()
     try {

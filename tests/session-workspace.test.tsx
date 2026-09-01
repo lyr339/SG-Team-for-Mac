@@ -119,6 +119,25 @@ describe('SessionWorkspace', () => {
     expect(html.match(/live-process-row/g)).toHaveLength(1)
   })
 
+  it('does not claim archiving for transcript-recovered responses', () => {
+    const html = renderWorkspace({
+      liveAgentResponse: {
+        id: 'transcript:composer-5:1234', channelId: '5', text: '恢复的历史回复',
+        status: 'complete', startedAt: 1, updatedAt: 2
+      }
+    })
+    expect(html).toContain('恢复的历史回复')
+    expect(html).not.toContain('正在归档')
+    // CDP 来源的完成态回复仍在等 record_reply 落库——归档提示保留。
+    const cdp = renderWorkspace({
+      liveAgentResponse: {
+        id: 'cursor-bubble-9', channelId: '5', text: 'CDP 完整回复',
+        status: 'complete', startedAt: 1, updatedAt: 2
+      }
+    })
+    expect(cdp).toContain('正在归档')
+  })
+
   it('never renders the legacy qingtian runtime id as a user-facing session label', () => {
     const html = renderWorkspace({ session: { id: 'qingtian-channel:5', composerTitle: undefined } })
     expect(html).toContain('SG Team · CH-5')
