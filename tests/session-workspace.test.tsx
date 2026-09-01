@@ -119,7 +119,7 @@ describe('SessionWorkspace', () => {
     expect(html.match(/live-process-row/g)).toHaveLength(1)
   })
 
-  it('does not claim archiving for transcript-recovered responses', () => {
+  it('completed live responses carry no trailing status text', () => {
     const html = renderWorkspace({
       liveAgentResponse: {
         id: 'transcript:composer-5:1234', channelId: '5', text: '恢复的历史回复',
@@ -128,14 +128,17 @@ describe('SessionWorkspace', () => {
     })
     expect(html).toContain('恢复的历史回复')
     expect(html).not.toContain('正在归档')
-    // CDP 来源的完成态回复仍在等 record_reply 落库——归档提示保留。
+    expect(html).not.toContain('chat-state">')
+    // CDP 来源的完成态回复同样不宣称「正在归档」——实时过程流已承载过程叙事。
     const cdp = renderWorkspace({
       liveAgentResponse: {
         id: 'cursor-bubble-9', channelId: '5', text: 'CDP 完整回复',
         status: 'complete', startedAt: 1, updatedAt: 2
       }
     })
-    expect(cdp).toContain('正在归档')
+    expect(cdp).toContain('CDP 完整回复')
+    expect(cdp).not.toContain('正在归档')
+    expect(cdp).not.toContain('chat-state">')
   })
 
   it('never renders the legacy qingtian runtime id as a user-facing session label', () => {
@@ -246,10 +249,12 @@ describe('SessionWorkspace', () => {
     expect(html).toContain('$0.042')
     expect(html).toContain('Tokens')
     expect(html).not.toContain('≈$')
-    expect(html.match(/class="session-usage-stat"/g)).toHaveLength(1)
-    expect(html.indexOf('session-usage-stat')).toBeGreaterThan(html.indexOf('workspace-header'))
-    expect(html.indexOf('session-usage-stat')).toBeLessThan(html.indexOf('</header>'))
-    expect(html).toMatch(/Tokens<\/span><b>16\.2K<\/b><span>Cost<\/span><b class="session-usage-stat__cost">\$0\.042<\/b>/)
+    expect(html.match(/class="session-usage"/g)).toHaveLength(1)
+    expect(html.indexOf('session-usage')).toBeGreaterThan(html.indexOf('workspace-header'))
+    expect(html.indexOf('session-usage')).toBeLessThan(html.indexOf('</header>'))
+    expect(html).toMatch(/session-usage__label">Tokens<\/span><b class="session-usage__value">16\.2K<\/b>/)
+    expect(html).toMatch(/session-usage__label">Cost<\/span><b class="session-usage__value">\$0\.042<\/b>/)
+    expect(html).toContain('session-usage__sep')
     expect(html).toContain('title="本轮 TeamRun 的 Cursor 会话真实计费 token（Claude Sonnet，4 回合）')
 
     const idle = renderWorkspace({
@@ -267,15 +272,16 @@ describe('SessionWorkspace', () => {
         }
       }
     })
-    expect(idle).not.toContain('session-usage-stat')
+    expect(idle).not.toContain('session-usage')
   })
 
   it('Composer 已绑定但尚无计费帧时保留明确占位，不再整块消失', () => {
     const html = renderWorkspace({
       session: { telemetry: { state: 'bound', detail: '已绑定', source: 'cursor-local' } }
     })
-    expect(html).toContain('session-usage-pending')
-    expect(html).toContain('Tokens</span><b>—</b><span>Cost</span><b>—</b>')
+    expect(html).toContain('session-usage is-pending')
+    expect(html).toMatch(/Tokens<\/span><b class="session-usage__value">—<\/b>/)
+    expect(html).toMatch(/Cost<\/span><b class="session-usage__value">—<\/b>/)
   })
 
   it('长文本消息包裹折叠结构（clamped-message）', () => {

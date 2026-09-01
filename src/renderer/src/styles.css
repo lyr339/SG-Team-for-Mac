@@ -581,11 +581,15 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 .rail-metric--context.is-unknown { color: var(--faint); }
 .rail-metric--context.is-unknown .rail-metric__track { background: var(--surface-soft); }
 .rail-metric--queue { color: var(--amber); font-size: var(--fs-10); }
-/* 会话页头用量：标签走 UI 字体，数字走 Roman 字体并使用齐宽数字。 */
-.session-usage-stat, .session-usage-pending { min-width: 0; min-height: 30px; display: inline-flex; align-items: center; gap: 7px; padding: 0 11px; color: var(--color-text-info); background: var(--color-background-info); border: 1px solid color-mix(in srgb, var(--color-border-info) 60%, transparent); border-radius: var(--border-radius-full); font-size: var(--fs-10); font-weight: 600; line-height: 1; white-space: nowrap; }
-.session-usage-stat b, .session-usage-pending b { font-family: var(--font-numeric); font-size: var(--fs-12); font-style: normal; font-variant-numeric: lining-nums tabular-nums; }
-.session-usage-stat__cost { color: var(--color-text-success); }
-.session-usage-pending { color: var(--muted); background: var(--color-background-secondary); border-color: var(--color-border-tertiary); }
+/* 会话页头用量度量组（Orbit 静默度量）：排版即界面——小号大写标签压
+   齐宽数字，hairline 竖分隔，无底色无描边；冷中性承载内容。 */
+.session-usage { display: inline-flex; align-items: stretch; padding: 3px 0; }
+.session-usage__cell { display: grid; gap: 5px; justify-items: end; padding: 0 16px; white-space: nowrap; }
+.session-usage__cell:last-child { padding-right: 2px; }
+.session-usage__sep { width: var(--border-width-regular); background: var(--color-border-secondary); }
+.session-usage__label { color: var(--color-text-tertiary); font-size: 9px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; line-height: 1; }
+.session-usage__value { color: var(--color-text-primary); font-family: var(--font-numeric); font-size: var(--fs-13); font-style: normal; font-weight: 600; line-height: 1; font-variant-numeric: lining-nums tabular-nums; }
+.session-usage.is-pending .session-usage__value { color: var(--color-text-ghost); font-weight: 500; }
 .rail-session-card__model { min-width: 0; grid-area: model; justify-self: end; align-self: center; }
 .rail-session-card__model > b { display: block; max-width: 116px; overflow: hidden; padding: 5px 7px; color: var(--model-provider-fg, white); background: var(--model-provider-bg, var(--accent-deep)); border: 1px solid var(--model-provider-border, transparent); border-radius: 6px; font: 600 var(--fs-10)/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .rail-session-card__model.is-muted > b { color: var(--muted); background: var(--surface-soft); }

@@ -118,7 +118,7 @@ describe('SessionRailCard', () => {
         onOpen={() => {}}
       />
     )
-    expect(withUsage).not.toContain('session-usage-stat')
+    expect(withUsage).not.toContain('session-usage')
 
     const noUsage = renderToStaticMarkup(
       <SessionRailCard
@@ -140,6 +140,6 @@ describe('SessionRailCard', () => {
         onOpen={() => {}}
       />
     )
-    expect(noUsage).not.toContain('session-usage-stat')
+    expect(noUsage).not.toContain('session-usage')
   })
 })

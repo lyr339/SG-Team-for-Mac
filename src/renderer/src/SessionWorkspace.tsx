@@ -487,10 +487,10 @@ export function SessionWorkspace({
           ) : null}
           {visibleLiveResponse ? <LiveAgentResponse response={visibleLiveResponse} /> : null}
         </div>
-        {/* 转录来源是历史恢复而非待归档：不宣称「正在归档」（那是对
-            record_reply 在途的描述，恢复态永等不到归档）。 */}
-        {visibleLiveResponse && !visibleLiveResponse.id.startsWith('transcript:') ? (
-          <div className="chat-tail"><span className="chat-state">{visibleLiveResponse.status === 'streaming' ? 'Cursor 实时生成中' : '正在归档…'}</span></div>
+        {/* 完成态不带任何状态文案：实时过程流已承载过程叙事，record_reply
+            落库后自然替换为持久条目——中途的「正在归档」只是噪音。 */}
+        {visibleLiveResponse?.status === 'streaming' ? (
+          <div className="chat-tail"><span className="chat-state">Cursor 实时生成中</span></div>
         ) : null}
       </div>
     </div>
