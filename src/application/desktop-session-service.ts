@@ -56,6 +56,16 @@ export interface CursorComposerRuntimeSource {
   ): Promise<Record<string, CursorComposerRuntimeEvidence>>
 }
 
+/**
+ * CDP 轮询捎带的回合用量出口（turnTokenUsage 同源值）。
+ * 独立于事件通道：注入方决定聚合语义（覆盖），此处只做转发。
+ */
+export type TurnUsageSink = (input: {
+  composerId: string
+  usage: NonNullable<CursorComposerRuntimeEvidence['usage']>
+  observedAt: number
+}) => void
+
 type DesktopSessionListener = (snapshot: DesktopSnapshot) => void
 
 function activeWorkspaceOf(team: TeamControlSnapshot) {
@@ -214,6 +224,7 @@ export function enrichDesktopSnapshot(
     return {
       ...session,
       composerId: composer?.composerId ?? binding?.composerId,
+      telemetryChannelComposerId: channelComposerId,
       composerTitle: composer?.title,
       modelName: composer?.modelName
         ? modelDisplayById.get(composer.modelName) ?? composer.modelName
@@ -301,7 +312,8 @@ export class DesktopSessionService implements DesktopSessionBridge {
     private readonly team: DesktopSessionTeamSource,
     private readonly telemetrySource: CursorComposerTelemetrySource,
     private readonly embeddedRelay?: ChannelMessageRelay,
-    private readonly runtimeSource?: CursorComposerRuntimeSource
+    private readonly runtimeSource?: CursorComposerRuntimeSource,
+    private readonly turnUsageSink?: TurnUsageSink
   ) {
     const initialTeam = team.getSnapshot()
     this.activeWorkspaceId = initialTeam.activeWorkspaceId
@@ -618,6 +630,12 @@ export class DesktopSessionService implements DesktopSessionBridge {
           if (live) {
             liveChanged = this.updateLiveAgentResponse(binding.channelId, live) || liveChanged
             liveChanged = this.updateLiveCursorProcess(binding.channelId, live) || liveChanged
+            // 用量捎带：轮询快照与事件同源，交给注入方做覆盖式聚合。
+            if (live.usage) {
+              try {
+                this.turnUsageSink?.({ composerId: binding.composerId, usage: live.usage, observedAt: live.observedAt })
+              } catch { /* 用量转发失败不影响活性/过程主链 */ }
+            }
           }
         }
         const fingerprint = JSON.stringify(evidence, RUNTIME_EVIDENCE_FINGERPRINT_REPLACER)

@@ -72,6 +72,53 @@ describe('CursorUsageTracker', () => {
     tracker.dispose()
   })
 
+  it('轮询快照通道：回合内单调覆盖（不增回合数），回落即封存旧回合并起算新回合', () => {
+    const tracker = buildTracker({ 'composer-1': 'claude-sonnet-4-5' })
+    // 回合 1 内三次轮询快照递增：覆盖，turns 恒 1
+    tracker.recordTurnSnapshot(event({ inputTokens: 1_000, outputTokens: 100 }))
+    tracker.recordTurnSnapshot(event({ inputTokens: 3_000, outputTokens: 200, occurredAt: 2_000 }))
+    tracker.recordTurnSnapshot(event({ inputTokens: 5_000, outputTokens: 300, occurredAt: 3_000 }))
+    let usage = tracker.getSnapshot()['composer-1']!
+    expect(usage.turns).toBe(1)
+    expect(usage.inputTokens).toBe(5_000)
+    expect(usage.outputTokens).toBe(300)
+    expect(usage.lastTurnAt).toBe(3_000)
+    // 快照回落 = 新回合：turns 2，值以新快照起算
+    tracker.recordTurnSnapshot(event({ inputTokens: 500, outputTokens: 50, occurredAt: 4_000 }))
+    usage = tracker.getSnapshot()['composer-1']!
+    expect(usage.turns).toBe(2)
+    expect(usage.inputTokens).toBe(500)
+    tracker.dispose()
+  })
+
+  it('双通道防双计：轮询接管后事件让位', () => {
+    const tracker = buildTracker({ 'composer-1': 'claude-sonnet-4-5' })
+    tracker.recordTurnSnapshot(event({ inputTokens: 5_000, outputTokens: 300 }))
+    // turnEnded 事件（同源值）到达：已被轮询接管，必须被忽略
+    tracker.record(event({ inputTokens: 5_000, outputTokens: 300, occurredAt: 3_500 }))
+    let usage = tracker.getSnapshot()['composer-1']!
+    expect(usage.turns).toBe(1)
+    expect(usage.inputTokens).toBe(5_000)
+    // 纯事件通道的 composer（CDP 未在场）不受影响
+    tracker.record(event({ composerId: 'composer-2', inputTokens: 900, outputTokens: 90 }))
+    usage = tracker.getSnapshot()['composer-2']!
+    expect(usage.turns).toBe(1)
+    expect(usage.inputTokens).toBe(900)
+    tracker.dispose()
+  })
+
+  it('reset 清除轮询接管标记：事件通道可重新接管', () => {
+    const tracker = buildTracker({ 'composer-1': 'claude-sonnet-4-5' })
+    tracker.recordTurnSnapshot(event({ inputTokens: 5_000, outputTokens: 300 }))
+    tracker.reset()
+    // reset（新 TeamRun）后无轮询数据时，事件通道恢复记账
+    tracker.record(event({ inputTokens: 800, outputTokens: 80 }))
+    const usage = tracker.getSnapshot()['composer-1']!
+    expect(usage.turns).toBe(1)
+    expect(usage.inputTokens).toBe(800)
+    tracker.dispose()
+  })
+
   it('快照为副本：外部修改不污染内部状态', () => {
     const tracker = buildTracker({ 'composer-1': 'gpt-5' })
     tracker.record(event())

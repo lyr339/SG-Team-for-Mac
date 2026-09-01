@@ -127,6 +127,62 @@ export function totalUsageTokens(usage: Pick<CursorSessionUsage,
   return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
 }
 
+/**
+ * CDP 轮询快照（turnTokenUsage）的回合覆盖合并：同源值的「当前回合累计」
+ * 语义——快照值 ≥ 已记值时覆盖当前回合（生成中单调增长，回合结束定格）；
+ * 快照回落到更小值 = 新回合开始，前回合封存、新回合从快照值起算。
+ * 与事件通道（turnEnded 累加）互补：轮询提供实时性，事件提供权威封存。
+ */
+export function applyTurnUsage(
+  current: CursorSessionUsage | undefined,
+  snapshot: CursorUsageEvent,
+  pricedModel: string
+): CursorSessionUsage {
+  const base = current ?? {
+    composerId: snapshot.composerId,
+    turns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    estimatedCostUsd: 0,
+    pricedModel,
+    lastTurnAt: 0
+  }
+  const price = priceForModel(pricedModel)
+  const snapshotCost = estimateTurnCostUsd(snapshot, price)
+  const snapshotTokens = snapshot.inputTokens + snapshot.outputTokens
+    + snapshot.cacheReadTokens + snapshot.cacheWriteTokens
+  const currentTurnTokens = base.inputTokens + base.outputTokens
+    + base.cacheReadTokens + base.cacheWriteTokens
+  // 回合内单调覆盖：不增回合数，直接以快照为准（费用按快照重估，口径一致）。
+  if (snapshotTokens >= currentTurnTokens) {
+    return {
+      composerId: base.composerId,
+      turns: Math.max(base.turns, 1),
+      inputTokens: snapshot.inputTokens,
+      outputTokens: snapshot.outputTokens,
+      cacheReadTokens: snapshot.cacheReadTokens,
+      cacheWriteTokens: snapshot.cacheWriteTokens,
+      estimatedCostUsd: snapshotCost,
+      pricedModel: base.turns > 0 && base.pricedModel !== price.label ? 'Mixed models' : price.label,
+      lastTurnAt: Math.max(base.lastTurnAt, snapshot.occurredAt)
+    }
+  }
+  // 快照回落（新回合尚小）：封存旧回合、以快照起算新回合。
+  return {
+    composerId: base.composerId,
+    turns: base.turns + 1,
+    inputTokens: snapshot.inputTokens,
+    outputTokens: snapshot.outputTokens,
+    cacheReadTokens: snapshot.cacheReadTokens,
+    cacheWriteTokens: snapshot.cacheWriteTokens,
+    estimatedCostUsd: base.estimatedCostUsd + snapshotCost,
+    pricedModel: 'Mixed models',
+    lastTurnAt: Math.max(base.lastTurnAt, snapshot.occurredAt)
+  }
+}
+
 /** 展示用：token 数缩写（12.2K / 1.3M / 2.1B）。 */
 export function formatTokenCount(tokens: number): string {
   if (tokens >= 1e9) {

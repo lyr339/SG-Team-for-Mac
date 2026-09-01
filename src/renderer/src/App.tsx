@@ -660,7 +660,10 @@ export function App(): React.JSX.Element {
     return {
       ...snapshot,
       sessions: snapshot.sessions.map((session) => {
-        const usage = session.composerId ? cursorUsage[session.composerId] : undefined
+        // 用量关联回退：binding.composerId 缺失（绑定滞后/被 run 收尾清空）时，
+        // 以通道最新转录定位的 composer 查表——遥测层已全局水合该映射。
+        const usageComposerId = session.composerId ?? session.telemetryChannelComposerId
+        const usage = usageComposerId ? cursorUsage[usageComposerId] : undefined
         const withUsage = usage && usage.turns > 0 ? { ...session, usage } : session
         const member = memberByChannel.get(session.channelId)
         if (!member) return withUsage

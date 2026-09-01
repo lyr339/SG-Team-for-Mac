@@ -1,5 +1,6 @@
 import {
   accumulateUsage,
+  applyTurnUsage,
   type CursorSessionUsage,
   type CursorUsageEvent,
   type CursorUsageSnapshot
@@ -63,6 +64,8 @@ export class CursorUsageTracker {
   private readonly now: () => number
   private readonly persistSnapshot: (snapshot: CursorUsageSnapshot) => void
   private readonly sessions = new Map<string, CursorSessionUsage>()
+  /** 轮询通道已覆盖的 composer：事件通道对其让位（防双计，见 recordTurnSnapshot）。 */
+  private readonly polledComposers = new Set<string>()
   private readonly listeners = new Set<(snapshot: CursorUsageSnapshot) => void>()
   private notifyTimer?: ReturnType<typeof setTimeout>
   private disposed = false
@@ -82,12 +85,32 @@ export class CursorUsageTracker {
   /** 记录一回合用量并调度快照推送（节流合并密集回合）。 */
   record(event: CursorUsageEvent): void {
     if (this.disposed || !this.collecting) return
+    // 轮询通道已接管该 composer（CDP 在场、实时快照更全）：事件只作降级兜底，
+    // 双通道同时记账会重复计数。轮询中断（CDP 退出）后事件自动恢复接管。
+    if (this.polledComposers.has(event.composerId)) return
     const model = this.resolveModelForComposer(event.composerId)
     this.sessions.set(event.composerId, accumulateUsage(
       this.sessions.get(event.composerId),
       event,
       model ?? ''
     ))
+    this.persist()
+    this.scheduleNotify()
+  }
+
+  /**
+   * CDP 轮询快照通道（turnTokenUsage 同源值，生成中单调增长）：
+   * 覆盖语义见 domain applyTurnUsage。接管后事件通道对该 composer 让位。
+   */
+  recordTurnSnapshot(event: CursorUsageEvent): void {
+    if (this.disposed || !this.collecting) return
+    const model = this.resolveModelForComposer(event.composerId)
+    this.sessions.set(event.composerId, applyTurnUsage(
+      this.sessions.get(event.composerId),
+      event,
+      model ?? ''
+    ))
+    this.polledComposers.add(event.composerId)
     this.persist()
     this.scheduleNotify()
   }
@@ -100,6 +123,7 @@ export class CursorUsageTracker {
   reset(): void {
     if (this.disposed) return
     this.sessions.clear()
+    this.polledComposers.clear()
     this.persist()
     this.scheduleNotify()
   }

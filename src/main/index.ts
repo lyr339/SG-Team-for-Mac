@@ -275,7 +275,18 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     teamControlService,
     cursorTelemetry,
     channelMessageRelay,
-    cursorCdpCreator
+    cursorCdpCreator,
+    // CDP 轮询捎带的回合用量（turnTokenUsage 同源值）：与 turnEnded 事件通道
+    // 互补，实时性来自 inspect 的既有节流循环 + writeSignal 事件驱动。
+    // 经 ref 间接引用：tracker 在本服务之后创建。
+    (input) => cursorUsageTrackerRef?.recordTurnSnapshot({
+      composerId: input.composerId,
+      inputTokens: input.usage.inputTokens,
+      outputTokens: input.usage.outputTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      cacheWriteTokens: input.usage.cacheWriteTokens,
+      occurredAt: input.observedAt
+    })
   )
   desktopSessionService.startWatcher()
   // 过程流事件驱动层：Cursor 模型写入即时推送（写信号触发 inspect），
@@ -497,7 +508,11 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     if (usageDecision.reset) usageRunId = nextRunId
     if (usageDecision.reset) cursorUsageTracker.reset()
     usageRunStatus = nextRunStatus
-    cursorUsageTracker.setCollecting(usageDecision.collecting)
+    // 用量采集与 TeamRun 状态解耦：run 被误判结束/暂停期间 Composer 仍在
+    // 真实消耗 token（2026-09-01 实证：run 14:32 被收尾后 14:45 事件仍到达
+    // 却被 collecting=false 丢弃）。生命周期归 Composer——只有 run 切换 reset，
+    // 不再按 run 状态停采。
+    cursorUsageTracker.setCollecting(true)
   })
   disposeIpc = registerSessionIpc(desktopSessionService, () => mainWindow)
   const cursorCdpSettingsStore = new CursorCdpSettingsStore(join(app.getPath('userData'), 'cursor-cdp.json'))

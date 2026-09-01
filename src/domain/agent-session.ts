@@ -44,7 +44,7 @@ export interface AgentTelemetryStatus {
   state: AgentTelemetryState
   detail: string
   source?: 'cursor-local'
-  bindingMethod?: 'launch_marker' | 'channel_marker'
+  bindingMethod?: import('./cursor-telemetry').ComposerBindingMethod
   updatedAt?: number
 }
 
@@ -66,6 +66,8 @@ export interface AgentSession {
   id: string
   channelId: string
   composerId?: string
+  /** 通道最新转录定位的 composer（binding.composerId 缺失时的用量/上下文关联回退）。 */
+  telemetryChannelComposerId?: string
   composerTitle?: string
   generation: number
   displayName: string

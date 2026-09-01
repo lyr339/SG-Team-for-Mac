@@ -112,6 +112,23 @@ export interface CursorComposerRuntimeEvidence {
   responseText?: string
   /** 当前回合全过程流（仅生成中的 composer 携带；stopped/空回合为 undefined）。 */
   process?: CursorProcessStream
+  /**
+   * Composer 内存里的本回合真实计费 token（turnTokenUsage）与上下文实时读数。
+   * 与 turnEnded 事件同源（2026-09-01 运行态实证：两处值逐位一致）；生成中
+   * 随流式写入更新，回合结束后定格——按「当前回合累计」语义消费。
+   */
+  usage?: CursorRuntimeTurnUsage
+}
+
+/** CDP 运行时探针捎带的用量快照（turnTokenUsage + 上下文窗口）。 */
+export interface CursorRuntimeTurnUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  /** 上下文窗口实时占用（Cursor 自家 UI「Context: X%」同源数据）。 */
+  contextTokensUsed?: number
+  contextTokenLimit?: number
 }
 
 export interface CursorCdpSessionCreatorOptions {
@@ -418,9 +435,29 @@ function buildRuntimeInspectionExpression(composerIds: string[]): string {
         }
         const responseText = String(status && status.lastAiText || '');
         const responseId = String(status && (status.lastAiBubbleId || status.chatGenerationUUID) || '');
+        // 用量捎带：turnTokenUsage（本回合真实计费，与 turnEnded 事件同源）+
+        // contextTokensUsed/Limit（上下文窗口实时占用）。全为 0 时省略字段，
+        // 保持 evidence 指纹稳定（零会话不触发无谓的快照推送）。
+        let usage = null;
+        try {
+          const data = bridge.getComposerData ? bridge.getComposerData(composerId) : undefined;
+          const t = data && data.turnTokenUsage;
+          const toNum = function (v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+          if (t) {
+            const i = toNum(t.inputTokens), o = toNum(t.outputTokens),
+              r = toNum(t.cacheReadTokens), w = toNum(t.cacheWriteTokens);
+            if (i || o || r || w) {
+              usage = {
+                inputTokens: i, outputTokens: o, cacheReadTokens: r, cacheWriteTokens: w,
+                contextTokensUsed: toNum(data.contextTokensUsed) || undefined,
+                contextTokenLimit: toNum(data.contextTokenLimit) || undefined
+              };
+            }
+          }
+        } catch (e) {}
         // 过程块由 sgTeamProcess 写后事件直接推送；这里仅保留状态/正文兜底，
         // 避免 150ms inspect 与原生事件双写、重排或覆盖工具结果。
-        rows.push({ composerId, state, detail, observedAt: Date.now(), isGenerating, responseId, responseText });
+        rows.push({ composerId, state, detail, observedAt: Date.now(), isGenerating, responseId, responseText, usage });
       } catch (e) {
         rows.push({ composerId, state: 'unknown', detail: 'Cursor 实时状态读取失败', observedAt: Date.now() });
       }
@@ -613,6 +650,22 @@ export class CursorCdpSessionCreator {
         ? row.state
         : 'unknown'
       if (!composerId || !unique.includes(composerId)) continue
+      const usageRaw = isRecord(row.usage) ? row.usage : undefined
+      const usageToken = (value: unknown): number => {
+        const num = Number(value)
+        return Number.isFinite(num) && num > 0 ? Math.floor(num) : 0
+      }
+      const usage = usageRaw && (usageToken(usageRaw.inputTokens) || usageToken(usageRaw.outputTokens)
+        || usageToken(usageRaw.cacheReadTokens) || usageToken(usageRaw.cacheWriteTokens))
+        ? {
+            inputTokens: usageToken(usageRaw.inputTokens),
+            outputTokens: usageToken(usageRaw.outputTokens),
+            cacheReadTokens: usageToken(usageRaw.cacheReadTokens),
+            cacheWriteTokens: usageToken(usageRaw.cacheWriteTokens),
+            contextTokensUsed: usageToken(usageRaw.contextTokensUsed) || undefined,
+            contextTokenLimit: usageToken(usageRaw.contextTokenLimit) || undefined
+          }
+        : undefined
       result[composerId] = {
         composerId,
         state,
@@ -623,7 +676,8 @@ export class CursorCdpSessionCreator {
         responseText: typeof row.responseText === 'string' && row.responseText
           ? row.responseText.slice(0, 100_000)
           : undefined,
-        process: parseProcessStream(row.process)
+        process: parseProcessStream(row.process),
+        usage
       }
     }
     return result
