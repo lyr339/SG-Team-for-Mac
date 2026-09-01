@@ -572,7 +572,9 @@ export class ChannelMessageRelay {
         : `内嵌 MCP 活性缺失（${Math.max(0, Math.round((now - presence.lastSeenAt) / 1_000))}s 未调用）`
     ]
     if (presence.waiting) evidence.push('check_messages 正在待命')
-    if (presence.runtimeActiveAt !== undefined) {
+    // CDP 生成证据只在新鲜时宣称「生成中」：processing 宽限窗内旧证据只证明
+    // 「近期生成过」，不得把 5 分钟前的观测说成正在生成（误导用户）。
+    if (presence.runtimeActiveAt !== undefined && now - presence.runtimeActiveAt <= 60_000) {
       evidence.push(`CDP 运行时确认生成中（${Math.max(0, Math.round((now - presence.runtimeActiveAt) / 1_000))}s 前）`)
     }
     if (presence.connectionPhase) evidence.push(`连接阶段：${presence.connectionPhase}`)

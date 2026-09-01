@@ -209,6 +209,50 @@ describe('CursorStreamObserver', () => {
     })
   })
 
+  it('clips oversized native process frames to protect the observer socket', async () => {
+    class Manager {
+      loadedComposers = { ids: ['composer-huge'] }
+      markDirty(): void {}
+    }
+    const manager = new Manager()
+    const frames: Array<Record<string, any>> = []
+    // 110 个 thinking 块 × 10K 文本 ≈ 1.1M 字符 > 900K 粗判门；
+    // vm 上下文无 TextEncoder → 走 length×3 字节估算 → 3.3MB > 3MB 触发裁剪。
+    const bigText = 'x'.repeat(10_000)
+    const bubbles = Array.from({ length: 110 }, (_, index) => `b-${index}`)
+    const context = {
+      Promise,
+      queueMicrotask,
+      setTimeout,
+      globalThis: {
+        __qtComposerService: {
+          composerDataService: {
+            composerDataHandleManager: manager,
+            getComposerDataIfLoaded: () => ({
+              fullConversationHeadersOnly: [
+                { type: 1, bubbleId: 'user-huge' },
+                ...bubbles.map((bubbleId) => ({ type: 2, bubbleId }))
+              ],
+              conversationMap: Object.fromEntries(bubbles.map((bubbleId) => [
+                bubbleId, { thinking: bigText }
+              ])),
+              generatingBubbleIds: []
+            })
+          }
+        },
+        sgTeamStream: () => {},
+        sgTeamProcess: (payload: string) => frames.push(JSON.parse(payload))
+      }
+    }
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    await Promise.resolve()
+    const frame = frames[0]
+    expect(frame?.process?.items.length).toBeLessThan(110)
+    expect(frame?.process?.items.length).toBeGreaterThan(8)
+    expect(frame?.process?.truncatedItemCount).toBeGreaterThan(0)
+    expect(JSON.stringify(frame).length).toBeLessThan(1_100_000)
+  })
+
   it('attaches: binding + new-document hook + immediate install', async () => {
     const { socket, observer } = buildObserver()
     const attached = await observer.attach()

@@ -303,7 +303,25 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
           const data = service?.getComposerDataIfLoaded?.(id)
           const snapshot = processSnapshot(data)
           if (snapshot && globalThis.${CURSOR_PROCESS_BINDING_NAME}) {
-            globalThis.${CURSOR_PROCESS_BINDING_NAME}(JSON.stringify({ composerId: id, observedAt: Date.now(), ...snapshot }))
+            let payload = JSON.stringify({ composerId: id, observedAt: Date.now(), ...snapshot })
+            // 线径守卫：observer socket maxPayload 4MB。超长回合帧（256 项 × 24K 文本）
+            // 可达 6MB，超限会杀死 socket——重连后同一巨帧再次超限，形成永久断连循环。
+            // 先按字符数粗判，再按 UTF-8 字节精算，从头部分批裁剪并如实计入
+            // truncatedItemCount：截断披露，绝不伪装完整。
+            if (payload.length > 900_000 && snapshot.process && Array.isArray(snapshot.process.items)) {
+              const measure = (text) => (typeof TextEncoder !== 'undefined'
+                ? new TextEncoder().encode(text).length
+                : text.length * 3)
+              let bytes = measure(payload)
+              while (bytes > 3_000_000 && snapshot.process.items.length > 8) {
+                const drop = Math.max(1, Math.floor(snapshot.process.items.length / 4))
+                snapshot.process.items = snapshot.process.items.slice(drop)
+                snapshot.process.truncatedItemCount = (snapshot.process.truncatedItemCount || 0) + drop
+                payload = JSON.stringify({ composerId: id, observedAt: Date.now(), ...snapshot })
+                bytes = measure(payload)
+              }
+            }
+            globalThis.${CURSOR_PROCESS_BINDING_NAME}(payload)
           }
         } catch (e) {}
       }
