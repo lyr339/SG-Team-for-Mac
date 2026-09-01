@@ -385,7 +385,8 @@ export class CursorAccountSwitcher {
     try {
       const backupDir = join(dirname(stateDbPath), 'backups', `account-switch-${this.now()}`)
       mkdirSync(backupDir, { recursive: true })
-      const touched: string[] = [...new Set([...AUTH_UPSERT_KEYS, ...TRACE_DELETE_KEYS, ...STALE_DELETE_KEYS])]
+      // applicationUser 现为外科手术式改写（不再整删），必须进备份集。
+      const touched: string[] = [...new Set([...AUTH_UPSERT_KEYS, ...TRACE_DELETE_KEYS, ...STALE_DELETE_KEYS, APPLICATION_USER_KEY])]
       const rows = this.readItemTable(stateDbPath, touched)
       const keyBackup = new DatabaseSync(join(backupDir, 'itemtable.sqlite3'))
       try {
@@ -469,6 +470,7 @@ export class CursorAccountSwitcher {
         for (const key of STALE_DELETE_KEYS) remove.run(key)
         if (input.resetTraces !== false) {
           for (const key of TRACE_DELETE_KEYS) remove.run(key)
+          this.stripApplicationUserAccountTraces(db)
         }
         db.exec('COMMIT')
       } catch (error) {
@@ -482,6 +484,50 @@ export class CursorAccountSwitcher {
         // ignore
       }
     }
+  }
+
+  /**
+   * applicationUser 外科手术式清痕（同一事务内）：只删账号身份字段、保留设备级
+   * 偏好（工具放行/对话框决策/编辑器偏好）。键缺失＝上一轮已清或全新安装，跳过；
+   * 值损坏/非对象＝无法安全摘除，回退为整键删除（旧行为，宁失偏好不留脏数据）。
+   */
+  private stripApplicationUserAccountTraces(db: DatabaseSync): void {
+    const remove = db.prepare('DELETE FROM ItemTable WHERE key = ?')
+    let row: { value?: unknown } | undefined
+    try {
+      row = db.prepare('SELECT value FROM ItemTable WHERE key = ?').get(APPLICATION_USER_KEY) as { value?: unknown } | undefined
+    } catch {
+      return
+    }
+    if (row?.value === undefined || row?.value === null) return
+    const text = typeof row.value === 'string'
+      ? row.value
+      : row.value instanceof Uint8Array
+        ? Buffer.from(row.value).toString('utf8')
+        : ''
+    if (!text) return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      remove.run(APPLICATION_USER_KEY)
+      return
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      remove.run(APPLICATION_USER_KEY)
+      return
+    }
+    const root = parsed as Record<string, unknown>
+    let changed = false
+    for (const field of APPLICATION_USER_ACCOUNT_TRACE_FIELDS) {
+      if (field in root) {
+        delete root[field]
+        changed = true
+      }
+    }
+    if (!changed) return
+    db.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)')
+      .run(APPLICATION_USER_KEY, JSON.stringify(root))
   }
 
   /** storage.json 遥测 4 键重写（原子替换；文件缺失则创建最小骨架）。 */
@@ -563,8 +609,34 @@ const TRACE_DELETE_KEYS = [
   'cursorupdate.lastUpdatedAndShown.version',
   'isUsagePricingEnabled',
   'lastUpgradeToProNotificationTime',
-  'releaseNotes/lastVersion',
-  'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser'
+  'releaseNotes/lastVersion'
+] as const
+
+/**
+ * applicationUser（reactiveStorage 持久层）里的账号身份字段：服务端在登录后重推，
+ * 删除即可切断账号关联。其余字段是设备级本机偏好（服务端不会重建）——尤其
+ * composerState 装着全部工具放行偏好（yoloEnableRunEverything / mcpAllowedTools /
+ * modes4[].autoRun），整键删除会让每次切换回到工厂默认，自动化管道的每个 MCP
+ * 调用都弹人工审批，无人值守即死锁（2026-09-01 P0 实证）。
+ */
+const APPLICATION_USER_KEY = 'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser'
+const APPLICATION_USER_ACCOUNT_TRACE_FIELDS = [
+  'dashboardUserId',
+  'membershipType',
+  'subscriptionStatus',
+  'hasAutoSpillover',
+  'hasTieredSelfServeTeamSpillover',
+  'hasTokenBasedPricing',
+  'isEnterprise',
+  'eligibleForSnippetLearning',
+  'authenticationSettings',
+  'teamAdminSettings',
+  'teamBlockRepos',
+  'teamBlocklist',
+  'newUserData',
+  'aiSettings',
+  'availableDefaultModels2',
+  'featureModelConfigs'
 ] as const
 
 /** 陈旧缓存键：随账号切换必须删除（写错格式比留旧值更糟）。 */

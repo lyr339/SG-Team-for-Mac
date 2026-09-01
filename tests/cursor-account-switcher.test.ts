@@ -17,6 +17,9 @@ import type {
 } from '../src/infrastructure/cursor/cursor-runtime-account-bridge'
 import type { CursorDesktopTokenExchangePort } from '../src/infrastructure/cursor/cursor-desktop-token-exchanger'
 
+/** 与切换器内部的 reactiveStorage 持久层键保持一致（未导出，测试侧镜像）。 */
+const APPLICATION_USER_KEY = 'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser'
+
 /** 构造三段式 JWT（base64url payload）。 */
 function makeTypedJwt(sub: string, type: 'web' | 'session'): string {
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url')
@@ -438,6 +441,73 @@ describe('CursorAccountSwitcher', () => {
     expect(itemTableValue(fixture.stateDbPath, 'aiSettings')).toEqual({ value: '{}' })
     // 陈旧缓存键与痕迹键无关，仍然清理
     expect(itemTableValue(fixture.stateDbPath, 'cursor.accessToken')).toBeUndefined()
+  })
+
+  it('preserves device-level tool approval prefs while stripping account identity from applicationUser', async () => {
+    // P0 回归：applicationUser 整键删除会让每次切换回到工厂默认，MCP 工具全部弹人工审批。
+    const composerState = {
+      yoloEnableRunEverything: true,
+      mcpAllowedTools: ['sg team:team_check_in', 'sg team:record_reply'],
+      modes4: [{ id: 'agent', autoRun: true, fullAutoRun: true }]
+    }
+    const applicationUser = {
+      dashboardUserId: 411710535,
+      membershipType: 'pro',
+      subscriptionStatus: 'active',
+      teamAdminSettings: { someAdmin: true },
+      newUserData: { toolUsageCount: { plainChat: 'legacy' } },
+      aiSettings: { modelConfig: { composer: { modelName: 'kimi-k3' } }, teamIds: ['team-1'] },
+      availableDefaultModels2: [{ name: 'default' }],
+      featureModelConfigs: { composer: { defaultModel: 'default' } },
+      authenticationSettings: { githubLoggedIn: true },
+      composerState,
+      cppEnabled: true,
+      dialogDontAskAgainPreferences: { someDialog: true },
+      systemNotificationsEnabled: true
+    }
+    const db = new DatabaseSync(fixture.stateDbPath)
+    db.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)')
+      .run(APPLICATION_USER_KEY, JSON.stringify(applicationUser))
+    db.close()
+
+    await fixture.switcherFor().switchAccount(fixture.input())
+
+    const raw = itemTableValue(fixture.stateDbPath, APPLICATION_USER_KEY) as { value: string } | undefined
+    expect(raw).toBeDefined()
+    const after = JSON.parse(raw!.value) as Record<string, unknown>
+    // 设备级偏好原样保留——工具放行是 P0 的核心
+    expect(after.composerState).toEqual(composerState)
+    expect(after.cppEnabled).toBe(true)
+    expect(after.dialogDontAskAgainPreferences).toEqual({ someDialog: true })
+    expect(after.systemNotificationsEnabled).toBe(true)
+    // 账号身份字段全部摘除（服务端登录后重推）
+    for (const field of ['dashboardUserId', 'membershipType', 'subscriptionStatus', 'teamAdminSettings',
+      'newUserData', 'aiSettings', 'availableDefaultModels2', 'featureModelConfigs', 'authenticationSettings']) {
+      expect(after[field]).toBeUndefined()
+    }
+  })
+
+  it('falls back to full deletion when applicationUser is corrupt, and skips when missing', async () => {
+    const db = new DatabaseSync(fixture.stateDbPath)
+    db.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)').run(APPLICATION_USER_KEY, '{not-json')
+    db.close()
+    await fixture.switcherFor().switchAccount(fixture.input())
+    expect(itemTableValue(fixture.stateDbPath, APPLICATION_USER_KEY)).toBeUndefined()
+
+    // 键缺失（上一轮已清/全新安装）：照常切换，不崩不写
+    const second = await fixture.switcherFor().switchAccount(fixture.input())
+    expect(second.switched).toBe(true)
+    expect(itemTableValue(fixture.stateDbPath, APPLICATION_USER_KEY)).toBeUndefined()
+  })
+
+  it('leaves applicationUser untouched when resetTraces is disabled', async () => {
+    const db = new DatabaseSync(fixture.stateDbPath)
+    db.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)')
+      .run(APPLICATION_USER_KEY, JSON.stringify({ dashboardUserId: 1, composerState: { yoloEnableRunEverything: true } }))
+    db.close()
+    await fixture.switcherFor().switchAccount(fixture.input({ resetTraces: false }))
+    const raw = itemTableValue(fixture.stateDbPath, APPLICATION_USER_KEY) as { value: string } | undefined
+    expect(JSON.parse(raw!.value)).toEqual({ dashboardUserId: 1, composerState: { yoloEnableRunEverything: true } })
   })
 
   it('rejects non-JWT tokens before any process or file operation', async () => {
