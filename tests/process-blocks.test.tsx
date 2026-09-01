@@ -1,9 +1,27 @@
+// @vitest-environment jsdom
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ProcessBlock } from '../src/domain/conversation-entry'
 import { ProcessBlocks } from '../src/renderer/src/ProcessBlocks'
 
 describe('ProcessBlocks', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
   it('renders tool, thinking and command blocks with status labels', () => {
     const blocks: ProcessBlock[] = [
       {
@@ -113,5 +131,59 @@ describe('ProcessBlocks', () => {
     expect(html).toContain('<time>for 3.0s</time>')
     expect(html).toContain('待办清单 0/1')
     expect(html).toContain('aria-expanded="false"')
+  })
+
+  it('renders todos as a progress bar with circular status indicators', async () => {
+    await act(async () => {
+      root.render(<ProcessBlocks blocks={[
+        {
+          kind: 'tool', id: 'todo', toolName: 'todos', toolKind: 'todo', summary: '待办清单 2/4', status: 'done',
+          todos: [
+            { content: '已完成项 A', status: 'completed' },
+            { content: '已完成项 B', status: 'completed' },
+            { content: '进行中项', status: 'in_progress' },
+            { content: '待办项', status: 'pending' }
+          ]
+        }
+      ]} />)
+    })
+    // 折叠态只露出头部 summary；点击展开后出现进度条与 Cursor 原生三态指示器
+    const head = container.querySelector<HTMLButtonElement>('.cursor-native-tool__head')!
+    expect(head.getAttribute('aria-expanded')).toBe('false')
+    expect(container.textContent).toContain('待办清单 2/4')
+    await act(async () => { head.click() })
+    const html = container.innerHTML
+    expect(html).toContain('todo-progress')
+    expect(html).toContain('role="progressbar"')
+    expect(html).toContain('aria-valuenow="2"')
+    expect(html).toContain('aria-valuemax="4"')
+    // Cursor 原生指示器：完成=描边勾，进行=实心圆旋转弧（spinner），待办=空心圆
+    expect(html).toContain('todo-indicator')
+    expect(html).toMatch(/is-completed[^>]*>\s*<span class="todo-indicator"[^>]*>\s*<svg/)
+    expect(html).toMatch(/is-in_progress[^>]*>\s*<span class="todo-indicator"[^>]*>\s*<span class="todo-spinner"/)
+    expect(html).toContain('stroke-dasharray')
+    expect(html).toContain('is-pending')
+  })
+
+  it('normalizes unknown todo statuses into the cancelled bucket instead of injecting raw class names', async () => {
+    await act(async () => {
+      root.render(<ProcessBlocks blocks={[
+        {
+          kind: 'tool', id: 'todo', toolName: 'todos', toolKind: 'todo', summary: '待办清单 0/2', status: 'done',
+          todos: [
+            { content: '已取消项', status: 'cancelled' },
+            { content: '未知状态项', status: 'weird status with spaces' }
+          ]
+        }
+      ]} />)
+    })
+    const head = container.querySelector<HTMLButtonElement>('.cursor-native-tool__head')!
+    await act(async () => { head.click() })
+    const html = container.innerHTML
+    expect(html).toContain('is-cancelled')
+    // 未知状态不透传进 class，杜绝「is-weird status with spaces」式注入
+    expect(html).not.toContain('is-weird')
+    expect(html).not.toContain('with spaces')
+    expect(container.textContent).toContain('未知状态项')
   })
 })

@@ -67,4 +67,18 @@ describe('theme surface contracts', () => {
     expect(lobby).not.toContain('box-shadow: inset 3px 0 0 var(--accent)')
     expect(lobby).toContain('.account-browser__connection-row')
   })
+
+  it('keeps tool identity colors theme-aware and the todo list on the Cursor-native monochrome design', () => {
+    // 工具身份色板：明暗双值（light-dark）成对出现，卡体不染色
+    for (const kind of ['read', 'search', 'edit', 'write', 'command', 'browser', 'mcp', 'todo']) {
+      expect(styles).toMatch(new RegExp(`\\.cursor-native-tool\\.is-${kind}, \\.process-turn-step\\.is-${kind} \\{[^}]*--tool-hue:\\s*light-dark\\(`))
+    }
+    // Cursor 原生 todo：实心圆反色 spinner + 透明度阶梯（单色纪律）
+    expect(styles).toMatch(/\.todo-spinner\s*\{[^}]*background:\s*var\(--text\)[^}]*border-radius:\s*50%/)
+    expect(styles).toContain('@keyframes todo-spin')
+    expect(styles).toMatch(/\.process-turn-step__todos li\.is-completed\s*\{[^}]*opacity:\s*\.5[^}]*line-through/)
+    expect(styles).toMatch(/\.process-turn-step__todos li\.is-pending\s*\{[^}]*opacity:\s*\.4/)
+    // reduced-motion 必须豁免 todo 的 spinner 与淡入动画
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.todo-spinner svg,\s*\n\s*\.process-turn-step__todos li\s*\{[^}]*animation:\s*none/)
+  })
 })

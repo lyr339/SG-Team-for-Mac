@@ -55,14 +55,60 @@ function stepDuration(step: ProcessTurnStep): string {
   return observed && step.timingEstimated ? `~${observed}` : observed
 }
 
+/** todo 状态归一：Cursor 原生四态之外的任意字符串归入 cancelled（划线桶），
+    同时避免未清洗的 status 直接拼进 className。 */
+function todoTone(status: string): 'completed' | 'in_progress' | 'pending' | 'cancelled' {
+  if (status === 'completed' || status === 'in_progress' || status === 'pending') return status
+  return 'cancelled'
+}
+
+/** Cursor 原生三态指示器：完成=描边勾 / 进行=12px 实心圆反色旋转弧 / 其余=空心圆。 */
+function TodoIndicator({ tone }: { tone: ReturnType<typeof todoTone> }): React.JSX.Element {
+  return (
+    <span className="todo-indicator" aria-hidden="true">
+      {tone === 'completed' ? (
+        <svg viewBox="0 0 14 14"><path d="m3.2 7.6 2.7 2.7 5-6.6" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      ) : tone === 'in_progress' ? (
+        <span className="todo-spinner">
+          <svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeDasharray="21.7 29" /></svg>
+        </span>
+      ) : (
+        <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
+      )}
+    </span>
+  )
+}
+
 function StepDetails({ step }: { step: ProcessTurnStep }): React.JSX.Element {
+  const todos = step.todos ?? []
+  const completedCount = todos.filter((todo) => todo.status === 'completed').length
   return (
     <div className="process-turn-step__details">
       {step.body ? <MessageContent text={step.body} className="process-turn-step__thinking" /> : null}
-      {step.todos?.length ? (
-        <ul className="process-turn-step__todos">
-          {step.todos.map((todo, index) => <li key={`${step.id}:todo:${index}`} className={`is-${todo.status}`}><i>{todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◐' : '○'}</i>{todo.content}</li>)}
-        </ul>
+      {todos.length ? (
+        <div className="todo-sheet">
+          <div
+            className="todo-progress"
+            role="progressbar"
+            aria-label={`任务清单进度 ${completedCount}/${todos.length}`}
+            aria-valuenow={completedCount}
+            aria-valuemin={0}
+            aria-valuemax={todos.length}
+          >
+            <i style={{ width: `${Math.round((completedCount / todos.length) * 100)}%` }} />
+          </div>
+          <ul className="process-turn-step__todos">
+            {todos.map((todo, index) => {
+              const tone = todoTone(todo.status)
+              return (
+                <li key={`${step.id}:todo:${index}`} className={`is-${tone}`}>
+                  <TodoIndicator tone={tone} />
+                  <span className="todo-text">{todo.content}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
       ) : null}
       {step.details.map((detail, index) => (
         <dl key={`${step.id}:detail:${index}`}><dt>{detail.label}</dt><dd>{detail.kind === 'code' ? <pre>{detail.value}</pre> : <code>{detail.value}</code>}</dd></dl>
