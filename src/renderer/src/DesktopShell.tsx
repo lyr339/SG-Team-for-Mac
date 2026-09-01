@@ -35,7 +35,27 @@ const CONNECTION_LABELS: Record<DesktopSnapshot['connection']['state'], string> 
   connecting: '通信连接中',
   connected: '通信已连接',
   reconnecting: '通信重连中',
-  error: '通信异常'
+  error: '通道异常'
+}
+
+/**
+ * 顶栏连接指示的真实语义：本地桥在进程内恒为 connected（无信息量），
+ * 真正反映「拾光 ↔ Cursor」连通性的是过程观察器（CDP）健康度。
+ * 有 observer 状态时按它判定；桥级 error 仍优先；都没有时回落旧标签。
+ */
+function cursorLinkState(snapshot: DesktopSnapshot): {
+  tone: string
+  label: string
+  detail?: string
+} {
+  if (snapshot.connection.state === 'error') {
+    return { tone: 'error', label: '通道异常', detail: snapshot.connection.lastError }
+  }
+  const stream = snapshot.nativeProcessStream
+  if (stream?.state === 'connected') return { tone: 'connected', label: 'Cursor 已连接', detail: stream.detail }
+  if (stream?.state === 'reconnecting') return { tone: 'reconnecting', label: 'Cursor 重连中', detail: stream.detail }
+  if (stream?.state === 'unavailable') return { tone: 'offline', label: '过程流未连接', detail: stream.detail }
+  return { tone: snapshot.connection.state, label: CONNECTION_LABELS[snapshot.connection.state] }
 }
 
 const MODULE_LABELS: Record<AppModule, string> = {
@@ -77,7 +97,7 @@ export function DesktopShell({
     ? snapshot.sessions.filter((session) => teamChannelIds.includes(session.channelId))
     : snapshot.sessions
   const onlineCount = teamSessions.filter((session) => session.online).length
-  const connected = snapshot.connection.state === 'connected'
+  const link = cursorLinkState(snapshot)
   const issues = snapshot.protocolIssues
   const detectedWorkspace = cursorWorkspace?.workspace
   const workspaceMatches = Boolean(detectedWorkspace && detectedWorkspace.id === displayedWorkspaceId)
@@ -185,18 +205,20 @@ export function DesktopShell({
             ) : null}
           </div>
           <button
-            className={`connection-chip connection-chip--${snapshot.connection.state}`}
+            className={`connection-chip connection-chip--${link.tone}`}
             onClick={() => {
               setShowAppearance(false)
               setShowConnection((value) => !value)
             }}
-            title={issues.length ? `${issues.length} 条协议异常，点击查看` : undefined}
+            title={issues.length
+              ? `${issues.length} 条协议异常，点击查看`
+              : link.detail || `${link.label}；Agent 在线状态单独核验`}
             aria-expanded={showConnection}
             aria-controls="connection-popover"
           >
             <i />
-            <span className="connection-chip__label">{CONNECTION_LABELS[snapshot.connection.state]}</span>
-            {connected && <span className="connection-chip__online">{onlineCount}/{teamSessions.length} Agent 在线</span>}
+            <span className="connection-chip__label">{link.label}</span>
+            {teamSessions.length > 0 && <span className="connection-chip__online">{onlineCount}/{teamSessions.length} Agent 在线</span>}
             {issues.length > 0 && <b className="connection-chip__issues">{issues.length}</b>}
           </button>
         </div>

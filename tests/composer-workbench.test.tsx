@@ -57,7 +57,7 @@ describe('ComposerWorkbench', () => {
     expect(html).toContain('Agent 正在监听，新消息会立即投递')
   })
 
-  it('renders an unbound session as a red semantic state with a broken-link glyph', () => {
+  it('renders an unbound session with a quiet status dot instead of an alarm pill', () => {
     const html = renderToStaticMarkup(
       <ComposerWorkbench
         session={{ ...session, telemetry: { state: 'unbound', detail: '等待绑定' } }}
@@ -72,7 +72,7 @@ describe('ComposerWorkbench', () => {
     )
     expect(html).toContain('composer-binding-status is-unbound')
     expect(html).toContain('会话待绑定')
-    expect(html).toContain('M8.5 12h2M13.5 12h2')
+    expect(html).toMatch(/composer-binding-status is-unbound[^>]*><i aria-hidden="true"><\/i>会话待绑定/)
   })
 
   it('renders send errors as alerts without hiding the draft', () => {

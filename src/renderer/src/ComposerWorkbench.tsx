@@ -13,7 +13,7 @@ import {
 import { planAttachmentIntake } from './attachment-rules'
 import { ContextUsagePopover } from './ContextUsagePopover'
 import { modelProviderClass, modelProviderLabel } from './model-provider'
-import { EraseIcon, ExportIcon, HandoffIcon, SessionBindingIcon } from './UiIcons'
+import { EraseIcon, ExportIcon, HandoffIcon } from './UiIcons'
 
 interface ComposerWorkbenchProps {
   session: AgentSession
@@ -389,7 +389,7 @@ export function ComposerWorkbench({
         </div>
         <div className="composer-topbar__right">
           <span className={`composer-binding-status ${bound ? 'is-bound' : 'is-unbound'}`} title={session.telemetry?.detail}>
-            <SessionBindingIcon bound={bound} />
+            <i aria-hidden="true" />
             {bound ? 'Cursor 已绑定' : '会话待绑定'}
           </span>
           <QueueStatus session={session} />

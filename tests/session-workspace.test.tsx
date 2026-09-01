@@ -255,7 +255,7 @@ describe('SessionWorkspace', () => {
     expect(html).toMatch(/session-usage__label">Tokens<\/span><b class="session-usage__value">16\.2K<\/b>/)
     expect(html).toMatch(/session-usage__label">Cost<\/span><b class="session-usage__value">\$0\.042<\/b>/)
     expect(html).toContain('session-usage__sep')
-    expect(html).toContain('title="本轮 TeamRun 的 Cursor 会话真实计费 token（Claude Sonnet，4 回合）')
+    expect(html).toContain('aria-label="真实计费 token 16.2K，等价 API 费用估算 $0.042，4 回合，查看明细"')
 
     const idle = renderWorkspace({
       session: {

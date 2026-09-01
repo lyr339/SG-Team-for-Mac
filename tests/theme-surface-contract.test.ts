@@ -22,8 +22,10 @@ describe('theme surface contracts', () => {
   })
 
   it('uses semantic bound/unbound colors and an accessible queue popover', () => {
-    expect(styles).toMatch(/\.composer-binding-status\.is-bound\s*\{[^}]*var\(--color-background-success\)[^}]*var\(--color-border-success\)/)
-    expect(styles).toMatch(/\.composer-binding-status\.is-unbound\s*\{[^}]*var\(--color-background-danger\)[^}]*var\(--color-border-danger\)/)
+    // 绑定状态是「安静状态点」：语义色只落在圆点上（bound=success），
+    // 未绑定是常见暂态而非错误，不再使用 danger 告警底色。
+    expect(styles).toMatch(/\.composer-binding-status\.is-bound i\s*\{[^}]*background:\s*var\(--color-text-success\)/)
+    expect(styles).toMatch(/\.composer-binding-status\.is-unbound\s*\{[^}]*color:\s*var\(--color-text-tertiary\)/)
     expect(styles).toMatch(/\.composer-queue-popover\s*\{[^}]*z-index:\s*90/)
   })
 
