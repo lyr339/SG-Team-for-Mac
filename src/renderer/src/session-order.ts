@@ -57,6 +57,20 @@ export function moveSessionToBoundary(
   return next
 }
 
+/** 只重排当前状态组占据的全局槽位，其他组的相对顺序与位置保持不变。 */
+export function moveSessionWithinGroup(
+  ids: readonly string[],
+  groupIds: readonly string[],
+  sessionId: string,
+  insertionIndex: number
+): string[] {
+  const reordered = moveSessionToBoundary(groupIds, sessionId, insertionIndex)
+  if (reordered.every((id, index) => id === groupIds[index])) return [...ids]
+  const groupSet = new Set(groupIds)
+  let cursor = 0
+  return ids.map((id) => groupSet.has(id) ? reordered[cursor++]! : id)
+}
+
 /** 顺序数组去重后写回（写入失败静默——排序只是偏好，不值得打扰用户）。 */
 export function persistSessionOrder(ids: readonly string[], storage?: Pick<Storage, 'setItem'>): void {
   try {

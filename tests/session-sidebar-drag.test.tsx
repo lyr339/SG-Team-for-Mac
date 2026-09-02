@@ -7,6 +7,7 @@ import { SessionSidebar } from '../src/renderer/src/SessionSidebar'
 import {
   applySessionOrder,
   moveSessionToBoundary,
+  moveSessionWithinGroup,
   persistSessionOrder,
   readSessionOrder
 } from '../src/renderer/src/session-order'
@@ -15,7 +16,9 @@ const sessions = (ids: string[]) => ids.map((id, index) => ({
   id,
   channelId: String(index + 1),
   displayName: `CH-${index + 1}`,
-  online: index % 2 === 0,
+  online: true,
+  waiting: true,
+  connectionPhase: 'waiting',
   status: 'waiting' as const
 }))
 
@@ -24,6 +27,14 @@ function snapshotOf(ids: string[]): DesktopSnapshot {
     sessions: sessions(ids) as DesktopSnapshot['sessions'],
     connection: { state: 'connected' }
   } as unknown as DesktopSnapshot
+}
+
+function snapshotWith(states: Array<{ id: string } & Partial<DesktopSnapshot['sessions'][number]>>): DesktopSnapshot {
+  const snapshot = snapshotOf(states.map((state) => state.id))
+  return {
+    ...snapshot,
+    sessions: snapshot.sessions.map((session, index) => ({ ...session, ...states[index] }))
+  }
 }
 
 describe('session-order 纯函数', () => {
@@ -58,6 +69,10 @@ describe('session-order 纯函数', () => {
     expect(moveSessionToBoundary(['a', 'b', 'c'], 'a', 3)).toEqual(['b', 'c', 'a'])
     expect(moveSessionToBoundary(['a', 'b', 'c'], 'c', 0)).toEqual(['c', 'a', 'b'])
     expect(moveSessionToBoundary(['a', 'b', 'c'], 'b', 2)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('组内重排只替换该组占据的全局槽位', () => {
+    expect(moveSessionWithinGroup(['a', 'x', 'b', 'y'], ['a', 'b'], 'b', 0)).toEqual(['b', 'x', 'a', 'y'])
   })
 })
 
@@ -98,8 +113,10 @@ function mockSessionListGeometry(container: HTMLElement): {
   list: HTMLElement
   slots: HTMLElement[]
 } {
-  const list = container.querySelector<HTMLElement>('.session-list')!
+  const scroller = container.querySelector<HTMLElement>('.session-list')!
+  const list = container.querySelector<HTMLElement>('.session-group__list')!
   const slots = Array.from(container.querySelectorAll<HTMLElement>('.session-list__slot'))
+  Object.defineProperty(scroller, 'getBoundingClientRect', { configurable: true, value: () => rect(0, 500) })
   Object.defineProperty(list, 'getBoundingClientRect', { configurable: true, value: () => rect(0, 500) })
   slots.forEach((slot, index) => {
     const top = 10 + index * 100
@@ -130,16 +147,67 @@ describe('SessionSidebar 拖拽重排', () => {
   })
 
   async function render(ids = ['a', 'b', 'c']): Promise<void> {
+    await renderSnapshot(snapshotOf(ids))
+  }
+
+  async function renderSnapshot(snapshot: DesktopSnapshot): Promise<void> {
     await act(async () => {
       root.render(
         <SessionSidebar
-          snapshot={snapshotOf(ids)}
+          snapshot={snapshot}
           selectedChannelId="1"
           onSelectSession={() => {}}
         />
       )
     })
   }
+
+  it('动态展示四类轨道标签，折叠状态持久化，离线筛选不重复标题', async () => {
+    await renderSnapshot(snapshotWith([
+      { id: 'run', displayName: '运行席', status: 'running', waiting: false, connectionPhase: 'processing' },
+      { id: 'attention', displayName: '关注席', status: 'blocked', waiting: false, connectionPhase: 'approval' },
+      { id: 'waiting', displayName: '待命席', status: 'idle', waiting: false, connectionPhase: 'keepalive' },
+      { id: 'offline', displayName: '离线席', online: false, status: 'reviving', waiting: false, connectionPhase: 'reviving' }
+    ]))
+    const headers = Array.from(container.querySelectorAll('.session-group__header'))
+    expect(headers.map((header) => header.textContent?.replace(/\s/g, ''))).toEqual([
+      '执行中1', '需关注1', '待命1', '离线1'
+    ])
+
+    const waitingHeader = container.querySelector<HTMLButtonElement>('.session-group.is-waiting .session-group__header')!
+    await act(async () => waitingHeader.click())
+    expect(container.querySelector('.session-group.is-waiting .session-group__list')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('shiguang.sessionGroups.collapsed.v1')!)).toContain('waiting')
+
+    const offlineFilter = Array.from(container.querySelectorAll('.session-filters button'))
+      .find((button) => button.textContent?.includes('离线'))!
+    await act(async () => offlineFilter.click())
+    expect(container.querySelectorAll('.session-group__header')).toHaveLength(0)
+    expect(container.textContent).toContain('离线席')
+  })
+
+  it('跨状态组拖放不改排序，被拖卡片动态换组会安全取消', async () => {
+    const initial = snapshotWith([
+      { id: 'a', displayName: '待命 A' },
+      { id: 'b', displayName: '待命 B' },
+      { id: 'x', displayName: '执行 X', status: 'running', waiting: false, connectionPhase: 'processing' }
+    ])
+    await renderSnapshot(initial)
+    const waitingCard = container.querySelector<HTMLButtonElement>('.session-group.is-waiting .rail-session-card')!
+    const activeList = container.querySelector<HTMLElement>('.session-group.is-active .session-group__list')!
+    await act(async () => waitingCard.dispatchEvent(dragEvent('dragstart')))
+    await act(async () => activeList.dispatchEvent(dragEvent('drop', 0)))
+    expect(localStorage.getItem('shiguang.sessionOrder.v1')).toBeNull()
+
+    await act(async () => waitingCard.dispatchEvent(dragEvent('dragstart')))
+    await renderSnapshot(snapshotWith([
+      { id: 'a', displayName: '待命 A', status: 'running', waiting: false, connectionPhase: 'processing' },
+      { id: 'b', displayName: '待命 B' },
+      { id: 'x', displayName: '执行 X', status: 'running', waiting: false, connectionPhase: 'processing' }
+    ]))
+    expect(container.querySelector('.session-list__slot.is-dragging')).toBeNull()
+    expect(localStorage.getItem('shiguang.sessionOrder.v1')).toBeNull()
+  })
 
   it('卡片上半区显示前置边界，最终顺序与指示线一致', async () => {
     await render()

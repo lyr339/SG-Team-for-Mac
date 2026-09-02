@@ -525,12 +525,34 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 .session-pane__header strong { font-family: var(--display); font-size: var(--fs-17); font-weight: 600; letter-spacing: 0; }
 .session-pane__header span { color: var(--accent); font: 600 var(--fs-12)/1 var(--mono); }
 .session-filters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin: 0 10px 9px; padding: 3px; background: var(--surface-soft); border-radius: 10px; }
-.session-filters button { min-height: 31px; color: var(--muted); background: transparent; border: 0; border-radius: 6px; font-size: var(--fs-10); font-weight: 600; }
+.session-filters button { min-height: 31px; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: var(--fs-10); font-weight: 600; transition: color 140ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease; }
 .session-filters button.is-active { color: var(--accent-deep); background: var(--surface); box-shadow: var(--shadow-1); }
 .session-filters span { margin-left: 4px; font: 600 var(--fs-10)/1 var(--mono); }
 
-.session-list { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 5px; padding: 2px 10px 12px; overflow-y: auto; }
+/* 纯透明仍保留筛选控件的交互轮廓；只使用轻玻璃层，不恢复整块卡片底色。 */
+html[data-card-transparency="clear"] .session-filters { background: color-mix(in srgb, var(--canvas-solid) 16%, transparent); border: 1px solid var(--line-strong); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-solid) 14%, transparent); backdrop-filter: blur(10px) saturate(112%); }
+html[data-card-transparency="clear"] .session-filters button { color: var(--text-soft); background: color-mix(in srgb, var(--canvas-solid) 18%, transparent); border-color: var(--line); }
+html[data-card-transparency="clear"] .session-filters button:hover { color: var(--text); background: color-mix(in srgb, var(--surface-solid) 24%, transparent); border-color: var(--line-strong); }
+html[data-card-transparency="clear"] .session-filters button.is-active { color: var(--accent-deep); background: color-mix(in srgb, var(--surface-solid) 34%, transparent); border-color: var(--accent-border); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-solid) 18%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent); }
+
+.session-list { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 8px; padding: 2px 10px 12px; overflow-y: auto; }
 .session-list__empty { padding: 40px 10px; color: var(--muted); text-align: center; font-size: var(--fs-11); }
+/* 状态分类：细轨标签只编码运行语义，不用大色块抢占卡片视觉层级。 */
+.session-group { --group-hue: var(--color-text-tertiary); min-width: 0; display: grid; gap: 4px; }
+.session-group.is-active { --group-hue: var(--color-text-info); }
+.session-group.is-attention { --group-hue: var(--color-text-warning); }
+.session-group.is-waiting { --group-hue: var(--color-text-success); }
+.session-group.is-offline { --group-hue: var(--color-text-tertiary); }
+.session-group__header { width: 100%; min-height: 26px; display: grid; grid-template-columns: 7px auto auto minmax(14px, 1fr) 13px; align-items: center; gap: 6px; padding: 2px 4px; color: var(--muted); background: transparent; border: 0; border-radius: 6px; text-align: left; transition: color 130ms ease, background 130ms ease; }
+.session-group__header:hover, .session-group__header:focus-visible { color: var(--text); background: color-mix(in srgb, var(--surface-solid) 9%, transparent); outline: 0; }
+.session-group__marker { width: 7px; height: 7px; background: var(--group-hue); border: 1px solid color-mix(in srgb, var(--group-hue) 72%, transparent); border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, var(--group-hue) 9%, transparent); }
+.session-group.is-offline .session-group__marker { background: transparent; }
+.session-group__header strong { color: color-mix(in srgb, var(--group-hue) 82%, var(--text)); font-size: var(--fs-10); font-weight: 650; letter-spacing: .01em; }
+.session-group__header em { color: var(--muted); font: 600 var(--fs-10)/1 var(--mono); font-style: normal; }
+.session-group__rule { width: 100%; height: 1px; background: color-mix(in srgb, var(--group-hue) 22%, transparent); }
+.session-group__header svg { width: 12px; height: 12px; justify-self: end; color: var(--muted); transition: transform 140ms ease; }
+.session-group.is-collapsed .session-group__header svg { transform: rotate(-90deg); }
+.session-group__list { min-width: 0; display: grid; gap: 5px; }
 /* 拖拽重排：源卡片半透明；插入线覆盖在 N + 1 个边界上且不参与布局。 */
 .session-list__slot { position: relative; display: grid; min-width: 0; }
 .session-list__slot.is-dragging { opacity: .35; }
