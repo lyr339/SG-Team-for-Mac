@@ -74,6 +74,28 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('projects the authoritative MCP delivery time into the live conversation entry', () => {
+    vi.useFakeTimers()
+    const { repository, relay } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      relay.resetScope('run-delivery', 10_000)
+      relay.sendMessage({ channelId: '1', text: '排队后再取走' })
+      relay.start(250)
+      const pending = repository.listPendingOutbound('1')[0]!
+      expect(relay.applyTo(baseSnapshot()).conversations['1']?.[0]?.deliveredAt).toBeUndefined()
+
+      repository.markOutboundDelivered([pending.id], 10_500)
+      vi.advanceTimersByTime(300)
+
+      expect(relay.applyTo(baseSnapshot()).conversations['1']?.[0]?.deliveredAt).toBe(10_500)
+    } finally {
+      relay.stop()
+      vi.useRealTimers()
+      repository.close()
+    }
+  })
+
   it('emits when presence crosses the stale threshold so the UI flips offline without any data change', () => {
     vi.useFakeTimers()
     const { repository, relay, advance } = fixture(10_000)

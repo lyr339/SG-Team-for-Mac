@@ -1047,15 +1047,17 @@ export class DesktopSessionService implements DesktopSessionBridge {
       if (!existing) blockOrder.push(block.id)
       blockById.set(block.id, existing ? { ...block, startedAt: existing.startedAt ?? block.startedAt } : block)
     }
-    const seen = (id: string): number => {
+    const seen = (id: string, nativeStartedAt?: number): number => {
       const existing = blockFirstSeen.get(id)
       if (existing !== undefined) return existing
-      const at = now
+      const at = nativeStartedAt && Number.isFinite(nativeStartedAt) && nativeStartedAt > 0
+        ? nativeStartedAt
+        : now
       blockFirstSeen.set(id, at)
       return at
     }
     for (const item of stream.items) {
-      const startedAt = seen(item.id)
+      const startedAt = seen(item.id, item.startedAt)
       if (item.kind === 'thinking') {
         const status = !generating && item.status === 'running' ? 'done' : item.status
         upsert({

@@ -73,6 +73,8 @@ export interface CursorStreamToolBlock {
   input?: Record<string, unknown>
   output?: string
   error?: string
+  /** Cursor bubble 原生创建时间；虚拟回合分段优先使用。 */
+  startedAt?: number
 }
 
 export interface CursorStreamThinkingBlock {
@@ -81,6 +83,7 @@ export interface CursorStreamThinkingBlock {
   text: string
   status: 'running' | 'done'
   durationMs?: number
+  startedAt?: number
 }
 
 export interface CursorStreamMessageBlock {
@@ -88,6 +91,7 @@ export interface CursorStreamMessageBlock {
   id: string
   text: string
   status: 'running' | 'done'
+  startedAt?: number
 }
 
 /**
@@ -566,6 +570,9 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
           id: item.id.slice(0, 120),
           text,
           status: item.status === 'running' ? 'running' : 'done',
+          startedAt: typeof item.startedAt === 'number' && Number.isFinite(item.startedAt) && item.startedAt > 0
+            ? Math.floor(item.startedAt)
+            : undefined,
           durationMs: typeof item.durationMs === 'number' && item.durationMs >= 0
             ? Math.min(item.durationMs, 24 * 60 * 60_000)
             : undefined
@@ -579,7 +586,10 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
           kind: 'message',
           id: item.id.slice(0, 120),
           text,
-          status: item.status === 'running' ? 'running' : 'done'
+          status: item.status === 'running' ? 'running' : 'done',
+          startedAt: typeof item.startedAt === 'number' && Number.isFinite(item.startedAt) && item.startedAt > 0
+            ? Math.floor(item.startedAt)
+            : undefined
         })
         continue
       }
@@ -601,7 +611,10 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
         status,
         input,
         output: typeof item.output === 'string' && item.output ? item.output.slice(0, 12_200) : undefined,
-        error: typeof item.error === 'string' && item.error ? item.error.slice(0, 8_200) : undefined
+        error: typeof item.error === 'string' && item.error ? item.error.slice(0, 8_200) : undefined,
+        startedAt: typeof item.startedAt === 'number' && Number.isFinite(item.startedAt) && item.startedAt > 0
+          ? Math.floor(item.startedAt)
+          : undefined
       })
     }
   }

@@ -39,7 +39,7 @@ const ATTACH_TIMEOUT_MS = 8_000
  * 自轮询重试（2s 间隔，上限 60 次），保证重载后 hook 自动恢复，不依赖重连。
  */
 export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
-  const HOOK_VERSION = 13
+  const HOOK_VERSION = 14
   let attempts = 0
   const pendingSnapshots = new Set()
   let snapshotQueued = false
@@ -203,6 +203,11 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     const isGenerating = data.isGenerating === true || generatingBubbleCount > 0
     const items = []
     let todos
+    function bubbleStartedAt(header, message) {
+      const raw = message?.createdAt ?? header?.createdAt
+      const parsed = typeof raw === 'number' ? raw : Date.parse(String(raw || ''))
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+    }
     const hasWork = turnBubbles.map(h => {
       const message = map[h && h.bubbleId] || {}
       const info = toolInfo(message.toolFormerData)
@@ -219,6 +224,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     for (let i = 0; i < turnBubbles.length; i++) {
       const h = turnBubbles[i]
       const m = map[h && h.bubbleId] || {}
+      const startedAt = bubbleStartedAt(h, m)
       const td = m.toolFormerData
       const bubbleGenerating = generatingBubbleSet.has(String(h?.bubbleId || ''))
       const thinking = thinkingInfo(m)
@@ -226,7 +232,8 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
         items.push({
           kind: 'thinking', id: 'cursor-th:' + h.bubbleId, text: clipText(thinking.text, 24000),
           status: bubbleGenerating && !toolInfo(td).name ? 'running' : 'done',
-          durationMs: typeof thinking.durationMs === 'number' ? thinking.durationMs : undefined
+          durationMs: typeof thinking.durationMs === 'number' ? thinking.durationMs : undefined,
+          startedAt
         })
       }
       // Cursor 原生 assistant-message 只在其后仍有 thinking/tool 时属于过程；
@@ -237,7 +244,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       if (messageText && laterWork) {
         items.push({
           kind: 'message', id: 'cursor-msg:' + h.bubbleId,
-          text: clipText(messageText, 12000), status: 'done'
+          text: clipText(messageText, 12000), status: 'done', startedAt
         })
       }
       if (td && tool.name) {
@@ -247,7 +254,8 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
           summary: toolSummary(td, tool.args),
           status: bubbleGenerating ? 'running' : tool.status,
           input: safePlain(tool.args, 0), output: outputText(tool.result),
-          error: typeof tool.error === 'string' ? clipText(tool.error, 8000) : outputText(tool.error)
+          error: typeof tool.error === 'string' ? clipText(tool.error, 8000) : outputText(tool.error),
+          startedAt
         })
       }
       if (!tool.name && !thinking?.text && (m.capabilityType !== undefined || m.serviceStatusUpdate || m.planUpdate)) {
@@ -259,7 +267,8 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
           summary: typeof m.simulatedMessageMetadata?.title === 'string' ? m.simulatedMessageMetadata.title.slice(0, 160) : '',
           status: bubbleGenerating ? 'running' : 'done',
           input: safePlain(m.planUpdate || m.capabilityContexts || m.serviceStatusUpdate || {}, 0),
-          output: outputText(m.subagentReturn || m.serviceStatusUpdate || m.planUpdate)
+          output: outputText(m.subagentReturn || m.serviceStatusUpdate || m.planUpdate),
+          startedAt
         })
       }
       if (Array.isArray(m.todos) && m.todos.length) {

@@ -758,6 +758,7 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 
 .workspace-timeline-wrap { position: relative; min-width: 0; min-height: 0; display: grid; }
 .workspace-timeline { min-height: 0; padding: 20px max(20px, 5vw) 26px; overflow-y: auto; }
+.workspace-timeline__content { min-height: 100%; }
 
 /* ---------- 对话气泡体系 ---------- */
 .chat-divider { display: flex; justify-content: center; margin: 18px 0 6px; }

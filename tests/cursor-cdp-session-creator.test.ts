@@ -5,6 +5,7 @@ import {
   CursorCdpSessionCreator,
   buildRuntimeInspectionExpression,
   cursorWorkspaceScopeId,
+  parseProcessStream,
   type CursorCdpTarget
 } from '../src/infrastructure/cursor/cursor-cdp-session-creator'
 
@@ -250,6 +251,14 @@ describe('CursorCdpSessionCreator.createAgentSession', () => {
 })
 
 describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
+  it('preserves native bubble timestamps for virtual user-turn projection', () => {
+    const process = parseProcessStream({
+      turnId: 'native-long-turn', generatingBubbleCount: 1,
+      items: [{ kind: 'thinking', id: 'thought-1', text: '分析', status: 'running', startedAt: 1_234 }]
+    })
+    expect(process?.items[0]).toMatchObject({ id: 'thought-1', startedAt: 1_234 })
+  })
+
   it('reads final assistant text from Cursor data and excludes interim text followed by work', async () => {
     const data = {
       fullConversationHeadersOnly: [

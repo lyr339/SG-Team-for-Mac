@@ -8,7 +8,7 @@ export type ConversationRole = 'user' | 'assistant' | 'system' | 'error'
 export type ConversationEntryStatus = 'pending' | 'streaming' | 'complete' | 'failed'
 
 export interface ProcessBlockTiming {
-  /** 拾光首次观测到该步骤的时间。 */
+  /** Cursor bubble 原生创建时间；旧来源缺失时回退为拾光首次观测时间。 */
   startedAt?: number
   /** 步骤进入 done/failed 的时间。 */
   completedAt?: number
@@ -172,6 +172,8 @@ export interface ConversationEntry {
   timestamp: number
   status: ConversationEntryStatus
   source: 'desktop' | 'cursor' | 'recovery'
+  /** 出站消息被 check_messages 实际取走的时间；缺失表示仍在队列中。 */
+  deliveredAt?: number
   commandId?: string
   streamId?: string
   /** Agent 回合标识；用于把 Cursor transcript 过程贴回对应回复。 */

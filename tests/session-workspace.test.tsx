@@ -216,7 +216,7 @@ describe('SessionWorkspace', () => {
     expect(html).not.toContain('live-process-idle')
   })
 
-  it('live 过程时间早于用户消息时仍锚在当前待回复消息之后', () => {
+  it('新消息仍在队列时保持既有过程在消息之前', () => {
     const html = renderWorkspace({
       session: { status: 'running', waiting: false, connectionPhase: 'processing' },
       entries: [entry({ id: 'u1', role: 'user', source: 'desktop', text: '请继续实现', timestamp: 1_000_000 })],
@@ -227,6 +227,22 @@ describe('SessionWorkspace', () => {
         blocks: [
           { kind: 'thinking', id: 'b1', text: '正在分析', status: 'running' }
         ]
+      }
+    })
+
+    expect(html.indexOf('过程记录')).toBeLessThan(html.indexOf('请继续实现'))
+  })
+
+  it('消息被 Agent 取走后把新增过程锚在该消息之后', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({
+        id: 'u1', role: 'user', source: 'desktop', text: '请继续实现',
+        timestamp: 1_000_000, deliveredAt: 1_000_100
+      })],
+      liveProcess: {
+        turn: 'native-long-turn', startedAt: 998_500, updatedAt: 1_000_300,
+        blocks: [{ kind: 'thinking', id: 'b1', text: '正在分析', status: 'running', startedAt: 1_000_200 }]
       }
     })
 

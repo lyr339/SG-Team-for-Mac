@@ -10,6 +10,8 @@ import { ProcessTurnCard } from './ProcessTurnCard'
 import { LiveAgentResponse } from './LiveAgentResponse'
 import { SessionUsageStat } from './SessionUsageStat'
 import { suggestedActionsFromText } from './process-turn-view'
+import { projectVirtualProcessTurns, type VirtualProcessTurn } from './virtual-process-turns'
+import { useBottomFollow } from './use-bottom-follow'
 
 interface SessionWorkspaceProps {
   session: AgentSession
@@ -37,9 +39,9 @@ const DIVIDER_WINDOW_MS = 10 * 60_000
 const MESSAGE_CLAMP_PX = 384
 
 type TimelineItem =
-  | { type: 'entry'; key: string; entry: ConversationEntry; timestamp: number; order: number }
-  | { type: 'live-turn'; key: string; timestamp: number; order: number }
-  | { type: 'running-placeholder'; key: string; timestamp: number; order: number }
+  | { type: 'entry'; key: string; entry: ConversationEntry; position: number }
+  | { type: 'live-turn'; key: string; turn: VirtualProcessTurn; position: number }
+  | { type: 'running-placeholder'; key: string; position: number }
 
 /**
  * 长文本气泡内容：超过限高默认折叠，用户点击「展开全文」查看完整内容。
@@ -135,13 +137,10 @@ export function SessionWorkspace({
 }: SessionWorkspaceProps): React.JSX.Element {
   const [sendError, setSendError] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [awayFromBottom, setAwayFromBottom] = useState(false)
   const [copiedId, setCopiedId] = useState('')
   const [starredIds, setStarredIds] = useState<ReadonlySet<string>>(new Set())
   const visibleEntries = useMemo(() => entries.filter((entry) => !entry.silent), [entries])
   const latestAssistantId = [...visibleEntries].reverse().find((entry) => entry.role === 'assistant')?.id
-  const timelineRef = useRef<HTMLDivElement>(null)
-  const stickToBottom = useRef(true)
   const seenCount = useRef(visibleEntries.length)
   const agentOffline = !session.online
   const lastEntry = visibleEntries.at(-1)
@@ -170,51 +169,49 @@ export function SessionWorkspace({
     && entry.text.trim() === liveAgentResponse.text.trim()
   ))
   const visibleLiveResponse = liveAgentResponse && !finalizedLiveResponse ? liveAgentResponse : undefined
-  // 回合归属与旧过程清理由 DesktopSessionService 统一裁决。渲染层不再用时间差
-  // 猜测过程与回复是否同轮；长任务中最终正文晚于最后一个工具块数分钟很常见。
-  const visibleLiveProcess = liveProcess
   const liveResponseKey = visibleLiveResponse
     ? `${visibleLiveResponse.id}:${visibleLiveResponse.status}:${visibleLiveResponse.text.length}:${visibleLiveResponse.updatedAt}`
     : ''
   const pendingVisibleUser = visibleEntries.at(-1)?.role === 'user'
-  const lastVisibleTimestamp = visibleEntries.at(-1)?.timestamp ?? 0
+  const virtualTurns = useMemo(
+    () => projectVirtualProcessTurns(visibleEntries, liveProcess, visibleLiveResponse, !queuedTransport),
+    [liveProcess, queuedTransport, visibleEntries, visibleLiveResponse]
+  )
   const showRunningPlaceholder = pendingVisibleUser
     && session.online
     && session.status === 'running'
-    && !visibleLiveProcess?.blocks.length
-    && !visibleLiveResponse
+    && virtualTurns.length === 0
   const timelineItems = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = visibleEntries.map((entry, index) => ({
       type: 'entry',
       key: `entry:${entry.id}`,
       entry,
-      timestamp: entry.timestamp,
-      order: index * 10
+      position: index
     }))
-    if (visibleLiveProcess?.blocks.length || visibleLiveResponse) {
+    for (const turn of virtualTurns) {
       items.push({
         type: 'live-turn',
-        key: `active-turn:${session.id}`,
-        timestamp: Math.max(
-          visibleLiveProcess?.startedAt ?? visibleLiveResponse!.startedAt,
-          lastVisibleTimestamp + 1
-        ),
-        order: Number.MAX_SAFE_INTEGER
+        key: `active-turn:${session.id}:${turn.id}`,
+        turn,
+        position: turn.position
       })
-    } else if (showRunningPlaceholder) {
+    }
+    if (showRunningPlaceholder) {
       items.push({
         type: 'running-placeholder',
         key: `active-turn:${session.id}`,
-        timestamp: (visibleEntries.at(-1)?.timestamp ?? Date.now()) + 1,
-        order: Number.MAX_SAFE_INTEGER
+        position: Math.max(0, visibleEntries.length - 0.5)
       })
     }
     return items.sort((left, right) => (
-      left.timestamp - right.timestamp
-      || left.order - right.order
+      left.position - right.position
       || left.key.localeCompare(right.key)
     ))
-  }, [visibleEntries, visibleLiveProcess, visibleLiveResponse, showRunningPlaceholder, session.id, lastVisibleTimestamp])
+  }, [visibleEntries, virtualTurns, showRunningPlaceholder, session.id])
+  const follow = useBottomFollow(
+    `${session.id}:${session.composerId ?? ''}`,
+    `${visibleEntries.length}:${lastEntryKey}:${liveProcessKey}:${liveResponseKey}:${timelineItems.length}`
+  )
   const canSend = (session.online || queuedTransport) && !submitting
   // 独立席位：solo 角色模板的 roleTemplateKey 流经 AgentSession（团队席为
   // lead/frontend 等真实模板键）。措辞分支用它，避免把 solo 会话表述成团队协作一环。
@@ -222,29 +219,11 @@ export function SessionWorkspace({
   const disconnected = agentOffline && !queuedTransport
   const queuedOffline = agentOffline && queuedTransport
   const notWaiting = !disconnected && !queuedOffline && !session.waiting && session.status !== 'running'
-  const scrollTimelineTo = (top: number, behavior: ScrollBehavior = 'smooth'): void => {
-    const element = timelineRef.current
-    if (!element) return
-    if (typeof element.scrollTo === 'function') {
-      element.scrollTo({ top, behavior })
-      return
-    }
-    element.scrollTop = top
-  }
-
-  useLayoutEffect(() => {
-    stickToBottom.current = true
-    seenCount.current = visibleEntries.length
-    setAwayFromBottom(false)
-    scrollTimelineTo(timelineRef.current?.scrollHeight ?? 0, 'auto')
-  }, [session.composerId, session.id])
-
   useEffect(() => {
-    if (stickToBottom.current) {
-      scrollTimelineTo(timelineRef.current?.scrollHeight ?? 0)
+    if (!follow.awayFromBottom) {
       seenCount.current = visibleEntries.length
     }
-  }, [visibleEntries.length, lastEntryKey, session.composerId, session.id, liveProcessKey, liveResponseKey])
+  }, [follow.awayFromBottom, visibleEntries.length])
 
   useEffect(() => {
     if (!copiedId) return
@@ -252,20 +231,18 @@ export function SessionWorkspace({
     return () => clearTimeout(timer)
   }, [copiedId])
 
-  const pendingBelow = awayFromBottom ? Math.max(0, visibleEntries.length - seenCount.current) : 0
+  const pendingBelow = follow.awayFromBottom ? Math.max(0, visibleEntries.length - seenCount.current) : 0
 
   const jumpToBottom = (): void => {
-    stickToBottom.current = true
     seenCount.current = visibleEntries.length
-    setAwayFromBottom(false)
-    scrollTimelineTo(timelineRef.current?.scrollHeight ?? 0)
+    follow.jumpToBottom()
   }
 
   const submit = async (): Promise<void> => {
     const text = draft.trim()
     if ((!text && attachments.length === 0) || !canSend) return
     setSubmitting(true)
-    stickToBottom.current = true
+    follow.beginFollowing()
     setSendError('')
     try {
       await onSend(text, attachments.length > 0 ? attachments : undefined)
@@ -314,7 +291,7 @@ export function SessionWorkspace({
   const quickSend = async (text: string): Promise<void> => {
     if (!canSend || !text.trim()) return
     setSubmitting(true)
-    stickToBottom.current = true
+    follow.beginFollowing()
     setSendError('')
     try {
       await onSend(text.trim())
@@ -465,34 +442,34 @@ export function SessionWorkspace({
     )
   }
 
-  const renderLiveTurnRow = (): React.JSX.Element => (
-    <div className="chat-row chat-row--agent live-process-row" key={`active-turn:${session.id}`}>
+  const renderLiveTurnRow = (turn: VirtualProcessTurn): React.JSX.Element => (
+    <div className="chat-row chat-row--agent live-process-row" key={`active-turn:${session.id}:${turn.id}`}>
       <span className="chat-gutter">
         <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
       </span>
       <div className="chat-col">
         <div className="chat-name">
           <strong>Agent</strong>
-          <time>{formatClock(visibleLiveProcess?.startedAt ?? visibleLiveResponse?.startedAt ?? Date.now())}</time>
+          <time>{formatClock(turn.process?.startedAt ?? turn.response?.startedAt ?? Date.now())}</time>
         </div>
         <div className="chat-bubble">
-          {visibleLiveProcess?.blocks.length ? (
+          {turn.process?.blocks.length ? (
             <ProcessTurnCard
-              id={visibleLiveProcess.turn}
-              blocks={visibleLiveProcess.blocks}
-              startedAt={visibleLiveProcess.startedAt}
-              updatedAt={visibleLiveProcess.updatedAt}
-              truncatedItemCount={visibleLiveProcess.truncatedItemCount}
+              id={turn.process.turn}
+              blocks={turn.process.blocks}
+              startedAt={turn.process.startedAt}
+              updatedAt={turn.process.updatedAt}
+              truncatedItemCount={turn.process.truncatedItemCount}
               defaultOpen
               compact
-              live
+              live={turn.live}
             />
           ) : null}
-          {visibleLiveResponse ? <LiveAgentResponse response={visibleLiveResponse} /> : null}
+          {turn.response ? <LiveAgentResponse response={turn.response} /> : null}
         </div>
         {/* 完成态不带任何状态文案：实时过程流已承载过程叙事，record_reply
             落库后自然替换为持久条目——中途的「正在归档」只是噪音。 */}
-        {visibleLiveResponse?.status === 'streaming' ? (
+        {turn.response?.status === 'streaming' ? (
           <div className="chat-tail"><span className="chat-state">Cursor 实时生成中</span></div>
         ) : null}
       </div>
@@ -529,7 +506,7 @@ export function SessionWorkspace({
         previousEntry = item.entry
         return rendered
       }
-      if (item.type === 'live-turn') return renderLiveTurnRow()
+      if (item.type === 'live-turn') return renderLiveTurnRow(item.turn)
       return renderRunningPlaceholder()
     })
   }
@@ -590,23 +567,24 @@ export function SessionWorkspace({
       <div className="workspace-timeline-wrap">
         <div
           className="workspace-timeline"
-          ref={timelineRef}
-          onScroll={(event) => {
-            const element = event.currentTarget
-            const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 90
-            stickToBottom.current = nearBottom
-            if (nearBottom) seenCount.current = visibleEntries.length
-            setAwayFromBottom(!nearBottom)
-          }}
+          ref={follow.viewportRef}
+          onScroll={follow.onScroll}
+          onWheel={follow.onWheel}
+          onPointerDown={follow.onPointerDown}
+          onPointerUp={follow.onPointerUp}
+          onPointerCancel={follow.onPointerUp}
+          onKeyDown={follow.onKeyDown}
         >
-          {timelineItems.length === 0 ? (
-            <div className="timeline-empty">
-              <h2>本轮尚无消息</h2>
-              <p>这里只显示当前 TeamRun 的新消息；旧对话仍保留在 Cursor 历史中。</p>
-            </div>
-          ) : renderTimelineItems()}
+          <div className="workspace-timeline__content" ref={follow.contentRef}>
+            {timelineItems.length === 0 ? (
+              <div className="timeline-empty">
+                <h2>本轮尚无消息</h2>
+                <p>这里只显示当前 TeamRun 的新消息；旧对话仍保留在 Cursor 历史中。</p>
+              </div>
+            ) : renderTimelineItems()}
+          </div>
         </div>
-        {awayFromBottom && visibleEntries.length > 0 && (
+        {follow.awayFromBottom && timelineItems.length > 0 && (
           <button className="timeline-jump" role="status" aria-live="polite" onClick={jumpToBottom}>
             {pendingBelow > 0 ? `${pendingBelow} 条新消息` : '回到底部'} ↓
           </button>

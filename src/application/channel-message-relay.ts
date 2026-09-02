@@ -189,6 +189,7 @@ export class ChannelMessageRelay {
       role: 'user',
       text: message.text,
       timestamp: message.createdAt,
+      deliveredAt: message.deliveredAt,
       status: 'complete',
       source: 'desktop',
       commandId,
@@ -363,6 +364,7 @@ export class ChannelMessageRelay {
       role: 'user',
       text: message.text,
       timestamp: message.createdAt,
+      deliveredAt: message.deliveredAt,
       status: 'complete',
       source: 'desktop',
       attachments: message.attachments
@@ -426,13 +428,41 @@ export class ChannelMessageRelay {
       this.polling = true
       try {
         this.compactPendingOutbound()
+        const deliveryChanged = this.refreshOutboundDeliveries()
         this.pollReplies()
         this.emitPresenceFlips()
+        if (deliveryChanged) this.emit()
       } finally {
         this.polling = false
       }
     }, Math.max(250, intervalMs))
     this.timer.unref?.()
+  }
+
+  /** 把 MCP 进程写入的 delivered_at 同步到内存时间线，作为虚拟回合的权威边界。 */
+  private refreshOutboundDeliveries(): boolean {
+    if (this.scopeStartedAt === undefined || !this.conversations.size) return false
+    const outbound = new Map<string, ChannelOutboundMessage>(this.repository
+      .listOutboundSince(Math.max(0, this.scopeStartedAt - CONVERSATION_SCOPE_CLOCK_SKEW_MS),
+        MAX_ENTRIES_PER_CHANNEL * Math.max(1, this.conversations.size))
+      .map((message) => [`outbox:${message.id}`, message] as const))
+    let changed = false
+    for (const [channelId, entries] of this.conversations) {
+      let next = entries
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index]
+        if (!entry || entry.role !== 'user' || entry.source !== 'desktop' || entry.deliveredAt !== undefined) continue
+        const deliveredAt = outbound.get(entry.id)?.deliveredAt
+        if (deliveredAt === undefined) continue
+        if (next === entries) next = [...entries]
+        next[index] = { ...entry, deliveredAt }
+      }
+      if (next !== entries) {
+        this.conversations.set(channelId, next)
+        changed = true
+      }
+    }
+    return changed
   }
 
   private compactPendingOutbound(): void {

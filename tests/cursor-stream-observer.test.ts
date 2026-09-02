@@ -95,7 +95,7 @@ describe('CursorStreamObserver', () => {
       }
     }
     runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
-    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(13)
+    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(14)
     expect(manager.markDirty({ composerId: 'composer-1' })).toBe(1)
     expect(observed).toEqual([1])
     await manager.updateWithoutMarkingDirty({ composerId: 'composer-1' })
@@ -125,8 +125,9 @@ describe('CursorStreamObserver', () => {
                 { type: 2, bubbleId: 'tool-1' }
               ],
               conversationMap: {
-                'message-1': { text: '先打开页面检查当前状态。' },
+                'message-1': { text: '先打开页面检查当前状态。', createdAt: '2026-09-02T09:55:48.694Z' },
                 'tool-1': {
+                  createdAt: '2026-09-02T09:55:48.702Z',
                   toolFormerData: {
                     name: 'mcp-cursor-ide-browser-browser_navigate',
                     status: 'completed',
@@ -149,9 +150,12 @@ describe('CursorStreamObserver', () => {
     await Promise.resolve()
     const process = frames[0]?.process as { items?: Array<Record<string, unknown>> } | undefined
     expect(process?.items?.map((item) => item.kind)).toEqual(['message', 'tool'])
-    expect(process?.items?.[0]).toMatchObject({ kind: 'message', text: '先打开页面检查当前状态。' })
+    expect(process?.items?.[0]).toMatchObject({
+      kind: 'message', text: '先打开页面检查当前状态。', startedAt: Date.parse('2026-09-02T09:55:48.694Z')
+    })
     expect(process?.items?.[1]).toMatchObject({
-      kind: 'tool', toolKind: 'browser', summary: 'http://localhost', status: 'done', output: 'Page loaded\n[image result]'
+      kind: 'tool', toolKind: 'browser', summary: 'http://localhost', status: 'done', output: 'Page loaded\n[image result]',
+      startedAt: Date.parse('2026-09-02T09:55:48.702Z')
     })
   })
 
