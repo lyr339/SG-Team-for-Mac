@@ -531,12 +531,15 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 
 .session-list { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 5px; padding: 2px 10px 12px; overflow-y: auto; }
 .session-list__empty { padding: 40px 10px; color: var(--muted); text-align: center; font-size: var(--fs-11); }
-/* 拖拽重排：源卡片半透明 + 落点插入线（拾光蓝，与全应用焦点语义一致） */
-.session-list__slot { display: grid; min-width: 0; }
+/* 拖拽重排：源卡片半透明；插入线覆盖在 N + 1 个边界上且不参与布局。 */
+.session-list__slot { position: relative; display: grid; min-width: 0; }
 .session-list__slot.is-dragging { opacity: .35; }
 .session-list__slot.is-dragging .rail-session-card { cursor: grabbing; }
 .session-list__slot .rail-session-card[draggable="true"] { cursor: grab; }
-.session-list__drop-marker { height: 2px; margin: -1px 6px 2px; background: var(--accent); border-radius: var(--border-radius-full); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; }
+.session-list__slot.is-drop-before::before,
+.session-list__slot.is-drop-after::after { content: ""; position: absolute; z-index: 2; left: 6px; right: 6px; height: 2px; background: var(--accent); border-radius: var(--border-radius-full); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; }
+.session-list__slot.is-drop-before::before { top: -2px; }
+.session-list__slot.is-drop-after::after { bottom: -2px; }
 
 /* ---------- 会话列表卡片 ---------- */
 .rail-session-card {
@@ -1351,7 +1354,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
   .desktop-body:not(.desktop-body--sessions) .context-sidebar { display: none; }
   .desktop-body:not(.desktop-body--sessions) .content-stage { height: 100%; }
   .desktop-body--sessions .content-stage { position: absolute; inset: 0; z-index: 5; transform: translateX(100%); }
-  .desktop-body--sessions .session-pane:has(.session-list > button.is-active) ~ .content-stage { transform: none; }
+  .desktop-body--sessions .session-pane:has(.rail-session-card.is-active) ~ .content-stage { transform: none; }
   .overview-page__scroll { padding: 14px 14px 24px; }
   .workspace-header { grid-template-columns: auto auto minmax(0, 1fr); padding: 12px 15px; }
   .workspace-back { width: 34px; height: 34px; display: grid; place-items: center; color: var(--accent); background: var(--accent-wash); border: var(--border-width-regular) solid var(--accent-border); border-radius: 10px; }
@@ -1536,7 +1539,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 .cursor-native-tool:hover, .cursor-native-tool:focus-within { border-color: var(--color-border-primary); }
 .cursor-native-tool.is-running { border-color: color-mix(in srgb, var(--tool-hue, var(--color-border-info)) 62%, var(--color-border-tertiary)); }
 .cursor-native-tool.is-failed { border-color: var(--red-border); }
-.cursor-native-tool__head { width: 100%; min-height: 44px; display: grid; grid-template-columns: 24px auto minmax(0, 1fr) auto auto 16px; align-items: center; gap: 8px; padding: 8px 12px; color: var(--text); background: transparent; border: 0; text-align: left; }
+.cursor-native-tool__head { width: 100%; min-height: 44px; display: grid; grid-template-columns: 24px auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 12px; color: var(--text); background: transparent; border: 0; text-align: left; }
 .cursor-native-tool__head:not(:disabled) { cursor: pointer; }
 .cursor-native-tool__head:not(:disabled):hover { background: var(--color-background-secondary); }
 /* 图标章：工具身份色的主载体（22-24px 圆角小方章，底为 tint、图标为 hue） */
@@ -1546,19 +1549,19 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 .cursor-native-tool__icon svg { width: 17px; height: 17px; }
 .cursor-native-tool__head strong { white-space: nowrap; color: var(--tool-hue, var(--text)); font-size: var(--fs-12); font-weight: 600; }
 .cursor-native-tool__head code { min-width: 0; overflow: hidden; color: var(--color-text-tertiary); font: 500 var(--fs-11)/1.35 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.cursor-native-tool__meta { grid-column: 4; justify-self: end; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .cursor-native-tool__head time { color: var(--muted); font: 500 var(--fs-10)/1 var(--mono); }
 .cursor-native-tool__state { min-width: 42px; display: inline-flex; justify-content: flex-end; align-items: center; gap: 5px; color: var(--muted); font-size: var(--fs-10); }
 .cursor-native-tool.is-running .cursor-native-tool__state { color: var(--tool-hue, var(--color-text-info)); }
 .cursor-native-tool.is-failed .cursor-native-tool__state { color: var(--red); }
 .cursor-native-tool__state i { width: 5px; height: 5px; background: currentColor; border-radius: 50%; animation: process-turn-pulse 1.2s ease-in-out infinite; }
-.cursor-native-tool__head > svg { width: 15px; height: 15px; color: var(--muted); }
+.cursor-native-tool__meta > svg { width: 15px; height: 15px; color: var(--muted); }
 .cursor-native-tool > .process-turn-step__details { gap: 10px; padding: 10px 12px 12px; background: var(--color-background-secondary); border-top: var(--border-width-regular) solid var(--color-border-tertiary); }
 .cursor-native-tool > .process-turn-step__details dl { grid-template-columns: 44px minmax(0, 1fr); }
 .cursor-native-tool > .process-turn-step__details pre,
 .cursor-native-tool > .process-turn-step__details dd > code { max-height: 260px; background: var(--surface-pure); }
 
 @media (max-width: 720px) {
-  .cursor-native-tool__head { grid-template-columns: 24px auto minmax(0, 1fr) auto 15px; }
   .cursor-native-tool__head time { display: none; }
   .cursor-native-tool__state { min-width: 36px; }
   .cursor-native-thought__body { max-width: none; }

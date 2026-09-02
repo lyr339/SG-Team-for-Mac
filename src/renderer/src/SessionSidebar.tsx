@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { DesktopSnapshot } from '../../shared/desktop-api'
 import { SessionRailCard } from './SessionRailCard'
-import { applySessionOrder, persistSessionOrder, readSessionOrder } from './session-order'
+import {
+  applySessionOrder,
+  moveSessionToBoundary,
+  persistSessionOrder,
+  readSessionOrder
+} from './session-order'
 
 type SessionFilter = 'all' | 'online' | 'offline'
 
@@ -11,10 +16,26 @@ interface SessionSidebarProps {
   onSelectSession: (channelId: string) => void
 }
 
+function boundaryAt(list: HTMLElement, clientY: number): number {
+  const slots = Array.from(list.querySelectorAll<HTMLElement>('.session-list__slot'))
+  const before = slots.findIndex((slot) => {
+    const rect = slot.getBoundingClientRect()
+    return clientY < rect.top + rect.height / 2
+  })
+  return before < 0 ? slots.length : before
+}
+
+function scrollNearEdge(list: HTMLElement, clientY: number): void {
+  const rect = list.getBoundingClientRect()
+  const edge = Math.min(44, rect.height / 4)
+  if (clientY < rect.top + edge) list.scrollTop -= 12
+  else if (clientY > rect.bottom - edge) list.scrollTop += 12
+}
+
 /**
- * 会话侧栏：全部视图支持卡片拖拽重排（HTML5 DnD，dataTransfer 只传索引）。
+ * 会话侧栏：全部视图支持卡片拖拽重排（HTML5 DnD）。
  * 顺序按 sessionId 持久化到 localStorage；过滤视图按语义分组不重排。
- * 拖拽期间用行内插入占位（无动画重排），松手落位——反馈即时且不依赖 FLIP。
+ * 列表统一将指针映射到 N + 1 个插入边界，覆盖卡片、间隙和列表空白区。
  */
 export function SessionSidebar({
   snapshot,
@@ -23,8 +44,8 @@ export function SessionSidebar({
 }: SessionSidebarProps): React.JSX.Element {
   const [filter, setFilter] = useState<SessionFilter>('all')
   const [order, setOrder] = useState<string[] | undefined>(() => readSessionOrder())
-  const [dragIndex, setDragIndex] = useState<number | null>(null)
-  const [overIndex, setOverIndex] = useState<number | null>(null)
+  const [draggedSessionId, setDraggedSessionId] = useState<string | null>(null)
+  const [insertionIndex, setInsertionIndex] = useState<number | null>(null)
 
   const onlineCount = snapshot.sessions.filter((session) => session.online).length
   const offlineCount = snapshot.sessions.length - onlineCount
@@ -40,25 +61,31 @@ export function SessionSidebar({
     return true
   }), [filter, orderedSessions])
 
-  // 拖拽中途会话集合变化（席位增删）：中止拖拽而非落位到错误索引
-  useEffect(() => {
-    setDragIndex(null)
-    setOverIndex(null)
-  }, [snapshot.sessions])
+  const rosterSignature = useMemo(
+    () => snapshot.sessions.map((session) => session.id).sort().join('\u0000'),
+    [snapshot.sessions]
+  )
 
-  const handleDrop = (): void => {
-    if (dragIndex === null || overIndex === null || dragIndex === overIndex) {
-      setDragIndex(null)
-      setOverIndex(null)
-      return
-    }
+  // 仅席位集合真正变化时中止拖拽；状态、用量等实时更新不影响手势。
+  useEffect(() => {
+    setDraggedSessionId(null)
+    setInsertionIndex(null)
+  }, [rosterSignature])
+
+  const resetDrag = (): void => {
+    setDraggedSessionId(null)
+    setInsertionIndex(null)
+  }
+
+  const handleDrop = (boundary: number): void => {
+    if (draggedSessionId === null) return
     const ids = sessions.map((session) => session.id)
-    const [moved] = ids.splice(dragIndex, 1)
-    ids.splice(overIndex, 0, moved!)
-    setOrder(ids)
-    persistSessionOrder(ids)
-    setDragIndex(null)
-    setOverIndex(null)
+    const next = moveSessionToBoundary(ids, draggedSessionId, boundary)
+    if (next.some((id, index) => id !== ids[index])) {
+      setOrder(next)
+      persistSessionOrder(next)
+    }
+    resetDrag()
   }
 
   return (
@@ -71,28 +98,39 @@ export function SessionSidebar({
         <button className={filter === 'online' ? 'is-active' : ''} onClick={() => setFilter('online')}>在线 <span>{onlineCount}</span></button>
         <button className={filter === 'offline' ? 'is-active' : ''} onClick={() => setFilter('offline')}>离线 <span>{offlineCount}</span></button>
       </div>
-      <nav className="session-list" aria-label="Cursor 会话">
+      <nav
+        className="session-list"
+        aria-label="Cursor 会话"
+        onDragOver={(event) => {
+          if (draggedSessionId === null) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'move'
+          scrollNearEdge(event.currentTarget, event.clientY)
+          setInsertionIndex(boundaryAt(event.currentTarget, event.clientY))
+        }}
+        onDragLeave={(event) => {
+          if (draggedSessionId === null) return
+          const rect = event.currentTarget.getBoundingClientRect()
+          if (
+            event.clientX < rect.left || event.clientX > rect.right
+            || event.clientY < rect.top || event.clientY > rect.bottom
+          ) setInsertionIndex(null)
+        }}
+        onDrop={(event) => {
+          if (draggedSessionId === null) return
+          event.preventDefault()
+          handleDrop(boundaryAt(event.currentTarget, event.clientY))
+        }}
+      >
         {sessions.length ? sessions.map((session, index) => {
-          const dragging = dragIndex === index
-          const showDropBefore = overIndex === index && dragIndex !== null && dragIndex !== index
+          const dragging = draggedSessionId === session.id
+          const dropBefore = insertionIndex === index
+          const dropAfter = insertionIndex === sessions.length && index === sessions.length - 1
           return (
             <div
               key={session.id}
-              className={`session-list__slot${dragging ? ' is-dragging' : ''}`}
-              onDragOver={(event) => {
-                if (dragIndex === null) return
-                event.preventDefault()
-                event.dataTransfer.dropEffect = 'move'
-                setOverIndex(index)
-              }}
-              onDrop={(event) => {
-                if (dragIndex === null) return
-                event.preventDefault()
-                setOverIndex(index)
-                handleDrop()
-              }}
+              className={`session-list__slot${dragging ? ' is-dragging' : ''}${dropBefore ? ' is-drop-before' : ''}${dropAfter ? ' is-drop-after' : ''}`}
             >
-              {showDropBefore ? <div className="session-list__drop-marker" aria-hidden="true" /> : null}
               <SessionRailCard
                 session={session}
                 selected={session.channelId === selectedChannelId}
@@ -103,12 +141,9 @@ export function SessionSidebar({
                   // 自定义 MIME：拖到外部应用只得到应用名而非裸索引数字；
                   // 拖拽状态经 React state 传递，dataTransfer 仅作 DnD 协议要求
                   event.dataTransfer.setData('application/x-shiguang-session', 'reorder')
-                  setDragIndex(index)
+                  setDraggedSessionId(session.id)
                 }}
-                onDragEnd={() => {
-                  setDragIndex(null)
-                  setOverIndex(null)
-                }}
+                onDragEnd={resetDrag}
               />
             </div>
           )

@@ -38,6 +38,25 @@ export function applySessionOrder<T>(
   })
 }
 
+/** 将指定会话移动到原列表的插入边界（N 个会话共有 N + 1 个边界）。 */
+export function moveSessionToBoundary(
+  ids: readonly string[],
+  sessionId: string,
+  insertionIndex: number
+): string[] {
+  const sourceIndex = ids.indexOf(sessionId)
+  if (sourceIndex < 0) return [...ids]
+
+  const boundary = Math.max(0, Math.min(insertionIndex, ids.length))
+  const targetIndex = boundary > sourceIndex ? boundary - 1 : boundary
+  if (targetIndex === sourceIndex) return [...ids]
+
+  const next = [...ids]
+  next.splice(sourceIndex, 1)
+  next.splice(targetIndex, 0, sessionId)
+  return next
+}
+
 /** 顺序数组去重后写回（写入失败静默——排序只是偏好，不值得打扰用户）。 */
 export function persistSessionOrder(ids: readonly string[], storage?: Pick<Storage, 'setItem'>): void {
   try {

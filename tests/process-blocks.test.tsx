@@ -70,6 +70,7 @@ describe('ProcessBlocks', () => {
     }]} />)
 
     expect(html).toContain('cursor-native-tool__head" disabled=""')
+    expect(html).toMatch(/cursor-native-tool__meta[^>]*>\s*<span class="cursor-native-tool__state">完成<\/span>\s*<\/span>/)
     expect(html).toContain('过程记录')
   })
 

@@ -213,11 +213,13 @@ export function ProcessTurnCard({
                   <span className="cursor-native-tool__icon"><StepIcon kind={step.kind} /></span>
                   <strong>{step.action}</strong>
                   {step.target ? <code title={step.target}>{step.target}</code> : null}
-                  {duration ? <time>{duration}</time> : null}
-                  <span className="cursor-native-tool__state">
-                    {step.status === 'running' ? <><i />运行中</> : step.status === 'failed' ? '失败' : '完成'}
+                  <span className="cursor-native-tool__meta">
+                    {duration ? <time>{duration}</time> : null}
+                    <span className="cursor-native-tool__state">
+                      {step.status === 'running' ? <><i />运行中</> : step.status === 'failed' ? '失败' : '完成'}
+                    </span>
+                    {hasDetails ? <svg viewBox="0 0 16 16" aria-hidden="true"><path d={stepOpen ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'} fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg> : null}
                   </span>
-                  {hasDetails ? <svg viewBox="0 0 16 16" aria-hidden="true"><path d={stepOpen ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'} fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg> : null}
                 </button>
                 {stepOpen && hasDetails ? <StepDetails step={step} /> : null}
               </article>
