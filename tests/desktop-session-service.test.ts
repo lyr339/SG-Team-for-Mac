@@ -380,6 +380,68 @@ describe('desktop Cursor session enrichment', () => {
     }
   })
 
+  it('never lets transcript fallback replace an existing native persisted process', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const repository = new SqliteChannelMessageRepository(
+      join(mkdtempSync(join(tmpdir(), 'shiguang-transcript-quality-')), 'channel.sqlite3')
+    )
+    repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
+    repository.beginScope('run-a', 1)
+    const message = repository.enqueueOutbound('1', '问题', 1_000, undefined, false, 'run-a')
+    repository.markOutboundDelivered([message.id], 1_100)
+    const reply = repository.recordReply({ channelId: '1', content: '回答', outboundId: message.id }, 1_500)
+    repository.attachReplyProcess({
+      replyId: reply.id, turn: `cursor:native:virtual:outbox:${message.id}`,
+      blocks: [{ kind: 'tool', id: 'native-rich', toolName: 'read_file', toolKind: 'read', status: 'done', output: '完整原生输出' }]
+    })
+    const relay = new ChannelMessageRelay(repository)
+    relay.resetScope('run-a', 1)
+    const transcriptTelemetry = {
+      ...telemetry(),
+      composers: [{
+        ...telemetry().composers[0]!,
+        lastAssistantProcess: {
+          observedAt: 2_000,
+          blocks: [{ kind: 'tool' as const, id: 'transcript-poor', toolName: 'check_messages', toolKind: 'mcp' as const, status: 'done' as const }]
+        }
+      }]
+    }
+    const service = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(active), { readWorkspace: () => transcriptTelemetry }, relay,
+      { inspectComposerRuntime: async () => ({}) }
+    )
+    try {
+      ;(service as unknown as {
+        liveCursorProcess: Map<string, unknown>
+      }).liveCursorProcess.set('1', {
+        source: 'transcript',
+        view: {
+          turn: 'transcript:poor',
+          blocks: transcriptTelemetry.composers[0]!.lastAssistantProcess!.blocks,
+          startedAt: 2_000,
+          updatedAt: 2_000
+        },
+        fingerprint: 'transcript-poor', generating: false, updatedAt: 2_000,
+        blockFirstSeen: new Map()
+      })
+      expect(service.getSnapshot().liveProcess?.['1']).toBeUndefined()
+      service.refreshTelemetry()
+      await vi.waitFor(() => expect((service as unknown as {
+        runtimeInspectedComposerIds: Set<string>
+      }).runtimeInspectedComposerIds.has('composer-alpha-123')).toBe(true))
+      service.refreshTelemetry()
+      expect(repository.listRepliesSince(0)[0]?.processBlocks).toMatchObject([{ id: 'native-rich', output: '完整原生输出' }])
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
   it('retains a completed native process until persistence or a newer user turn takes ownership', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000_000)
@@ -473,6 +535,9 @@ describe('desktop Cursor session enrichment', () => {
   })
 
   it('does not finalize a native process when an active runtime inspect omits process payload', () => {
+    vi.useFakeTimers()
+    const base = Date.now()
+    vi.setSystemTime(base)
     const service = new DesktopSessionService(
       new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')), { readWorkspace: () => telemetry() }
     )
@@ -480,7 +545,6 @@ describe('desktop Cursor session enrichment', () => {
       updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
     }).updateLiveCursorProcess.bind(service)
     try {
-      const base = Date.now()
       update('1', {
         composerId: 'composer-alpha-123', state: 'active', detail: 'observer', observedAt: base,
         isGenerating: true,
@@ -494,13 +558,21 @@ describe('desktop Cursor session enrichment', () => {
         composerId: 'composer-alpha-123', state: 'active', detail: 'inspect', observedAt: base + 100,
         isGenerating: true
       })).toBe(false)
+      vi.setSystemTime(base + 9_100)
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'inspect still active', observedAt: base + 9_100,
+        isGenerating: true
+      })
       expect(service.getSnapshot().liveProcess?.['1']?.blocks[0]).toMatchObject({ id: 'work', status: 'running' })
     } finally {
       service.dispose()
+      vi.useRealTimers()
     }
   })
 
   it('persists two virtual replies from one never-ending native Cursor turn by outbound identity', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(5_000)
     const active = teamSnapshot('composer-alpha-123')
     active.runs = [{
       id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
@@ -518,6 +590,13 @@ describe('desktop Cursor session enrichment', () => {
     const secondMessage = repository.enqueueOutbound('1', '第二问', 2_000, undefined, false, 'run-a')
     repository.markOutboundDelivered([secondMessage.id], 2_100)
     repository.recordReply({ channelId: '1', content: '第二答', outboundId: secondMessage.id }, 2_500)
+    const thirdMessage = repository.enqueueOutbound('1', '长过程', 3_000, undefined, false, 'run-a')
+    repository.markOutboundDelivered([thirdMessage.id], 3_100)
+    repository.recordReply({ channelId: '1', content: '长过程完成', outboundId: thirdMessage.id }, 3_900)
+    const bulk = Array.from({ length: 600 }, (_, index) => ({
+      kind: 'thinking' as const, id: `bulk-${index}`, text: `步骤 ${index}`, status: 'done' as const,
+      startedAt: 3_200 + index
+    }))
     const relay = new ChannelMessageRelay(repository)
     relay.resetScope('run-a', 1)
     const attachProcess = vi.spyOn(relay, 'attachProcessToReply')
@@ -529,40 +608,117 @@ describe('desktop Cursor session enrichment', () => {
     }).updateLiveCursorProcess.bind(service)
     try {
       update('1', {
-        composerId: 'composer-alpha-123', state: 'active', detail: 'observer', observedAt: 2_600,
+        composerId: 'composer-alpha-123', state: 'active', detail: 'observer', observedAt: 4_000,
         isGenerating: true,
         process: {
           turnId: 'same-native-turn-for-entire-session',
           items: [
             { kind: 'thinking', id: 'work-1', text: '处理第一问', status: 'done', startedAt: 1_200 },
-            { kind: 'thinking', id: 'work-2', text: '处理第二问', status: 'done', startedAt: 2_200 }
+            { kind: 'thinking', id: 'work-2', text: '处理第二问', status: 'done', startedAt: 2_200 },
+            ...bulk
           ],
           generatingBubbleCount: 1
         }
       })
       const replies = service.getSnapshot().conversations['1']!.filter((entry) => entry.role === 'assistant')
-      expect(replies.map((entry) => ({ replyTo: entry.replyToEntryId, blocks: entry.processBlocks?.map((block) => block.id) }))).toEqual([
+      expect(replies.slice(0, 2).map((entry) => ({ replyTo: entry.replyToEntryId, blocks: entry.processBlocks?.map((block) => block.id) }))).toEqual([
         { replyTo: `outbox:${firstMessage.id}`, blocks: ['work-1'] },
         { replyTo: `outbox:${secondMessage.id}`, blocks: ['work-2'] }
       ])
-      expect(repository.listRepliesSince(0).map((reply) => reply.processBlocks?.map((block) => block.id))).toEqual([
-        ['work-1'], ['work-2']
-      ])
+      expect(replies[2]?.replyToEntryId).toBe(`outbox:${thirdMessage.id}`)
+      expect(replies[2]?.processBlocks).toHaveLength(600)
+      const persisted = repository.listRepliesSince(0)
+      expect(persisted[0]?.processBlocks?.map((block) => block.id)).toEqual(['work-1'])
+      expect(persisted[1]?.processBlocks?.map((block) => block.id)).toEqual(['work-2'])
+      expect(persisted[2]?.processBlocks).toHaveLength(600)
+      const internals = service as unknown as {
+        liveCursorProcess: Map<string, { view: { blocks: unknown[] } }>
+        committedProcessBlockIds: Map<string, Set<string>>
+      }
+      expect(internals.liveCursorProcess.get('1')?.view.blocks).toHaveLength(0)
+      expect(internals.committedProcessBlockIds.get('1')?.size).toBe(602)
       const persistedWrites = attachProcess.mock.calls.length
       service.getSnapshot()
       expect(attachProcess).toHaveBeenCalledTimes(persistedWrites)
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'observer window', observedAt: 4_100,
+        isGenerating: true,
+        process: {
+          turnId: 'same-native-turn-for-entire-session',
+          items: bulk.slice(-256),
+          generatingBubbleCount: 1
+        }
+      })
+      expect(internals.liveCursorProcess.get('1')?.view.blocks).toHaveLength(0)
+      expect(internals.committedProcessBlockIds.get('1')?.size).toBe(256)
       update('1', {
         composerId: 'composer-alpha-123', state: 'unknown', detail: 'ended', observedAt: 2_700,
         isGenerating: false
       })
       expect(service.getSnapshot().conversations['1']!
         .filter((entry) => entry.role === 'assistant')
-        .map((entry) => entry.processBlocks?.map((block) => block.id))).toEqual([
-        ['work-1'], ['work-2']
-      ])
+        .map((entry) => entry.processBlocks?.length)).toEqual([1, 1, 600])
     } finally {
       service.dispose()
       repository.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps an embedded native archive until its delayed reply can consume it', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2_000)
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const repository = new SqliteChannelMessageRepository(
+      join(mkdtempSync(join(tmpdir(), 'shiguang-archive-retry-')), 'channel.sqlite3')
+    )
+    repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
+    repository.beginScope('run-a', 1)
+    const message = repository.enqueueOutbound('1', '延迟回复', 1_000, undefined, false, 'run-a')
+    repository.markOutboundDelivered([message.id], 1_100)
+    const relay = new ChannelMessageRelay(repository)
+    relay.resetScope('run-a', 1)
+    const service = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
+    )
+    const internals = service as unknown as {
+      updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+      liveCursorProcess: Map<string, unknown>
+      nativeProcessArchive: Map<string, unknown[]>
+    }
+    try {
+      internals.updateLiveCursorProcess('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'working', observedAt: 1_300,
+        isGenerating: true,
+        process: {
+          turnId: 'native-delayed',
+          items: [{ kind: 'thinking', id: 'delayed-work', text: '等待落库', status: 'running', startedAt: 1_200 }],
+          generatingBubbleCount: 1
+        }
+      })
+      internals.updateLiveCursorProcess('1', {
+        composerId: 'composer-alpha-123', state: 'unknown', detail: 'ended', observedAt: 1_400,
+        isGenerating: false
+      })
+      internals.liveCursorProcess.delete('1')
+      service.getSnapshot()
+      expect(internals.nativeProcessArchive.get('1')).toHaveLength(1)
+
+      repository.recordReply({ channelId: '1', content: '迟到的完整回复', outboundId: 'legacy-wrong-id' }, 1_500)
+      relay.pollReplies()
+      const reply = service.getSnapshot().conversations['1']?.find((entry) => entry.role === 'assistant')
+      expect(reply?.processBlocks?.map((block) => block.id)).toEqual(['delayed-work'])
+      expect(repository.listRepliesSince(0)[0]?.outboundId).toBe(message.id)
+      expect(internals.nativeProcessArchive.has('1')).toBe(false)
+    } finally {
+      service.dispose()
+      repository.close()
+      vi.useRealTimers()
     }
   })
 

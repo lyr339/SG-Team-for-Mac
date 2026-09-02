@@ -69,6 +69,8 @@ export interface ChannelPresence {
   deliveredCount: number
   keepaliveRound: number
   pendingReplySyncSince?: number
+  /** 当前等待 record_reply 的真实出站消息 ID。 */
+  pendingOutboundId?: string
   pendingGroupChat: boolean
   pendingGroupId?: string
   /**

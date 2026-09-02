@@ -269,16 +269,19 @@ describe('SqliteChannelMessageRepository', () => {
       const gated = repository.touchPresence('1', {
         connectionPhase: 'processing',
         pendingReplySyncSince: 500,
+        pendingOutboundId: 'outbound-1',
         turnCount: 3
       }, 200)
       expect(gated).toMatchObject({
         waiting: true,
         connectionPhase: 'processing',
         turnCount: 3,
-        pendingReplySyncSince: 500
+        pendingReplySyncSince: 500,
+        pendingOutboundId: 'outbound-1'
       })
-      const cleared = repository.touchPresence('1', { pendingReplySyncSince: null }, 300)
+      const cleared = repository.touchPresence('1', { pendingReplySyncSince: null, pendingOutboundId: null }, 300)
       expect(cleared.pendingReplySyncSince).toBeUndefined()
+      expect(cleared.pendingOutboundId).toBeUndefined()
       expect(cleared.turnCount).toBe(3)
       expect(repository.getPresence('1')?.updatedAt).toBe(300)
       expect(repository.listPresence().map((presence) => presence.channelId)).toEqual(['1'])

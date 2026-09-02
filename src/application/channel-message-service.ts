@@ -86,6 +86,7 @@ export class ChannelMessageService {
     if (!inlineReply && pendingSince !== undefined && this.isSilentGateOrigin(channelId)) {
       this.repository.touchPresence(channelId, {
         pendingReplySyncSince: null,
+        pendingOutboundId: null,
         pendingGroupChat: false,
         pendingGroupId: null
       })
@@ -107,6 +108,7 @@ export class ChannelMessageService {
       // 宽限超时：自动放行，避免死锁（对齐插件 reply_sync_timeout_release）
       this.repository.touchPresence(channelId, {
         pendingReplySyncSince: null,
+        pendingOutboundId: null,
         pendingGroupChat: false,
         pendingGroupId: null
       })
@@ -123,7 +125,8 @@ export class ChannelMessageService {
         const silentDelivery = head.silent === true || isInternalCollaborationNotificationText(head.text)
         const deliveredIds = pending.slice(0, mergedCount).map((message) => message.id)
         const remainingQueue = pending.length - mergedCount
-        this.repository.markOutboundDelivered(deliveredIds)
+        const deliveredAt = Date.now()
+        this.repository.markOutboundDelivered(deliveredIds, deliveredAt)
         deliveredCount += 1
         keepaliveRound = 0
         // 只有用户可见消息需要 record_reply 守门。内部协作通知走 team_* 回执，
@@ -133,7 +136,8 @@ export class ChannelMessageService {
           connectionPhase: 'processing',
           deliveredCount,
           keepaliveRound,
-          pendingReplySyncSince: silentDelivery ? null : Date.now(),
+          pendingReplySyncSince: silentDelivery ? null : deliveredAt,
+          pendingOutboundId: silentDelivery ? null : head.id,
           pendingGroupChat: false,
           pendingGroupId: null
         })
@@ -190,7 +194,8 @@ export class ChannelMessageService {
     // 启动回执、team_* 收件箱处理、keepalive 误回复等后台同步会保留落库/消费语义，但不污染会话页。
     const visible = presence?.pendingReplySyncSince !== undefined
     const outboundId = visible
-      ? this.repository.latestDeliveredOutbound(input.channelId, { visibleOnly: true })?.id
+      ? presence?.pendingOutboundId
+        ?? this.repository.latestDeliveredOutbound(input.channelId, { visibleOnly: true })?.id
       : undefined
     const reply = this.repository.recordReply({ ...input, content, visible, outboundId })
     this.repository.touchPresence(input.channelId, {
@@ -198,6 +203,7 @@ export class ChannelMessageService {
       waiting: false,
       connectionPhase: 'processing',
       pendingReplySyncSince: null,
+      pendingOutboundId: null,
       pendingGroupChat: false,
       pendingGroupId: null,
       turnCount: presence?.turnCount

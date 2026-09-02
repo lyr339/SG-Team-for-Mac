@@ -102,6 +102,7 @@ function presenceOf(row: SqliteRow): ChannelPresence {
     pendingReplySyncSince: row.pending_reply_sync_since === null
       ? undefined
       : numberOf(row.pending_reply_sync_since),
+    pendingOutboundId: optionalString(row.pending_outbound_id),
     pendingGroupChat: numberOf(row.pending_group_chat) === 1,
     pendingGroupId: optionalString(row.pending_group_id),
     runtimeActiveAt: row.runtime_active_at === null || row.runtime_active_at === undefined
@@ -132,6 +133,7 @@ export interface PresencePatch {
   keepaliveRound?: number
   /** 传入 number 设置守门，传入 null 清除守门；不传保持不变。 */
   pendingReplySyncSince?: number | null
+  pendingOutboundId?: string | null
   pendingGroupChat?: boolean
   pendingGroupId?: string | null
 }
@@ -364,11 +366,12 @@ export class SqliteChannelMessageRepository {
       `).run(now, boundary)
       const presence = this.database.prepare(`
         UPDATE channel_presence
-        SET pending_reply_sync_since = NULL,
+        SET pending_reply_sync_since = NULL, pending_outbound_id = NULL,
             pending_group_chat = 0,
             pending_group_id = NULL,
             updated_at = ?
-        WHERE pending_reply_sync_since IS NOT NULL AND pending_reply_sync_since < ?
+        WHERE (pending_reply_sync_since IS NOT NULL AND pending_reply_sync_since < ?)
+           OR pending_outbound_id IS NOT NULL
       `).run(now, boundary)
       this.database.exec('COMMIT')
       return {
@@ -403,9 +406,10 @@ export class SqliteChannelMessageRepository {
       `).run(now, normalizedRunId, boundary)
       const presence = this.database.prepare(`
         UPDATE channel_presence
-        SET pending_reply_sync_since = NULL, pending_group_chat = 0,
+        SET pending_reply_sync_since = NULL, pending_outbound_id = NULL, pending_group_chat = 0,
             pending_group_id = NULL, updated_at = ?
-        WHERE pending_reply_sync_since IS NOT NULL AND pending_reply_sync_since < ?
+        WHERE (pending_reply_sync_since IS NOT NULL AND pending_reply_sync_since < ?)
+           OR pending_outbound_id IS NOT NULL
       `).run(now, boundary)
       // 上一轮残留的终止相位（cursor_stopped/tool_aborted）必须随作用域切换清除：
       // presence 行不按 run 分表，死亡证据跨轮存活会把新 run 的签到 Agent
@@ -569,14 +573,17 @@ export class SqliteChannelMessageRepository {
     turn: string
     blocks: ProcessBlock[]
     truncatedItemCount?: number
+    outboundId?: string
   }): boolean {
     if (!input.replyId.trim() || !input.turn.trim() || !input.blocks.length) return false
     const result = this.database.prepare(`
       UPDATE channel_replies
-      SET process_blocks_json = ?, process_turn = ?, process_truncated_count = ?
+      SET process_blocks_json = ?, process_turn = ?, process_truncated_count = ?,
+          outbound_id = COALESCE(?, outbound_id)
       WHERE id = ?
     `).run(
-      JSON.stringify(input.blocks), input.turn.trim(), input.truncatedItemCount ?? null, input.replyId.trim()
+      JSON.stringify(input.blocks), input.turn.trim(), input.truncatedItemCount ?? null,
+      input.outboundId?.trim() || null, input.replyId.trim()
     )
     return numberOf(result.changes) === 1
   }
@@ -607,6 +614,11 @@ export class SqliteChannelMessageRepository {
         : patch.pendingReplySyncSince === null
           ? undefined
           : patch.pendingReplySyncSince,
+      pendingOutboundId: patch.pendingOutboundId === undefined
+        ? current?.pendingOutboundId
+        : patch.pendingOutboundId === null
+          ? undefined
+          : patch.pendingOutboundId.trim() || undefined,
       pendingGroupChat: patch.pendingGroupChat ?? current?.pendingGroupChat ?? false,
       pendingGroupId: patch.pendingGroupId === undefined
         ? current?.pendingGroupId
@@ -618,9 +630,9 @@ export class SqliteChannelMessageRepository {
     this.database.prepare(`
       INSERT INTO channel_presence (
         channel_id, last_seen_at, waiting, connection_phase, turn_count,
-        delivered_count, keepalive_round, pending_reply_sync_since,
+        delivered_count, keepalive_round, pending_reply_sync_since, pending_outbound_id,
         pending_group_chat, pending_group_id, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (channel_id) DO UPDATE SET
         last_seen_at = excluded.last_seen_at,
         waiting = excluded.waiting,
@@ -629,6 +641,7 @@ export class SqliteChannelMessageRepository {
         delivered_count = excluded.delivered_count,
         keepalive_round = excluded.keepalive_round,
         pending_reply_sync_since = excluded.pending_reply_sync_since,
+        pending_outbound_id = excluded.pending_outbound_id,
         pending_group_chat = excluded.pending_group_chat,
         pending_group_id = excluded.pending_group_id,
         updated_at = excluded.updated_at
@@ -641,6 +654,7 @@ export class SqliteChannelMessageRepository {
       next.deliveredCount,
       next.keepaliveRound,
       next.pendingReplySyncSince ?? null,
+      next.pendingOutboundId ?? null,
       next.pendingGroupChat ? 1 : 0,
       next.pendingGroupId ?? null,
       next.updatedAt
@@ -848,6 +862,7 @@ export class SqliteChannelMessageRepository {
         delivered_count INTEGER NOT NULL,
         keepalive_round INTEGER NOT NULL,
         pending_reply_sync_since INTEGER,
+        pending_outbound_id TEXT,
         pending_group_chat INTEGER NOT NULL,
         pending_group_id TEXT,
         updated_at INTEGER NOT NULL
@@ -874,6 +889,7 @@ export class SqliteChannelMessageRepository {
     this.migrateOutboundRunColumn()
     this.migrateReplyVisibleColumn()
     this.migratePresenceRuntimeActiveColumn()
+    this.migratePresencePendingOutboundColumn()
     this.migrateReplyProcessColumns()
     this.migrateReplyOutboundColumn()
     // 旧版过程事件来自 Agent 主动上报，与 Cursor 原生过程重复且失真；迁移时彻底清除。
@@ -908,6 +924,11 @@ export class SqliteChannelMessageRepository {
   /** 老库增量迁移：presence 补 CDP 运行时活动时间列（长任务续命证据）。 */
   private migratePresenceRuntimeActiveColumn(): void {
     this.migrateColumn('channel_presence', 'runtime_active_at', 'INTEGER')
+  }
+
+  /** 老库增量迁移：回复同步守门同时保存真实出站消息身份。 */
+  private migratePresencePendingOutboundColumn(): void {
+    this.migrateColumn('channel_presence', 'pending_outbound_id', 'TEXT')
   }
 
   /** 老库增量迁移：回复补 Cursor 原生过程持久化列（重启后恢复过程卡）。 */

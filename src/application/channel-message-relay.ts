@@ -138,6 +138,7 @@ export class ChannelMessageRelay {
       waiting: false,
       connectionPhase: 'cursor_stopped',
       pendingReplySyncSince: null,
+      pendingOutboundId: null,
       pendingGroupChat: false,
       pendingGroupId: null
     }, observedAt)
@@ -393,14 +394,16 @@ export class ChannelMessageRelay {
    * SQLite 持久化（重启后 entryFromReply 水合恢复过程卡）+ 内存会话缓存同步。
    * 返回 true 仅表示 SQLite 写入成功；行不存在时 false，由调用方按快照重试。
    */
-  attachProcessToReply(entryId: string, process: LiveProcessState): boolean {
+  attachProcessToReply(entryId: string, process: LiveProcessState, replyToEntryId?: string): boolean {
     const replyId = entryId.startsWith('reply:') ? entryId.slice('reply:'.length) : ''
+    const outboundId = replyToEntryId?.startsWith('outbox:') ? replyToEntryId.slice('outbox:'.length) : undefined
     if (!replyId || !process.blocks.length) return false
     const persisted = this.repository.attachReplyProcess({
       replyId,
       turn: process.turn,
       blocks: process.blocks,
-      truncatedItemCount: process.truncatedItemCount
+      truncatedItemCount: process.truncatedItemCount,
+      outboundId
     })
     if (!persisted) return false
     for (const [channelId, entries] of this.conversations) {
@@ -411,7 +414,8 @@ export class ChannelMessageRelay {
         ...next[index]!,
         processBlocks: process.blocks,
         processTruncatedItemCount: process.truncatedItemCount,
-        turn: process.turn
+        turn: process.turn,
+        replyToEntryId: replyToEntryId ?? next[index]!.replyToEntryId
       }
       this.conversations.set(channelId, next)
       return true

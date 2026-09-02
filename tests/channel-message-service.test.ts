@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { ChannelMessageService } from '../src/application/channel-message-service'
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
@@ -34,6 +35,7 @@ describe('ChannelMessageService', () => {
         deliveredCount: 1
       })
       expect(presence?.pendingReplySyncSince).toBeDefined()
+      expect(presence?.pendingOutboundId).toBe(result.type === 'delivered' ? result.message.id : undefined)
     } finally {
       repository.close()
     }
@@ -140,8 +142,34 @@ describe('ChannelMessageService', () => {
 
       service.recordReply({ channelId: '1', content: '完整回复' })
       expect(repository.getPresence('1')?.pendingReplySyncSince).toBeUndefined()
+      expect(repository.getPresence('1')?.pendingOutboundId).toBeUndefined()
       const after = await service.checkMessages({ channelId: '1' })
       expect(after).toMatchObject({ type: 'delivered' })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('keeps reply identity on the delivered queue head when a legacy duplicate is compacted', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.beginScope('run-1', 1)
+      const head = repository.enqueueOutbound('1', '同一问题', 1_000, undefined, false, 'run-1')
+      const raw = new DatabaseSync(repository.path)
+      try {
+        raw.prepare(`
+          INSERT INTO channel_outbox (
+            id, run_id, channel_id, seq, text, attachments_json, created_at,
+            delivered_at, retired_at, silent
+          ) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, NULL, 0)
+        `).run('legacy-duplicate', 'run-1', '1', 2, '同一问题', 1_100)
+      } finally {
+        raw.close()
+      }
+      const delivered = await service.checkMessages({ channelId: '1' })
+      expect(delivered.type === 'delivered' && delivered.message.id).toBe(head.id)
+      const reply = service.recordReply({ channelId: '1', content: '对应队首回复' })
+      expect(reply.outboundId).toBe(head.id)
     } finally {
       repository.close()
     }

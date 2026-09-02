@@ -39,6 +39,23 @@ function processRevisionKey(value: unknown): string {
   return (hash >>> 0).toString(36)
 }
 
+function processBlocksFingerprint(blocks: ProcessBlock[]): string {
+  return JSON.stringify(blocks.map((block) => [
+    block.id,
+    block.status,
+    block.kind === 'thinking'
+      ? `${processRevisionKey(block.text)}:${block.durationMs ?? ''}`
+      : block.kind === 'message'
+        ? processRevisionKey(block.text)
+        : block.kind === 'tool'
+          ? processRevisionKey({
+              summary: block.summary, output: block.output, error: block.error,
+              input: block.input, todos: block.todos
+            })
+          : processRevisionKey(block)
+  ]))
+}
+
 export interface DesktopSessionTransport {
   getSnapshot(): DesktopSnapshot
   sendMessage(input: SendMessageInput): SendMessageAccepted
@@ -299,11 +316,14 @@ export class DesktopSessionService implements DesktopSessionBridge {
   /** Cursor 内存模型直接推送的当前回合过程流。 */
   private readonly liveCursorProcess = new Map<string, {
     view: LiveProcessState
+    source: 'native' | 'transcript'
     fingerprint: string
     generating: boolean
     updatedAt: number
     blockFirstSeen: Map<string, number>
   }>()
+  /** 已写入回复的原生 block；只保留 Observer 当前 256 项窗口内的交集。 */
+  private readonly committedProcessBlockIds = new Map<string, Set<string>>()
   /** Cursor 原生完成回合 FIFO；支持回复落库延迟与连续多回合，不覆盖前一轮。 */
   private readonly nativeProcessArchive = new Map<string, LiveProcessState[]>()
   /** 已贴到回复的过程缓存；基础会话仓库不保存 CDP 过程，后续快照需稳定重放。 */
@@ -364,6 +384,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
         this.finalizedLiveResponseIds.clear()
         this.runtimeInspectedComposerIds.clear()
         this.liveCursorProcess.clear()
+        this.committedProcessBlockIds.clear()
         this.nativeProcessArchive.clear()
         this.nativeProcessByReplyId.clear()
         this.pendingNativeProcessByComposer.clear()
@@ -376,6 +397,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
         this.finalizedLiveResponseIds.clear()
         this.runtimeInspectedComposerIds.clear()
         this.liveCursorProcess.clear()
+        this.committedProcessBlockIds.clear()
         this.nativeProcessArchive.clear()
         this.nativeProcessByReplyId.clear()
         this.pendingNativeProcessByComposer.clear()
@@ -467,6 +489,10 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const liveProcess: Record<string, LiveProcessState> = {}
     for (const [channelId, state] of this.liveCursorProcess) {
       const entries = snapshot.conversations[channelId] ?? []
+      const latestAssistant = [...entries].reverse().find((entry) => (
+        entry.role === 'assistant' && entry.status === 'complete'
+      ))
+      const transcriptSuperseded = state.source === 'transcript' && Boolean(latestAssistant?.processBlocks?.length)
       const persisted = entries.some((entry) => (
         entry.role === 'assistant'
         && entry.status === 'complete'
@@ -477,7 +503,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
         entry.role === 'user' && entry.timestamp > state.view.updatedAt
       ))
       const streamingStale = state.generating && now - state.updatedAt > 8_000
-      if (persisted || supersededByUser || streamingStale) {
+      if (transcriptSuperseded || persisted || supersededByUser || streamingStale) {
         this.liveCursorProcess.delete(channelId)
         continue
       }
@@ -507,7 +533,6 @@ export class DesktopSessionService implements DesktopSessionBridge {
       // 内嵌持续会话由 outbound 投递边界分段并直接写入对应回复；原生 turn
       // 从启动到结束通常不变，继续走旧归档会把全程过程塞进最后一条回复。
       if (this.embeddedRelay?.handlesChannel(channelId)) {
-        this.nativeProcessArchive.delete(channelId)
         continue
       }
       const entries = conversations[channelId]
@@ -592,6 +617,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
     }
     // 队列已清空的通道仍需把已绑定过程稳定贴回基础快照。
     for (const [channelId, entries] of Object.entries(conversations)) {
+      if (this.embeddedRelay?.handlesChannel(channelId)) continue
       if (this.nativeProcessArchive.has(channelId) || !entries.length) continue
       let nextEntries = entries
       for (let index = 0; index < entries.length; index += 1) {
@@ -619,58 +645,125 @@ export class DesktopSessionService implements DesktopSessionBridge {
    * replyToEntryId 是 record_reply 写入的 outbound 主键，时间窗只给旧数据迁移兜底。
    */
   private attachEmbeddedVirtualProcessSegments(snapshot: DesktopSnapshot): DesktopSnapshot {
-    if (!this.embeddedRelay || !this.liveCursorProcess.size) return snapshot
+    if (!this.embeddedRelay || (!this.liveCursorProcess.size && !this.nativeProcessArchive.size)) return snapshot
     let conversations = snapshot.conversations
     let changed = false
-    for (const [channelId, state] of this.liveCursorProcess) {
+    const channelIds = new Set([...this.liveCursorProcess.keys(), ...this.nativeProcessArchive.keys()])
+    for (const channelId of channelIds) {
       if (!this.embeddedRelay.handlesChannel(channelId)) continue
       const entries = conversations[channelId]
-      if (!entries?.length) continue
-      const segments = partitionVirtualProcessBlocks(entries, state.view.blocks, state.view.startedAt)
+      if (!entries?.length) {
+        const archive = this.nativeProcessArchive.get(channelId)?.filter((item) => (
+          item.updatedAt >= Date.now() - 30 * 60_000
+        ))
+        if (archive?.length) this.nativeProcessArchive.set(channelId, archive)
+        else this.nativeProcessArchive.delete(channelId)
+        continue
+      }
+      const live = this.liveCursorProcess.get(channelId)
+      const visibleUserIds = new Set(entries.filter((entry) => entry.role === 'user').map((entry) => entry.id))
+      const sources = new Map<string, LiveProcessState>()
+      for (const archived of this.nativeProcessArchive.get(channelId) ?? []) sources.set(archived.turn, archived)
+      if (live?.source === 'native') sources.set(live.view.turn, live.view)
+      if (!sources.size) continue
       let nextEntries = entries
-      for (const segment of segments) {
-        if (!segment.anchorEntryId || !segment.blocks.length) continue
-        const anchorIndex = entries.findIndex((entry) => entry.id === segment.anchorEntryId)
-        if (anchorIndex < 0) continue
-        let nextUserIndex = entries.findIndex((entry, index) => index > anchorIndex && entry.role === 'user')
-        if (nextUserIndex < 0) nextUserIndex = entries.length
-        const explicitReplyIndex = entries.findIndex((entry, index) => (
-          index > anchorIndex
-          && index < nextUserIndex
-          && entry.role === 'assistant'
-          && entry.replyToEntryId === segment.anchorEntryId
-        ))
-        const replyIndex = explicitReplyIndex >= 0 ? explicitReplyIndex : entries.findIndex((entry, index) => (
-          index > anchorIndex
-          && index < nextUserIndex
-          && entry.role === 'assistant'
-          && !entry.replyToEntryId
-        ))
-        if (replyIndex < 0) continue
-        const reply = nextEntries[replyIndex]!
-        const turn = `${state.view.turn}:virtual:${segment.anchorEntryId}`
-        const sameBlocks = reply.processBlocks?.length === segment.blocks.length
-          && reply.processBlocks.every((block, index) => block === segment.blocks[index])
-        if (sameBlocks && reply.turn === turn) continue
-        const virtualProcess: LiveProcessState = {
-          turn,
-          blocks: segment.blocks,
-          startedAt: segment.startedAt,
-          updatedAt: state.view.updatedAt
+      const completedIds = new Set<string>()
+      const consumedArchiveTurns = new Set<string>()
+      for (const source of sources.values()) {
+        const segments = partitionVirtualProcessBlocks(entries, source.blocks, source.startedAt)
+        let archiveReady = true
+        for (const segment of segments) {
+          if (!segment.anchorEntryId || !segment.blocks.length) continue
+          const anchorIndex = entries.findIndex((entry) => entry.id === segment.anchorEntryId)
+          if (anchorIndex < 0) {
+            archiveReady = false
+            continue
+          }
+          let nextUserIndex = entries.findIndex((entry, index) => index > anchorIndex && entry.role === 'user')
+          if (nextUserIndex < 0) nextUserIndex = entries.length
+          const explicitReplyIndex = entries.findIndex((entry, index) => (
+            index > anchorIndex && index < nextUserIndex
+            && entry.role === 'assistant' && entry.replyToEntryId === segment.anchorEntryId
+          ))
+          const replyIndex = explicitReplyIndex >= 0 ? explicitReplyIndex : entries.findIndex((entry, index) => (
+            index > anchorIndex && index < nextUserIndex
+            && entry.role === 'assistant'
+            && (!entry.replyToEntryId || !visibleUserIds.has(entry.replyToEntryId))
+          ))
+          if (replyIndex < 0) {
+            archiveReady = false
+            continue
+          }
+          const reply = nextEntries[replyIndex]!
+          const turn = `${source.turn}:virtual:${segment.anchorEntryId}`
+          const compatibleExisting = Boolean(reply.processBlocks?.length
+            && reply.turn === turn
+            && !reply.turn.startsWith('transcript:'))
+          const blockById = new Map((compatibleExisting ? reply.processBlocks : [])?.map((block) => [block.id, block]))
+          const blockOrder = (compatibleExisting ? reply.processBlocks : [])?.map((block) => block.id) ?? []
+          for (const block of segment.blocks) {
+            if (!blockById.has(block.id)) blockOrder.push(block.id)
+            blockById.set(block.id, block)
+          }
+          const persistedBlocks = blockOrder.flatMap((id) => {
+            const block = blockById.get(id)
+            return block ? [block] : []
+          })
+          const sameBlocks = reply.processBlocks?.length === persistedBlocks.length
+            && reply.processBlocks.every((block, index) => block === persistedBlocks[index])
+          if (!sameBlocks || reply.turn !== turn || reply.replyToEntryId !== segment.anchorEntryId) {
+            const virtualProcess: LiveProcessState = {
+              turn, blocks: persistedBlocks, startedAt: segment.startedAt, updatedAt: source.updatedAt
+            }
+            if (reply.id.startsWith('reply:')
+              && !this.embeddedRelay.attachProcessToReply(reply.id, virtualProcess, segment.anchorEntryId)) {
+              archiveReady = false
+              continue
+            }
+            if (nextEntries === entries) nextEntries = [...entries]
+            nextEntries[replyIndex] = {
+              ...reply,
+              processBlocks: persistedBlocks,
+              processTruncatedItemCount: undefined,
+              turn,
+              replyToEntryId: segment.anchorEntryId
+            }
+          }
+          for (const block of segment.blocks) {
+            if (block.status !== 'running') completedIds.add(block.id)
+          }
         }
-        if (reply.id.startsWith('reply:') && !this.embeddedRelay.attachProcessToReply(reply.id, virtualProcess)) continue
-        if (nextEntries === entries) nextEntries = [...entries]
-        nextEntries[replyIndex] = {
-          ...reply,
-          processBlocks: segment.blocks,
-          processTruncatedItemCount: undefined,
-          turn
+        if (archiveReady && this.nativeProcessArchive.get(channelId)?.some((item) => item.turn === source.turn)) {
+          consumedArchiveTurns.add(source.turn)
         }
       }
       if (nextEntries !== entries) {
         if (!changed) conversations = { ...conversations }
         conversations[channelId] = nextEntries
         changed = true
+      }
+      if (completedIds.size && live?.source === 'native') {
+        const committed = this.committedProcessBlockIds.get(channelId) ?? new Set<string>()
+        for (const id of completedIds) committed.add(id)
+        this.committedProcessBlockIds.set(channelId, committed)
+        const remaining = live.view.blocks.filter((block) => !completedIds.has(block.id))
+        for (const id of completedIds) live.blockFirstSeen.delete(id)
+        if (remaining.length !== live.view.blocks.length) {
+          this.liveCursorProcess.set(channelId, {
+            ...live,
+            view: { ...live.view, blocks: remaining },
+            fingerprint: processBlocksFingerprint(remaining)
+          })
+        }
+      }
+      const archive = this.nativeProcessArchive.get(channelId)
+      if (archive?.length) {
+        const expireBefore = Date.now() - 30 * 60_000
+        const remaining = archive.filter((item) => (
+          !consumedArchiveTurns.has(item.turn) && item.updatedAt >= expireBefore
+        ))
+        if (remaining.length) this.nativeProcessArchive.set(channelId, remaining)
+        else this.nativeProcessArchive.delete(channelId)
       }
     }
     return changed ? { ...snapshot, conversations } : snapshot
@@ -781,10 +874,12 @@ export class DesktopSessionService implements DesktopSessionBridge {
         if (!binding.composerId) continue
         if (this.runtimeSource && !this.runtimeInspectedComposerIds.has(binding.composerId)) continue
         const response = composerByIdForReplies.get(binding.composerId)?.lastAssistantResponse
+        const responsePersisted = Boolean(response
+          && this.embeddedRelay?.hasPersistedAssistantText(binding.channelId, response.text))
         // 已落库的回复不再走转录兜底：record_reply 成功后转录每次写盘（含
         // Agent 的 check_messages 轮询）都会更新 mtime，过去会以新 id 反复回灌
         // 同一回复，且 finalize 时间窗对新 mtime 恒不命中 → 「正在归档…」永挂。
-        if (response && !this.embeddedRelay?.hasPersistedAssistantText(binding.channelId, response.text)) {
+        if (response && !responsePersisted) {
           transcriptResponseChanged = this.updateLiveAgentResponse(binding.channelId, {
             composerId: binding.composerId,
             state: 'unknown',
@@ -796,7 +891,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
           }) || transcriptResponseChanged
         }
         const process = composerByIdForReplies.get(binding.composerId)?.lastAssistantProcess
-        if (process?.blocks.length && !this.liveCursorProcess.has(binding.channelId)) {
+        if (process?.blocks.length && !responsePersisted && !this.liveCursorProcess.has(binding.channelId)) {
           const turn = `transcript:${binding.composerId}:${Math.round(process.observedAt)}`
           const view: LiveProcessState = {
             turn,
@@ -806,6 +901,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
           }
           this.liveCursorProcess.set(binding.channelId, {
             view,
+            source: 'transcript',
             fingerprint: JSON.stringify(process.blocks.map((block) => [block.id, block.status])),
             generating: false,
             updatedAt: process.observedAt,
@@ -1077,7 +1173,13 @@ export class DesktopSessionService implements DesktopSessionBridge {
     if (!stream) {
       // runtime inspect 设计上只携带状态/正文，不携带 observer 的过程载荷；
       // isGenerating=true 时缺 process 只表示“本帧没有过程”，必须保留上一帧。
-      if (evidence.isGenerating === true) return false
+      if (evidence.isGenerating === true) {
+        const previous = this.liveCursorProcess.get(channelId)
+        if (previous?.generating && previous.updatedAt < evidence.observedAt) {
+          this.liveCursorProcess.set(channelId, { ...previous, updatedAt: evidence.observedAt })
+        }
+        return false
+      }
       // 明确生成已结束（最后一帧可能只携带终止标记）：把仍为 running 的观测块
       // 原子收尾后归档，避免历史过程永久显示“进行中”。
       const previous = this.liveCursorProcess.get(channelId)
@@ -1105,7 +1207,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const now = evidence.observedAt
     const previous = this.liveCursorProcess.get(channelId)
     const generating = evidence.isGenerating === true || stream.generatingBubbleCount > 0
-    const streamItems = stream.items.map((item) => item.id === 'cursor:plan'
+    const rawStreamItems = stream.items.map((item) => item.id === 'cursor:plan'
       ? { ...item, id: `cursor:plan:${processRevisionKey({
           summary: item.kind === 'tool' ? item.summary : '',
           input: item.kind === 'tool' ? item.input : undefined
@@ -1114,15 +1216,26 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const todoId = stream.todos?.length
       ? `cursor:todos:${processRevisionKey(stream.todos)}`
       : undefined
-    const incomingIds = new Set(streamItems.map((item) => item.id))
-    if (todoId) incomingIds.add(todoId)
-    const overlapsPrevious = previous?.view.blocks.some((block) => incomingIds.has(block.id)) === true
+    const rawIncomingIds = new Set(rawStreamItems.map((item) => item.id))
+    if (todoId) rawIncomingIds.add(todoId)
+    const overlapsPrevious = previous?.view.blocks.some((block) => rawIncomingIds.has(block.id)) === true
     const nativeTurn = stream.turnId ? `cursor:${stream.turnId}` : undefined
     // 优先使用 Cursor 原生 user bubble id。仅旧版事件缺 turnId 时回退重叠判断。
     const sameTurn = previous !== undefined && (nativeTurn
       ? previous.view.turn === nativeTurn
       : previous.generating || overlapsPrevious)
     const turn = nativeTurn ?? (sameTurn && previous ? previous.view.turn : `cursor:${now}`)
+    if (!sameTurn) this.committedProcessBlockIds.delete(channelId)
+    const committed = this.committedProcessBlockIds.get(channelId)
+    if (committed) {
+      for (const id of committed) if (!rawIncomingIds.has(id)) committed.delete(id)
+      if (!committed.size) this.committedProcessBlockIds.delete(channelId)
+    }
+    const activeCommitted = this.committedProcessBlockIds.get(channelId)
+    const streamItems = activeCommitted
+      ? rawStreamItems.filter((item) => !activeCommitted.has(item.id))
+      : rawStreamItems
+    const includeTodos = Boolean(todoId && !activeCommitted?.has(todoId))
     const blockFirstSeen = sameTurn && previous
       ? previous.blockFirstSeen
       : new Map<string, number>()
@@ -1187,7 +1300,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
         timingEstimated: true
       })
     }
-    if (stream.todos?.length) {
+    if (stream.todos?.length && includeTodos) {
       const id = todoId!
       const startedAt = seen(id)
       upsert({
@@ -1208,17 +1321,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
       return block ? [block] : []
     })
     if (!blocks.length) return false
-    const fingerprint = JSON.stringify(blocks.map((block) => [
-      block.id,
-      block.status,
-      block.kind === 'thinking'
-        ? `${block.text.length}:${block.durationMs ?? ''}`
-        : block.kind === 'message'
-          ? block.text.length
-        : block.kind === 'tool'
-          ? `${block.summary ?? ''}:${block.output ?? ''}:${block.error ?? ''}:${JSON.stringify(block.input ?? {})}:${JSON.stringify(block.todos ?? [])}`
-          : ''
-    ]))
+    const fingerprint = processBlocksFingerprint(blocks)
     if (previous?.fingerprint === fingerprint && sameTurn) {
       // 心跳续命：长工具执行（>8s 无新输出）期间提取内容不变，fingerprint 命中
       // 早退——但必须刷新 entry 时效戳，否则 mergeLiveCursorProcess 按 8s 时效
@@ -1237,6 +1340,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
         startedAt: sameTurn && previous ? previous.view.startedAt : now,
         updatedAt: now
       },
+      source: 'native',
       fingerprint,
       generating,
       updatedAt: now,
