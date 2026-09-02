@@ -381,6 +381,7 @@ export class ChannelMessageRelay {
       timestamp: reply.createdAt,
       status: 'complete',
       source: 'cursor',
+      replyToEntryId: reply.outboundId ? `outbox:${reply.outboundId}` : undefined,
       processBlocks: reply.processBlocks,
       processTruncatedItemCount: reply.processTruncatedItemCount,
       turn: reply.processTurn

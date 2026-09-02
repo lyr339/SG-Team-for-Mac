@@ -174,6 +174,8 @@ export interface ConversationEntry {
   source: 'desktop' | 'cursor' | 'recovery'
   /** 出站消息被 check_messages 实际取走的时间；缺失表示仍在队列中。 */
   deliveredAt?: number
+  /** 助手回复对应的用户时间线条目（outbox:<id>）。 */
+  replyToEntryId?: string
   commandId?: string
   streamId?: string
   /** Agent 回合标识；用于把 Cursor transcript 过程贴回对应回复。 */

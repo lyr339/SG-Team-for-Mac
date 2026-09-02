@@ -172,15 +172,19 @@ export function SessionWorkspace({
   const liveResponseKey = visibleLiveResponse
     ? `${visibleLiveResponse.id}:${visibleLiveResponse.status}:${visibleLiveResponse.text.length}:${visibleLiveResponse.updatedAt}`
     : ''
-  const pendingVisibleUser = visibleEntries.at(-1)?.role === 'user'
+  const pendingVisibleUser = visibleEntries.at(-1)?.role === 'user' ? visibleEntries.at(-1) : undefined
   const virtualTurns = useMemo(
     () => projectVirtualProcessTurns(visibleEntries, liveProcess, visibleLiveResponse, !queuedTransport),
     [liveProcess, queuedTransport, visibleEntries, visibleLiveResponse]
   )
+  const latestUserHasTurn = pendingVisibleUser
+    ? virtualTurns.some((turn) => turn.id === pendingVisibleUser.id)
+    : false
   const showRunningPlaceholder = pendingVisibleUser
     && session.online
     && session.status === 'running'
-    && virtualTurns.length === 0
+    && (pendingVisibleUser.deliveredAt !== undefined || !queuedTransport)
+    && !latestUserHasTurn
   const timelineItems = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = visibleEntries.map((entry, index) => ({
       type: 'entry',

@@ -17,6 +17,7 @@ import type {
   SendMessageInput
 } from '../shared/desktop-api'
 import { conversationTextIdentity, type ProcessBlock } from '../domain/conversation-entry'
+import { partitionVirtualProcessBlocks } from '../domain/virtual-process-turn'
 import type { CursorComposerTelemetrySource } from '../infrastructure/cursor/cursor-composer-telemetry'
 import type { ChannelMessageRelay } from './channel-message-relay'
 import type { CursorComposerRuntimeEvidence, CursorProcessStream } from '../infrastructure/cursor/cursor-cdp-session-creator'
@@ -27,6 +28,16 @@ const DEFAULT_TELEMETRY_POLL_MS = 250
 /** 空闲档（无活跃 TeamRun）：遥测降频到 10s——没有活跃 Agent 时没有可刷新的内容。 */
 const IDLE_TELEMETRY_POLL_MS = 10_000
 const COMPOSER_SCOPE_CLOCK_SKEW_MS = 5_000
+
+function processRevisionKey(value: unknown): string {
+  const text = JSON.stringify(value)
+  let hash = 2_166_136_261
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 16_777_619)
+  }
+  return (hash >>> 0).toString(36)
+}
 
 export interface DesktopSessionTransport {
   getSnapshot(): DesktopSnapshot
@@ -431,7 +442,8 @@ export class DesktopSessionService implements DesktopSessionBridge {
         return view
       })
     }
-    const withNativeHistory = this.attachNativeProcessArchive(snapshot)
+    const withVirtualHistory = this.attachEmbeddedVirtualProcessSegments(snapshot)
+    const withNativeHistory = this.attachNativeProcessArchive(withVirtualHistory)
     const liveAgentResponses = this.liveAgentResponseSnapshot(withNativeHistory)
     const withResponses = liveAgentResponses ? { ...withNativeHistory, liveAgentResponses } : withNativeHistory
     return this.applyLiveCursorProcess(withResponses)
@@ -492,6 +504,12 @@ export class DesktopSessionService implements DesktopSessionBridge {
     let conversations = snapshot.conversations
     let changed = false
     for (const [channelId, queue] of this.nativeProcessArchive) {
+      // 内嵌持续会话由 outbound 投递边界分段并直接写入对应回复；原生 turn
+      // 从启动到结束通常不变，继续走旧归档会把全程过程塞进最后一条回复。
+      if (this.embeddedRelay?.handlesChannel(channelId)) {
+        this.nativeProcessArchive.delete(channelId)
+        continue
+      }
       const entries = conversations[channelId]
       if (!entries?.length) continue
       const consumedTurns = new Set<string>()
@@ -585,6 +603,68 @@ export class DesktopSessionService implements DesktopSessionBridge {
           ...entry!, processBlocks: cached.process.blocks,
           processTruncatedItemCount: cached.process.truncatedItemCount,
           turn: cached.process.turn
+        }
+      }
+      if (nextEntries !== entries) {
+        if (!changed) conversations = { ...conversations }
+        conversations[channelId] = nextEntries
+        changed = true
+      }
+    }
+    return changed ? { ...snapshot, conversations } : snapshot
+  }
+
+  /**
+   * 内嵌通道的真实虚拟回合归档：同一分段函数同时服务实时 UI 与 SQLite，
+   * replyToEntryId 是 record_reply 写入的 outbound 主键，时间窗只给旧数据迁移兜底。
+   */
+  private attachEmbeddedVirtualProcessSegments(snapshot: DesktopSnapshot): DesktopSnapshot {
+    if (!this.embeddedRelay || !this.liveCursorProcess.size) return snapshot
+    let conversations = snapshot.conversations
+    let changed = false
+    for (const [channelId, state] of this.liveCursorProcess) {
+      if (!this.embeddedRelay.handlesChannel(channelId)) continue
+      const entries = conversations[channelId]
+      if (!entries?.length) continue
+      const segments = partitionVirtualProcessBlocks(entries, state.view.blocks, state.view.startedAt)
+      let nextEntries = entries
+      for (const segment of segments) {
+        if (!segment.anchorEntryId || !segment.blocks.length) continue
+        const anchorIndex = entries.findIndex((entry) => entry.id === segment.anchorEntryId)
+        if (anchorIndex < 0) continue
+        let nextUserIndex = entries.findIndex((entry, index) => index > anchorIndex && entry.role === 'user')
+        if (nextUserIndex < 0) nextUserIndex = entries.length
+        const explicitReplyIndex = entries.findIndex((entry, index) => (
+          index > anchorIndex
+          && index < nextUserIndex
+          && entry.role === 'assistant'
+          && entry.replyToEntryId === segment.anchorEntryId
+        ))
+        const replyIndex = explicitReplyIndex >= 0 ? explicitReplyIndex : entries.findIndex((entry, index) => (
+          index > anchorIndex
+          && index < nextUserIndex
+          && entry.role === 'assistant'
+          && !entry.replyToEntryId
+        ))
+        if (replyIndex < 0) continue
+        const reply = nextEntries[replyIndex]!
+        const turn = `${state.view.turn}:virtual:${segment.anchorEntryId}`
+        const sameBlocks = reply.processBlocks?.length === segment.blocks.length
+          && reply.processBlocks.every((block, index) => block === segment.blocks[index])
+        if (sameBlocks && reply.turn === turn) continue
+        const virtualProcess: LiveProcessState = {
+          turn,
+          blocks: segment.blocks,
+          startedAt: segment.startedAt,
+          updatedAt: state.view.updatedAt
+        }
+        if (reply.id.startsWith('reply:') && !this.embeddedRelay.attachProcessToReply(reply.id, virtualProcess)) continue
+        if (nextEntries === entries) nextEntries = [...entries]
+        nextEntries[replyIndex] = {
+          ...reply,
+          processBlocks: segment.blocks,
+          processTruncatedItemCount: undefined,
+          turn
         }
       }
       if (nextEntries !== entries) {
@@ -995,7 +1075,10 @@ export class DesktopSessionService implements DesktopSessionBridge {
     }
     const stream = evidence.process
     if (!stream) {
-      // 生成已结束（最后一帧可能只携带终止标记）：把仍为 running 的观测块
+      // runtime inspect 设计上只携带状态/正文，不携带 observer 的过程载荷；
+      // isGenerating=true 时缺 process 只表示“本帧没有过程”，必须保留上一帧。
+      if (evidence.isGenerating === true) return false
+      // 明确生成已结束（最后一帧可能只携带终止标记）：把仍为 running 的观测块
       // 原子收尾后归档，避免历史过程永久显示“进行中”。
       const previous = this.liveCursorProcess.get(channelId)
       if (previous?.generating) {
@@ -1022,8 +1105,17 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const now = evidence.observedAt
     const previous = this.liveCursorProcess.get(channelId)
     const generating = evidence.isGenerating === true || stream.generatingBubbleCount > 0
-    const incomingIds = new Set(stream.items.map((item) => item.id))
-    if (stream.todos?.length) incomingIds.add('cursor:todos')
+    const streamItems = stream.items.map((item) => item.id === 'cursor:plan'
+      ? { ...item, id: `cursor:plan:${processRevisionKey({
+          summary: item.kind === 'tool' ? item.summary : '',
+          input: item.kind === 'tool' ? item.input : undefined
+        })}` }
+      : item)
+    const todoId = stream.todos?.length
+      ? `cursor:todos:${processRevisionKey(stream.todos)}`
+      : undefined
+    const incomingIds = new Set(streamItems.map((item) => item.id))
+    if (todoId) incomingIds.add(todoId)
     const overlapsPrevious = previous?.view.blocks.some((block) => incomingIds.has(block.id)) === true
     const nativeTurn = stream.turnId ? `cursor:${stream.turnId}` : undefined
     // 优先使用 Cursor 原生 user bubble id。仅旧版事件缺 turnId 时回退重叠判断。
@@ -1038,6 +1130,9 @@ export class DesktopSessionService implements DesktopSessionBridge {
     const blockOrder: string[] = []
     if (sameTurn && previous) {
       for (const block of previous.view.blocks) {
+        // plan/todos 是当前 Composer 全局快照，不是追加日志；每帧先移除旧版本，
+        // 再按本帧内容写回，避免清空后残留或后续回合仍黏在第一次出现的位置。
+        if (block.id.startsWith('cursor:todos:') || block.id.startsWith('cursor:plan:')) continue
         blockById.set(block.id, block)
         blockOrder.push(block.id)
       }
@@ -1056,7 +1151,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
       blockFirstSeen.set(id, at)
       return at
     }
-    for (const item of stream.items) {
+    for (const item of streamItems) {
       const startedAt = seen(item.id, item.startedAt)
       if (item.kind === 'thinking') {
         const status = !generating && item.status === 'running' ? 'done' : item.status
@@ -1093,7 +1188,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
       })
     }
     if (stream.todos?.length) {
-      const id = 'cursor:todos'
+      const id = todoId!
       const startedAt = seen(id)
       upsert({
         kind: 'tool',

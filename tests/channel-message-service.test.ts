@@ -157,11 +157,12 @@ describe('ChannelMessageService', () => {
       })
 
       repository.enqueueOutbound('1', '用户真实问题', 1_000)
-      await service.checkMessages({ channelId: '1' })
+      const delivered = await service.checkMessages({ channelId: '1' })
       service.recordReply({ channelId: '1', content: '这是给用户的回复' })
       expect(repository.listUnconsumedReplies().at(-1)).toMatchObject({
         content: '这是给用户的回复',
-        visible: undefined
+        visible: undefined,
+        outboundId: delivered.type === 'delivered' ? delivered.message.id : undefined
       })
     } finally {
       repository.close()

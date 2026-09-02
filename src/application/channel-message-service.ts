@@ -189,7 +189,10 @@ export class ChannelMessageService {
     // 只有确实由 check_messages 投递过“用户可见消息”的回合，record_reply 才进入用户时间线。
     // 启动回执、team_* 收件箱处理、keepalive 误回复等后台同步会保留落库/消费语义，但不污染会话页。
     const visible = presence?.pendingReplySyncSince !== undefined
-    const reply = this.repository.recordReply({ ...input, content, visible })
+    const outboundId = visible
+      ? this.repository.latestDeliveredOutbound(input.channelId, { visibleOnly: true })?.id
+      : undefined
+    const reply = this.repository.recordReply({ ...input, content, visible, outboundId })
     this.repository.touchPresence(input.channelId, {
       lastSeenAt: Date.now(),
       waiting: false,

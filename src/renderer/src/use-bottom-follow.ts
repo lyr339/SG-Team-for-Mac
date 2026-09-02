@@ -15,7 +15,7 @@ export function useBottomFollow(resetKey: string, contentKey: string) {
   const contentRef = useRef<HTMLDivElement>(null)
   const following = useRef(true)
   const pointerActive = useRef(false)
-  const userScrollIntent = useRef(false)
+  const downwardIntent = useRef(false)
   const lastScrollTop = useRef(0)
   const [awayFromBottom, setAwayFromBottom] = useState(false)
 
@@ -32,7 +32,7 @@ export function useBottomFollow(resetKey: string, contentKey: string) {
 
   useLayoutEffect(() => {
     following.current = true
-    userScrollIntent.current = false
+    downwardIntent.current = false
     setAwayFromBottom(false)
     scrollToBottom()
   }, [resetKey, scrollToBottom])
@@ -52,28 +52,35 @@ export function useBottomFollow(resetKey: string, contentKey: string) {
   const onScroll = useCallback((event: UIEvent<HTMLDivElement>): void => {
     const element = event.currentTarget
     const nearBottom = isNearScrollBottom(element)
-    if (nearBottom) {
-      following.current = true
-      userScrollIntent.current = false
-      setAwayFromBottom(false)
-    } else if (userScrollIntent.current || pointerActive.current) {
+    const movedUp = element.scrollTop < lastScrollTop.current - 0.5
+    const movedDown = element.scrollTop > lastScrollTop.current + 0.5
+    if (pointerActive.current && movedUp) {
       following.current = false
+      downwardIntent.current = false
+      setAwayFromBottom(true)
+    } else if (nearBottom && (following.current || downwardIntent.current || (pointerActive.current && movedDown))) {
+      following.current = true
+      downwardIntent.current = false
+      setAwayFromBottom(false)
+    } else if (!following.current) {
       setAwayFromBottom(true)
     }
     lastScrollTop.current = element.scrollTop
   }, [])
 
   const onWheel = useCallback((event: WheelEvent<HTMLDivElement>): void => {
-    userScrollIntent.current = true
     if (event.deltaY < 0) {
       following.current = false
+      downwardIntent.current = false
       setAwayFromBottom(true)
+    } else if (event.deltaY > 0) {
+      downwardIntent.current = true
     }
   }, [])
 
-  const onPointerDown = useCallback((_event: PointerEvent<HTMLDivElement>): void => {
+  const onPointerDown = useCallback((event: PointerEvent<HTMLDivElement>): void => {
     pointerActive.current = true
-    userScrollIntent.current = true
+    lastScrollTop.current = event.currentTarget.scrollTop
   }, [])
 
   const onPointerUp = useCallback((_event: PointerEvent<HTMLDivElement>): void => {
@@ -81,22 +88,26 @@ export function useBottomFollow(resetKey: string, contentKey: string) {
   }, [])
 
   const onKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>): void => {
-    if (!['ArrowUp', 'PageUp', 'Home'].includes(event.key)) return
-    userScrollIntent.current = true
-    following.current = false
-    setAwayFromBottom(true)
+    if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) {
+      downwardIntent.current = false
+      following.current = false
+      setAwayFromBottom(true)
+    } else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) {
+      downwardIntent.current = true
+    }
   }, [])
 
   const jumpToBottom = useCallback((): void => {
     following.current = true
-    userScrollIntent.current = false
+    downwardIntent.current = false
     setAwayFromBottom(false)
     scrollToBottom()
   }, [scrollToBottom])
 
   const beginFollowing = useCallback((): void => {
     following.current = true
-    userScrollIntent.current = false
+    downwardIntent.current = false
+    setAwayFromBottom(false)
   }, [])
 
   return {

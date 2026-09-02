@@ -472,6 +472,100 @@ describe('desktop Cursor session enrichment', () => {
     }
   })
 
+  it('does not finalize a native process when an active runtime inspect omits process payload', () => {
+    const service = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')), { readWorkspace: () => telemetry() }
+    )
+    const update = (service as unknown as {
+      updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+    }).updateLiveCursorProcess.bind(service)
+    try {
+      const base = Date.now()
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'observer', observedAt: base,
+        isGenerating: true,
+        process: {
+          turnId: 'one-native-turn',
+          items: [{ kind: 'thinking', id: 'work', text: '仍在执行', status: 'running', startedAt: base - 100 }],
+          generatingBubbleCount: 1
+        }
+      })
+      expect(update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'inspect', observedAt: base + 100,
+        isGenerating: true
+      })).toBe(false)
+      expect(service.getSnapshot().liveProcess?.['1']?.blocks[0]).toMatchObject({ id: 'work', status: 'running' })
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('persists two virtual replies from one never-ending native Cursor turn by outbound identity', () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const repository = new SqliteChannelMessageRepository(
+      join(mkdtempSync(join(tmpdir(), 'shiguang-virtual-turn-')), 'channel.sqlite3')
+    )
+    repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
+    repository.beginScope('run-a', 1)
+    const firstMessage = repository.enqueueOutbound('1', '第一问', 1_000, undefined, false, 'run-a')
+    repository.markOutboundDelivered([firstMessage.id], 1_100)
+    repository.recordReply({ channelId: '1', content: '第一答', outboundId: firstMessage.id }, 1_500)
+    const secondMessage = repository.enqueueOutbound('1', '第二问', 2_000, undefined, false, 'run-a')
+    repository.markOutboundDelivered([secondMessage.id], 2_100)
+    repository.recordReply({ channelId: '1', content: '第二答', outboundId: secondMessage.id }, 2_500)
+    const relay = new ChannelMessageRelay(repository)
+    relay.resetScope('run-a', 1)
+    const attachProcess = vi.spyOn(relay, 'attachProcessToReply')
+    const service = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
+    )
+    const update = (service as unknown as {
+      updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+    }).updateLiveCursorProcess.bind(service)
+    try {
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'observer', observedAt: 2_600,
+        isGenerating: true,
+        process: {
+          turnId: 'same-native-turn-for-entire-session',
+          items: [
+            { kind: 'thinking', id: 'work-1', text: '处理第一问', status: 'done', startedAt: 1_200 },
+            { kind: 'thinking', id: 'work-2', text: '处理第二问', status: 'done', startedAt: 2_200 }
+          ],
+          generatingBubbleCount: 1
+        }
+      })
+      const replies = service.getSnapshot().conversations['1']!.filter((entry) => entry.role === 'assistant')
+      expect(replies.map((entry) => ({ replyTo: entry.replyToEntryId, blocks: entry.processBlocks?.map((block) => block.id) }))).toEqual([
+        { replyTo: `outbox:${firstMessage.id}`, blocks: ['work-1'] },
+        { replyTo: `outbox:${secondMessage.id}`, blocks: ['work-2'] }
+      ])
+      expect(repository.listRepliesSince(0).map((reply) => reply.processBlocks?.map((block) => block.id))).toEqual([
+        ['work-1'], ['work-2']
+      ])
+      const persistedWrites = attachProcess.mock.calls.length
+      service.getSnapshot()
+      expect(attachProcess).toHaveBeenCalledTimes(persistedWrites)
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'unknown', detail: 'ended', observedAt: 2_700,
+        isGenerating: false
+      })
+      expect(service.getSnapshot().conversations['1']!
+        .filter((entry) => entry.role === 'assistant')
+        .map((entry) => entry.processBlocks?.map((block) => block.id))).toEqual([
+        ['work-1'], ['work-2']
+      ])
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
   it('projects direct Cursor-native process events in their original order without an inspect fallback', async () => {
     const active = teamSnapshot('composer-alpha-123')
     active.runs = [{
@@ -506,23 +600,36 @@ describe('desktop Cursor session enrichment', () => {
       service.refreshTelemetry()
       const blocks = service.getSnapshot().liveProcess?.['1']?.blocks ?? []
       expect(blocks.map((block) => block.id)).toEqual([
-        'th-native', 'msg-native', 'read-native', 'th-native-2', 'browser-native', 'cursor:todos'
+        'th-native', 'msg-native', 'read-native', 'th-native-2', 'browser-native', expect.stringMatching(/^cursor:todos:/)
       ])
       expect(blocks[0]).toMatchObject({ kind: 'thinking', durationMs: 2_400 })
       expect(blocks[1]).toMatchObject({ kind: 'message', text: '准备读取目标文件。' })
       expect(blocks[2]).toMatchObject({ kind: 'tool', output: 'const a = 1' })
       expect(blocks[4]).toMatchObject({ kind: 'tool', toolKind: 'browser', status: 'running' })
       expect(blocks[5]).toMatchObject({ kind: 'tool', toolKind: 'todo', todos: [{ content: '完成验证', status: 'in_progress' }] })
+      const firstTodoId = blocks[5]!.id
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: Date.now() + 3, isGenerating: true,
+        process: {
+          items: [], todos: [{ content: '完成验证', status: 'completed' }], generatingBubbleCount: 1
+        }
+      })
+      const revisedTodos = service.getSnapshot().liveProcess?.['1']?.blocks
+        .filter((block) => block.id.startsWith('cursor:todos:')) ?? []
+      expect(revisedTodos).toHaveLength(1)
+      expect(revisedTodos[0]).toMatchObject({ todos: [{ content: '完成验证', status: 'completed' }] })
+      expect(revisedTodos[0]?.id).not.toBe(firstTodoId)
       // 页面 binding 只推最近窗口；主进程必须按稳定 id 增量合并，长任务早期步骤不丢。
       service.notifyNativeProcessSnapshot({
         composerId: 'composer-alpha-123', observedAt: Date.now() + 5, isGenerating: true,
         process: {
           items: [{ kind: 'tool', id: 'write-native', toolName: 'write_file', toolKind: 'write', summary: '/p/b.ts', status: 'running' }],
+          todos: [{ content: '完成验证', status: 'completed' }],
           generatingBubbleCount: 1
         }
       })
       expect(service.getSnapshot().liveProcess?.['1']?.blocks.map((block) => block.id)).toEqual([
-        'th-native', 'msg-native', 'read-native', 'th-native-2', 'browser-native', 'cursor:todos', 'write-native'
+        'th-native', 'msg-native', 'read-native', 'th-native-2', 'browser-native', 'write-native', expect.stringMatching(/^cursor:todos:/)
       ])
       service.notifyNativeProcessSnapshot({
         composerId: 'composer-alpha-123', observedAt: Date.now() + 10, isGenerating: false

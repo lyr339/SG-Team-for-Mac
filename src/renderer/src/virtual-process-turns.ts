@@ -1,4 +1,5 @@
 import type { ConversationEntry, ProcessBlock } from '../../domain/conversation-entry'
+import { partitionVirtualProcessBlocks } from '../../domain/virtual-process-turn'
 import type { LiveAgentResponseState, LiveProcessState } from '../../shared/desktop-api'
 
 export interface VirtualProcessTurn {
@@ -13,10 +14,6 @@ interface TurnGroup {
   anchorId?: string
   blocks: ProcessBlock[]
   response?: LiveAgentResponseState
-}
-
-function blockTime(block: ProcessBlock, process: LiveProcessState): number {
-  return block.startedAt ?? process.startedAt
 }
 
 function anchorForTime(entries: ConversationEntry[], timestamp: number, immediateDelivery: boolean): string | undefined {
@@ -57,9 +54,10 @@ export function projectVirtualProcessTurns(
     return created
   }
 
-  for (const block of process?.blocks ?? []) {
-    if (persistedBlockIds.has(block.id)) continue
-    groupFor(anchorForTime(entries, blockTime(block, process!), immediateDelivery)).blocks.push(block)
+  for (const segment of partitionVirtualProcessBlocks(
+    entries, process?.blocks ?? [], process?.startedAt ?? 0, immediateDelivery, persistedBlockIds
+  )) {
+    groupFor(segment.anchorEntryId).blocks.push(...segment.blocks)
   }
   if (response) groupFor(anchorForTime(entries, response.startedAt, immediateDelivery)).response = response
 
@@ -75,7 +73,10 @@ export function projectVirtualProcessTurns(
     const anchorIndex = entryIndex.get(group.anchorId) ?? entries.length - 1
     let nextUserIndex = entries.findIndex((entry, index) => index > anchorIndex && entry.role === 'user')
     if (nextUserIndex < 0) nextUserIndex = entries.length
-    const replyIndex = entries.findIndex((entry, index) => (
+    const explicitReplyIndex = entries.findIndex((entry, index) => (
+      index > anchorIndex && index < nextUserIndex && entry.replyToEntryId === group.anchorId
+    ))
+    const replyIndex = explicitReplyIndex >= 0 ? explicitReplyIndex : entries.findIndex((entry, index) => (
       index > anchorIndex && index < nextUserIndex && entry.role === 'assistant'
     ))
     return replyIndex >= 0 ? replyIndex - 0.5 : anchorIndex + 0.5

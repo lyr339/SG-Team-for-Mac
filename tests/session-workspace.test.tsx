@@ -249,6 +249,22 @@ describe('SessionWorkspace', () => {
     expect(html.indexOf('请继续实现')).toBeLessThan(html.indexOf('过程记录'))
   })
 
+  it('旧过程存在时仍为已投递的新消息显示独立处理占位', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing', deliveryMode: 'queued' },
+      entries: [entry({
+        id: 'u-new', role: 'user', source: 'desktop', text: '新消息',
+        timestamp: 2_000, deliveredAt: 2_100
+      })],
+      liveProcess: {
+        turn: 'native-long-turn', startedAt: 1_000, updatedAt: 2_150,
+        blocks: [{ kind: 'thinking', id: 'old', text: '旧过程', status: 'done', startedAt: 1_500 }]
+      }
+    })
+    expect(html.indexOf('旧过程')).toBeLessThan(html.indexOf('新消息'))
+    expect(html.indexOf('新消息')).toBeLessThan(html.indexOf('正在处理'))
+  })
+
 
   it('Agent 待命时不显示过程占位', () => {
     const html = renderWorkspace()

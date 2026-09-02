@@ -82,6 +82,7 @@ function replyOf(row: SqliteRow): ChannelInboundReply {
     visible: visible ? undefined : false,
     createdAt: numberOf(row.created_at),
     consumedAt: row.consumed_at === null ? undefined : numberOf(row.consumed_at),
+    outboundId: optionalString(row.outbound_id),
     processBlocks: processBlocksOf(row.process_blocks_json),
     processTurn: optionalString(row.process_turn),
     processTruncatedItemCount: row.process_truncated_count === null || row.process_truncated_count === undefined
@@ -119,6 +120,7 @@ export interface RecordReplyInput {
   files?: string[]
   /** false 表示后台/内部同步，不进入用户可见时间线；缺省为 true。 */
   visible?: boolean
+  outboundId?: string
 }
 
 export interface PresencePatch {
@@ -283,13 +285,16 @@ export class SqliteChannelMessageRepository {
   }
 
   /** 读取通道最后一次已投递消息，用于恢复旧版本错误留下的 reply-sync 守门。 */
-  latestDeliveredOutbound(channelId: string): ChannelOutboundMessage | undefined {
+  latestDeliveredOutbound(channelId: string, options: { visibleOnly?: boolean } = {}): ChannelOutboundMessage | undefined {
+    const runId = this.currentScopeRunId()
     const row = this.database.prepare(`
       SELECT * FROM channel_outbox
-      WHERE channel_id = ? AND delivered_at IS NOT NULL
+      WHERE channel_id = ? AND delivered_at IS NOT NULL AND retired_at IS NULL
+        AND ${runId ? 'run_id = ?' : 'run_id IS NULL'}
+        ${options.visibleOnly ? 'AND silent = 0' : ''}
       ORDER BY delivered_at DESC, seq DESC
       LIMIT 1
-    `).get(String(channelId).trim()) as SqliteRow | undefined
+    `).get(String(channelId).trim(), ...(runId ? [runId] : [])) as SqliteRow | undefined
     return row ? outboundOf(row) : undefined
   }
 
@@ -481,11 +486,12 @@ export class SqliteChannelMessageRepository {
         taskId: input.taskId?.trim() || undefined,
         files,
         visible: visible ? undefined : false,
+        outboundId: input.outboundId?.trim() || undefined,
         createdAt: now
       }
       this.database.prepare(`
-        INSERT INTO channel_replies (id, channel_id, content, title, group_id, task_id, files_json, visible, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO channel_replies (id, channel_id, content, title, group_id, task_id, files_json, visible, outbound_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         reply.id,
         reply.channelId,
@@ -495,6 +501,7 @@ export class SqliteChannelMessageRepository {
         reply.taskId ?? null,
         JSON.stringify(reply.files),
         visible ? 1 : 0,
+        reply.outboundId ?? null,
         reply.createdAt
       )
       this.database.exec('COMMIT')
@@ -821,6 +828,7 @@ export class SqliteChannelMessageRepository {
         task_id TEXT,
         files_json TEXT NOT NULL,
         visible INTEGER NOT NULL DEFAULT 1,
+        outbound_id TEXT,
         created_at INTEGER NOT NULL,
         consumed_at INTEGER
       );
@@ -867,6 +875,7 @@ export class SqliteChannelMessageRepository {
     this.migrateReplyVisibleColumn()
     this.migratePresenceRuntimeActiveColumn()
     this.migrateReplyProcessColumns()
+    this.migrateReplyOutboundColumn()
     // 旧版过程事件来自 Agent 主动上报，与 Cursor 原生过程重复且失真；迁移时彻底清除。
     this.database.exec('DROP TABLE IF EXISTS channel_process_events')
   }
@@ -906,6 +915,11 @@ export class SqliteChannelMessageRepository {
     this.migrateColumn('channel_replies', 'process_blocks_json', 'TEXT')
     this.migrateColumn('channel_replies', 'process_turn', 'TEXT')
     this.migrateColumn('channel_replies', 'process_truncated_count', 'INTEGER')
+  }
+
+  /** 老库增量迁移：把可见回复稳定关联到触发它的出站消息。 */
+  private migrateReplyOutboundColumn(): void {
+    this.migrateColumn('channel_replies', 'outbound_id', 'TEXT')
   }
 
   private migrateColumn(table: string, column: string, definition = 'TEXT'): void {

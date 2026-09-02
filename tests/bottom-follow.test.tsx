@@ -32,10 +32,14 @@ describe('useBottomFollow', () => {
   let container: HTMLDivElement
   let root: Root
   let height = 1_000
+  let resize: (() => void) | undefined
 
   beforeEach(() => {
     ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    height = 1_000
+    resize = undefined
     vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { resize = callback }
       observe(): void {}
       disconnect(): void {}
     })
@@ -73,11 +77,33 @@ describe('useBottomFollow', () => {
     await act(async () => root.render(<StrictHarness contentKey="c" />))
     expect(element.scrollTop).toBe(420)
 
+    await act(async () => element.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true })))
     element.scrollTop = 900
     await act(async () => element.dispatchEvent(new Event('scroll', { bubbles: true })))
     expect(container.textContent).toContain('following')
     height = 1_300
     await act(async () => root.render(<StrictHarness contentKey="d" />))
     expect(element.scrollTop).toBe(1_300)
+  })
+
+  it('keeps a small upward scroll paused across ResizeObserver growth', async () => {
+    await act(async () => root.render(<StrictHarness contentKey="a" />))
+    const element = viewport()
+    await act(async () => root.render(<StrictHarness contentKey="b" />))
+    expect(element.scrollTop).toBe(1_000)
+
+    await act(async () => element.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true })))
+    element.scrollTop = 660 // 距底部仅 40px，仍应尊重明确的向上意图
+    await act(async () => element.dispatchEvent(new Event('scroll', { bubbles: true })))
+    expect(container.textContent).toContain('away')
+
+    height = 1_100
+    await act(async () => resize?.())
+    expect(element.scrollTop).toBe(660)
+
+    await act(async () => element.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true })))
+    element.scrollTop = 800
+    await act(async () => element.dispatchEvent(new Event('scroll', { bubbles: true })))
+    expect(container.textContent).toContain('following')
   })
 })

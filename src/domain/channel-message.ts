@@ -45,6 +45,8 @@ export interface ChannelInboundReply {
   visible?: boolean
   createdAt: number
   consumedAt?: number
+  /** 本回复对应的已投递用户消息；持续 Cursor turn 的虚拟回合主键。 */
+  outboundId?: string
   /** 主进程捕获的 Cursor 原生过程（持久绑定到该回复，重启后恢复过程卡）。 */
   processBlocks?: import('./conversation-entry').ProcessBlock[]
   processTurn?: string
