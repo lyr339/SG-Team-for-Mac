@@ -52,6 +52,9 @@ const common = {
   onLaunch: async () => teamControlSnapshot,
   onCreateNextRun: async () => ({ snapshot: teamControlSnapshot, restartRequired: false }),
   onLaunchAgentSessions: async () => ({ id: 'plan:test', state: 'done' as const, items: [], startedAt: 1, finishedAt: 2 }),
+  onCreateIndependentSessions: async () => ({ id: 'plan:independent', state: 'done' as const, items: [], startedAt: 1, finishedAt: 2 }),
+  onChooseIndependentWorkspace: async () => undefined,
+  onOpenSessions: () => {},
   cdpAutoHealEnabled: false,
   account
 }
@@ -100,5 +103,21 @@ describe('LobbyPage', () => {
     )
     expect(html).toContain('Cursor 账号管线')
     expect(html).not.toContain('选择一个 Cursor 工程')
+  })
+
+  it('独立会话页提供批量数量和逐会话模型配置', () => {
+    const html = renderToStaticMarkup(
+      <LobbyPage
+        {...common}
+        detectedWorkspace={{ id: 'wedge-demo', name: 'wedge-demo', path: '/workspace/wedge-demo', channelIds: [] }}
+        section="independent"
+        onSectionChange={() => {}}
+      />
+    )
+    expect(html).toContain('aria-label="独立会话配置"')
+    expect(html).toContain('批量创建常驻 Cursor 会话')
+    expect(html).toContain('会话数量')
+    expect(html).toContain('批量创建独立会话（3）')
+    expect(html).toContain('配置 CH-1 会话')
   })
 })

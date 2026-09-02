@@ -257,6 +257,10 @@ export function DesktopShell({
             key={activeModule === 'sessions' ? 'shell.sessions' : 'shell.context'}
             paneSpecs={activeModule === 'sessions' ? SESSION_SIDEBAR_SPECS : CONTEXT_SIDEBAR_SPECS}
             storageKey={activeModule === 'sessions' ? 'shell.sessions.v2' : 'shell.context'}
+            firstPaneCollapsible={activeModule === 'sessions' ? {
+              collapseLabel: '收起会话列表',
+              expandLabel: '展开会话列表'
+            } : undefined}
           >
             {sidebar}
             <main className="content-stage">{children}</main>

@@ -35,6 +35,8 @@ export interface AgentLaunchContextPort {
   bindingKeyForChannel(channelId: string): string | undefined
   /** 席位持久化的默认模型；本次 launch request 可覆盖。 */
   modelSelectionForChannel?(channelId: string): CursorModelSelection | undefined
+  /** 离线旧 Composer 重建前原子轮换绑定键；在线/在途时返回 undefined。 */
+  prepareComposerRelaunch?(channelId: string): string | undefined
 }
 
 export interface AgentLaunchSnapshotPort {
@@ -158,12 +160,20 @@ export class AgentSessionLauncher {
   private async launchOne(item: AgentLaunchItem, index: number, emit: () => void, markCreated: () => void): Promise<void> {
     if (index > 0 && this.staggerMs > 0) await this.sleep(index * this.staggerMs)
     const existing = this.sessionView(item.channelId)
-    if (existing?.waiting && existing.online) {
+    let bindingKey = this.context.bindingKeyForChannel(item.channelId)
+    if (isAgentOnDuty(existing) && !bindingKey) {
       item.stage = 'done'
-      item.composerId = existing.composerId
+      item.composerId = existing?.composerId
       item.message = '该通道已有待命会话'
       emit()
       return
+    }
+    if (!bindingKey && existing?.composerId) {
+      bindingKey = this.context.prepareComposerRelaunch?.(item.channelId)
+      if (!bindingKey) {
+        this.fail(item, '旧会话绑定仍在使用，已停止创建以避免重复 Composer', emit)
+        return
+      }
     }
 
     const previousComposerId = existing?.composerId
@@ -176,7 +186,6 @@ export class AgentSessionLauncher {
       return
     }
 
-    const bindingKey = this.context.bindingKeyForChannel(item.channelId)
     if (bindingKey) {
       prompt += `\n\n本次 Cursor 会话绑定标记：${cursorComposerBindingMarker({ bindingKey, channelId: item.channelId })}`
     }

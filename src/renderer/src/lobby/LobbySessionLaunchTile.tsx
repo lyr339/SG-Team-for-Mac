@@ -10,6 +10,7 @@ import { CursorModelConfigDialog } from './CursorModelConfigDialog'
 import { ToggleSwitch } from './ToggleSwitch'
 
 interface LobbySessionLaunchTileProps {
+  variant?: 'team' | 'independent'
   pendingChannels: string[]
   cursorModels: CursorModelOption[]
   selections: Record<string, CursorModelSelection>
@@ -27,6 +28,7 @@ interface LobbySessionLaunchTileProps {
 }
 
 export function LobbySessionLaunchTile({
+  variant = 'team',
   pendingChannels,
   cursorModels,
   selections,
@@ -70,7 +72,7 @@ export function LobbySessionLaunchTile({
   }, [guided])
 
   return (
-    <section className={`lobby-tile lobby-launch${guided ? ' is-guided' : ''}`} ref={sectionRef} aria-label="Agent 会话创建">
+    <section className={`lobby-tile lobby-launch${guided ? ' is-guided' : ''}`} ref={sectionRef} aria-label={variant === 'independent' ? '独立会话创建' : 'Agent 会话创建'}>
       {guided ? (
         <div className="lobby-launch__guide" role="status" aria-live="polite">
           <span><b>下一步</b><strong>确认模型后创建 {pendingChannels.length} 个 Cursor 会话</strong></span>
@@ -78,13 +80,15 @@ export function LobbySessionLaunchTile({
         </div>
       ) : null}
       <header className="lobby-tile__head">
-        <strong>Agent 会话</strong>
+        <strong>{variant === 'independent' ? '独立会话' : 'Agent 会话'}</strong>
         <span>{pendingChannels.length ? `${pendingChannels.length} 个通道未待命` : '全部待命'}</span>
       </header>
       <div className="lobby-launch__body">
-        <span className="lobby-launch__desc">{isPrelaunch
-          ? '为每个通道按下方独立模型配置并发创建全新会话，再验证进入待命。'
-          : '团队已启动但仍有成员未待命：一键补齐会话，或等待手动发起的会话进入待命后自动接管。'}</span>
+        <span className="lobby-launch__desc">{variant === 'independent'
+          ? '每个会话拥有独立通道、模型、消息队列和上下文；创建后通过 MCP 长轮询持续待命。'
+          : isPrelaunch
+            ? '为每个通道按下方独立模型配置并发创建全新会话，再验证进入待命。'
+            : '团队已启动但仍有成员未待命：一键补齐会话，或等待手动发起的会话进入待命后自动接管。'}</span>
         {pendingChannels.length ? (
           <div className="lobby-launch__models" aria-label="逐会话模型配置">
             {pendingChannels.map((channelId) => {
@@ -136,17 +140,17 @@ export function LobbySessionLaunchTile({
             disabled={busy}
             onChange={(enabled) => void onToggleAutoHeal(enabled)}
           >
-            <span title="开启后：检测到 Cursor 运行但未启用会话创建端口时，会先显示 10 秒可取消倒计时，再自动重启 Cursor、打开当前团队工作区并启用端口。">自动保持会话创建端口</span>
+            <span title={`开启后：检测到 Cursor 运行但未启用会话创建端口时，会先显示 10 秒可取消倒计时，再自动重启 Cursor、打开当前${variant === 'team' ? '团队' : ''}工作区并启用端口。`}>自动保持会话创建端口</span>
           </ToggleSwitch>
         ) : null}
         {cdpAutoHealEvent?.phase === 'countdown' ? (
           <div className="cdp-autoheal-countdown" role="alert">
-            <span>检测到 Cursor 未启用会话创建端口，{countdownLeft} 秒后将自动重启并打开当前团队工作区。</span>
+            <span>检测到 Cursor 未启用会话创建端口，{countdownLeft} 秒后将自动重启并打开当前{variant === 'team' ? '团队' : ''}工作区。</span>
             <button className="lobby-launch__secondary" onClick={onCancelCountdown}>取消本次自动重启</button>
           </div>
         ) : null}
         {cdpAutoHealEvent?.phase === 'restarting' ? (
-          <div className="cdp-autoheal-countdown is-working" role="status">正在优雅重启 Cursor、打开团队工作区并启用会话创建端口…</div>
+          <div className="cdp-autoheal-countdown is-working" role="status">正在优雅重启 Cursor、打开{variant === 'team' ? '团队' : ''}工作区并启用会话创建端口…</div>
         ) : null}
       </div>
       <div className="lobby-launch__footer">
@@ -155,7 +159,9 @@ export function LobbySessionLaunchTile({
           className="lobby-launch__button"
           disabled={busy || launching || pendingChannels.length === 0}
           onClick={onLaunch}
-        >{launching ? '创建中…' : `一键创建会话（${pendingChannels.length}）`}</button>
+        >{launching ? '创建中…' : variant === 'independent'
+            ? `${isPrelaunch ? '批量创建' : '补齐'}独立会话（${pendingChannels.length}）`
+            : `一键创建会话（${pendingChannels.length}）`}</button>
       </div>
       {editingChannel ? (
         <CursorModelConfigDialog

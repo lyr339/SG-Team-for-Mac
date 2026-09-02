@@ -717,6 +717,38 @@ describe('SqliteTeamControlRepository', () => {
     }
   })
 
+  it('rotates one offline Composer binding before a targeted relaunch', () => {
+    const repository = repositoryFixture()
+    try {
+      const team = bundle('relaunch', ['1'])
+      repository.upsertWorkspaceTeam(team)
+      repository.recordInstallation({
+        workspaceId: 'relaunch', runId: team.run.id, generation: 'generation123',
+        agents: [{
+          agentSessionId: 'relaunch:ch-1:generation123', workspaceId: 'relaunch', channelId: '1',
+          generation: 'generation123', runId: team.run.id, capabilities: ['coordination', 'planning']
+        }]
+      })
+      const binding = repository.loadTeamControl().bindings[0]!
+      expect(repository.recordComposerBinding({
+        runId: binding.runId, slotId: binding.slotId, generation: binding.generation,
+        bindingKey: binding.composerBindingKey, composerId: 'composer-old-123', method: 'launch_marker', at: 100
+      })).toBe(true)
+      expect(repository.prepareComposerRelaunch({
+        runId: binding.runId, slotId: binding.slotId, bindingKey: 'relaunch-key-2'
+      })).toBe(true)
+      const rotated = repository.loadTeamControl().bindings[0]!
+      expect(rotated).toMatchObject({ composerBindingKey: 'relaunch-key-2', launchStatus: 'not_started' })
+      expect(rotated.composerId).toBeUndefined()
+      expect(repository.recordComposerBinding({
+        runId: binding.runId, slotId: binding.slotId, generation: binding.generation,
+        bindingKey: 'relaunch-key-2', composerId: 'composer-new-123', method: 'launch_marker', at: 200
+      })).toBe(true)
+    } finally {
+      repository.close()
+    }
+  })
+
   it('migrates a version-1 runtime binding table without discarding the database', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-control-v1-')), 'control.sqlite3')
     const old = new DatabaseSync(path)

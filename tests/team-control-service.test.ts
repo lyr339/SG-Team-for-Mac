@@ -6,7 +6,7 @@ import { TeamControlService, type TeamControlBridge } from '../src/application/t
 import type { DesktopSnapshot, SendMessageInput } from '../src/shared/desktop-api'
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 import type { CursorComposerTelemetrySource } from '../src/infrastructure/cursor/cursor-composer-telemetry'
-import { createConfiguredTeamBundle, createDefaultTeamBundle } from '../src/domain/team-control'
+import { createConfiguredTeamBundle, createDefaultTeamBundle, workspaceRunMode } from '../src/domain/team-control'
 
 class FakeBridge implements TeamControlBridge {
   readonly sent: SendMessageInput[] = []
@@ -173,6 +173,43 @@ function soloFixture() {
 }
 
 describe('TeamControlService', () => {
+  it('creates an independent run without team goal, lead, or collaboration launch', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-independent-service-')), 'control.sqlite3')
+    const repository = new SqliteTeamControlRepository(path)
+    const bridge = new FakeBridge(desktopSnapshot(false))
+    const service = new TeamControlService(repository, bridge, 100)
+    try {
+      const snapshot = service.configureIndependentWorkspace({
+        workspaceId: 'independent', workspaceName: 'independent', workspacePath: '/workspace/independent',
+        members: [
+          { channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true },
+          { channelId: '2', roleTemplateKey: 'solo', avatarId: 'devops', skills: [], solo: true }
+        ]
+      })
+      expect(workspaceRunMode(snapshot.activeRun)).toBe('independent')
+      expect(snapshot.activeRun?.status).toBe('running')
+      expect(snapshot.members.every((member) => member.slot.solo === true)).toBe(true)
+      expect(bridge.sent).toHaveLength(0)
+      expect(bridge.conversationScopes.at(-1)?.runId).toBe(snapshot.activeRun?.id)
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
+  it('blocks an independent batch while any current session still has live evidence', () => {
+    const data = fixture()
+    try {
+      expect(() => data.service.configureIndependentWorkspace({
+        workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
+        members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }]
+      })).toThrowError(/仍有在线或执行中的会话/)
+    } finally {
+      data.service.dispose()
+      data.repository.close()
+    }
+  })
+
   it('requires only team members to wait and sends launch instructions only to them', async () => {
     const data = soloFixture()
     try {

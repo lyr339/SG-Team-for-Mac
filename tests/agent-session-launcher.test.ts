@@ -17,6 +17,7 @@ interface HarnessOptions {
   promptErrors?: Record<string, string>
   createResults?: Record<string, AgentLaunchCreateReceipt>
   bindingKeys?: Record<string, string>
+  relaunchBindingKeys?: Record<string, string>
   modelSelections?: Record<string, CursorModelSelection>
   workspacePath?: string
   onAllTriggered?: (plan: AgentLaunchPlan) => void
@@ -56,6 +57,7 @@ function createHarness(initial: FakeSession[], options: HarnessOptions = {}) {
     {
       activeWorkspacePath: () => options.workspacePath,
       bindingKeyForChannel: (channelId) => options.bindingKeys?.[channelId],
+      prepareComposerRelaunch: (channelId) => options.relaunchBindingKeys?.[channelId],
       modelSelectionForChannel: (channelId) => options.modelSelections?.[channelId]
     },
     { getSnapshot: () => snapshotWith([...state.sessions.values()]) },
@@ -118,6 +120,36 @@ describe('AgentSessionLauncher', () => {
     const plan = await pending
     expect(plan.state).toBe('done')
     expect(createCalls[0]?.prompt).toContain('[[SG_TEAM_BIND:bind-abc:CH-3]]')
+  })
+
+  it('新绑定存在时不复用上一轮仍显示待命的旧 Composer', async () => {
+    const { launcher, state, createCalls } = createHarness(
+      [{ channelId: '3', online: true, waiting: true, composerId: 'composer-old' }],
+      { bindingKeys: { '3': 'bind-new' } }
+    )
+    const pending = launcher.launch(['3'])
+    await Promise.resolve()
+    readyComposer(state, '3', 'composer-3')
+    await Promise.resolve()
+    readyWaiting(state, '3', 'composer-3')
+    const plan = await pending
+    expect(plan.state).toBe('done')
+    expect(createCalls).toHaveLength(1)
+    expect(createCalls[0]?.prompt).toContain('[[SG_TEAM_BIND:bind-new:CH-3]]')
+  })
+
+  it('离线旧 Composer 先轮换绑定键再创建并绑定新会话', async () => {
+    const { launcher, state, createCalls } = createHarness(
+      [{ channelId: '3', online: false, waiting: false, composerId: 'composer-old' }],
+      { relaunchBindingKeys: { '3': 'bind-relaunch' } }
+    )
+    const pending = launcher.launch(['3'])
+    await Promise.resolve()
+    readyComposer(state, '3', 'composer-3')
+    await Promise.resolve()
+    readyWaiting(state, '3', 'composer-3')
+    expect((await pending).state).toBe('done')
+    expect(createCalls[0]?.prompt).toContain('[[SG_TEAM_BIND:bind-relaunch:CH-3]]')
   })
 
   it('取开场提示词失败 → trigger 层失败', async () => {

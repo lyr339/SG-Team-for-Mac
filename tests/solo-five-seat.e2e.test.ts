@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createTeamAgentLaunchPromptPort } from '../src/application/team-agent-launch-prompts'
 import { TeamControlService, type TeamControlBridge } from '../src/application/team-control-service'
-import { createConfiguredTeamBundle } from '../src/domain/team-control'
+import { createConfiguredTeamBundle, workspaceRunMode } from '../src/domain/team-control'
 import { SqliteTeamCollaborationRepository } from '../src/infrastructure/team-collaboration/sqlite-team-collaboration-repository'
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 import type { DesktopSnapshot, SendMessageInput } from '../src/shared/desktop-api'
@@ -32,6 +32,46 @@ class Bridge implements TeamControlBridge {
 }
 
 describe('solo five-seat end-to-end composition', () => {
+  it('persists an independent-only run and gives every channel the isolated long-poll prompt', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-independent-e2e-')), 'team.sqlite3')
+    const repository = new SqliteTeamControlRepository(path)
+    const bridge = new Bridge({
+      connection: { state: 'connected', endpoint: 'local', attempt: 0, lastError: '' },
+      sessions: [], conversations: {}, protocolIssues: [], updatedAt: 1
+    })
+    const service = new TeamControlService(repository, bridge, 100)
+    try {
+      const created = service.configureIndependentWorkspace({
+        workspaceId: 'independent-three', workspaceName: 'independent-three', workspacePath: '/workspace/independent-three',
+        members: ['1', '2', '3'].map((channelId) => ({
+          channelId, roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true
+        }))
+      })
+      const run = created.activeRun!
+      service.recordInstallation({
+        workspaceId: 'independent-three', runId: run.id, generation: 'generation123',
+        agents: created.members.map((member) => ({
+          agentSessionId: `independent-three:ch-${member.slot.channelId}:generation123`,
+          workspaceId: 'independent-three', channelId: member.slot.channelId!, generation: 'generation123',
+          runId: run.id, capabilities: []
+        }))
+      })
+      const restored = service.getSnapshot()
+      expect(workspaceRunMode(restored.activeRun)).toBe('independent')
+      expect(restored.bindings).toHaveLength(3)
+      const prompts = createTeamAgentLaunchPromptPort({ getSnapshot: () => service.getSnapshot() })
+      for (const channelId of ['1', '2', '3']) {
+        const prompt = await prompts.fetchStartPrompt(channelId)
+        expect(prompt).toContain(`check_messages({channel_id:'${channelId}'})`)
+        expect(prompt).not.toContain('team_check_in')
+        expect(() => repository.resolveChannelAgentIdentity(channelId)).toThrowError(/独立席位/)
+      }
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
   it('installs all five, launches/checks in only the three-person team, and keeps two solo prompts independent', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'qingtian-solo-e2e-')), 'team.sqlite3')
     const repository = new SqliteTeamControlRepository(path)

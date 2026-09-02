@@ -39,6 +39,11 @@ export interface TeamControlRepository extends AgentPresenceStore {
     method: ComposerBindingMethod
     at: number
   }): boolean
+  prepareComposerRelaunch(input: {
+    runId: string
+    slotId: string
+    bindingKey: string
+  }): boolean
   resolveAgentRuntimeIdentity(identityKey: string, runId?: string): AgentAuthorizationIdentity
   listAgentRegistrations(runId: string): AgentRegistration[]
   rebindSlotToStandby(input: {

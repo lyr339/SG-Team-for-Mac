@@ -22,7 +22,7 @@
 .configuration-tabs {
   width: fit-content;
   display: grid;
-  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
   gap: 3px;
   padding: 3px;
   background: color-mix(in srgb, var(--surface-solid) 72%, transparent);
@@ -57,6 +57,42 @@ html[data-card-transparency="clear"] .configuration-tabs button:hover { backgrou
 html[data-card-transparency="clear"] .configuration-tabs button.is-active { background: color-mix(in srgb, var(--surface-solid) 34%, transparent); border-color: var(--accent-border); }
 .configuration-panel { min-width: 0; display: grid; }
 .configuration-frame > .v2-empty-team { min-height: 360px; }
+
+/* 独立会话：复用现有启动卡，只增加模式说明、工程锚点和数量控制。 */
+.independent-config { min-width: 0; display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.independent-config__intro, .independent-config__workspace, .independent-config__count, .independent-config__status, .independent-config__empty { min-width: 0; background: var(--surface); border: 1px solid var(--color-border-tertiary); border-radius: 14px; box-shadow: var(--shadow-hairline); }
+.independent-config__intro { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 13px 15px; }
+.independent-config__intro > span { display: grid; gap: 2px; }
+.independent-config__intro small, .independent-config__workspace small { color: var(--accent-deep); font-size: var(--fs-10); font-weight: 650; }
+.independent-config__intro strong { font-size: var(--fs-15); }
+.independent-config__intro p { max-width: 580px; margin: 0; color: var(--muted); font-size: var(--fs-10); line-height: 1.45; }
+.independent-config__workspace { grid-column: 1; display: grid; gap: 7px; padding: 13px 14px; }
+.independent-config__workspace > span { display: grid; gap: 2px; }
+.independent-config__workspace strong { font-size: var(--fs-13); }
+.independent-config__workspace code { min-width: 0; overflow: hidden; color: var(--muted); font: 500 var(--fs-10)/1.35 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.independent-config__workspace em { width: fit-content; padding: 3px 7px; color: var(--color-text-info); background: var(--color-background-info); border: 1px solid var(--color-border-info); border-radius: var(--border-radius-full); font-size: var(--fs-10); font-style: normal; }
+.independent-config__workspace > button { width: fit-content; min-height: 28px; padding: 0 9px; color: var(--text-soft); background: var(--surface-solid); border: 1px solid var(--line-strong); border-radius: 7px; font-size: var(--fs-10); font-weight: 600; }
+.independent-config__workspace > button:hover:not(:disabled) { color: var(--accent-deep); border-color: var(--accent-border); }
+.independent-config__count, .independent-config__status { grid-column: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; }
+.independent-config__count > span { display: grid; gap: 2px; }
+.independent-config__count strong { font-size: var(--fs-11); }
+.independent-config__count small { color: var(--muted); font-size: var(--fs-10); }
+.independent-config__count > div { display: grid; grid-template-columns: 28px 34px 28px; align-items: center; }
+.independent-config__count button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; color: var(--text-soft); background: var(--surface-solid); border: 1px solid var(--line); font-size: var(--fs-13); }
+.independent-config__count button:first-child { border-radius: 8px 0 0 8px; }
+.independent-config__count button:last-child { border-radius: 0 8px 8px 0; }
+.independent-config__count output { height: 28px; display: grid; place-items: center; color: var(--text); background: var(--canvas-solid); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font: 650 var(--fs-11)/1 var(--mono); }
+.independent-config__status span { color: var(--muted); font-size: var(--fs-10); }
+.independent-config__status b { color: var(--color-text-success); font: 650 var(--fs-12)/1 var(--mono); }
+.independent-config__status > div { display: flex; gap: 6px; }
+.independent-config__status button { min-height: 30px; padding: 0 10px; color: var(--accent-deep); background: var(--accent-wash); border: 1px solid var(--accent-border); border-radius: 8px; font-size: var(--fs-10); font-weight: 650; }
+.independent-config__status button + button { color: var(--text-soft); background: var(--surface-solid); border-color: var(--line-strong); }
+.independent-config__status button:disabled { color: var(--faint); border-color: var(--line); }
+.independent-config > .lobby-launch { grid-column: 2; grid-row: 2 / span 4; }
+.independent-config__warning, .independent-config__notice { grid-column: 1 / -1; margin: 0; padding: 8px 10px; color: var(--color-text-warning); background: var(--color-background-warning); border: 1px solid var(--color-border-warning); border-radius: 9px; font-size: var(--fs-10); }
+.independent-config__notice { color: var(--color-text-success); background: var(--color-background-success); border-color: var(--color-border-success); }
+.independent-config__notice.is-error { color: var(--color-text-danger); background: var(--color-background-danger); border-color: var(--color-border-danger); }
+.independent-config__empty { grid-column: 2; padding: 42px 20px; color: var(--muted); text-align: center; font-size: var(--fs-11); }
 
 .lobby-stage {
   display: grid;
@@ -1520,8 +1556,12 @@ html[data-card-transparency="clear"] .configuration-tabs button.is-active { back
 
 @media (max-width: 760px) {
   .configuration-frame { padding: 10px 10px 16px; }
-  .configuration-tabs { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .configuration-tabs { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .configuration-tabs button { padding-inline: 9px; }
+  .configuration-tabs small { display: none; }
+  .independent-config { grid-template-columns: minmax(0, 1fr); }
+  .independent-config__intro { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .independent-config__workspace, .independent-config__count, .independent-config__status, .independent-config > .lobby-launch, .independent-config__empty { grid-column: 1; grid-row: auto; }
   .lobby-stage {
     padding: 0;
   }

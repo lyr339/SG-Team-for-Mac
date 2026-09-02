@@ -1,7 +1,8 @@
 import type { TeamMemberConfiguration } from '../domain/team-control'
-import type { CreateTeamInput, TeamSetupDraft } from '../shared/desktop-api'
+import type { CreateIndependentSessionsInput, CreateTeamInput, TeamSetupDraft } from '../shared/desktop-api'
 import type { CursorModelOption, CursorModelSelection } from '../domain/cursor-model'
 import { cursorVariantSupportsMode } from '../domain/cursor-model-variants'
+import { AGENT_AVATAR_IDS } from '../domain/team-control'
 
 function requiredText(value: unknown, field: string, maxLength: number): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maxLength) {
@@ -115,6 +116,28 @@ export function resolveTeamSetupMembers(
       skills,
       modelSelection: resolveModelSelection(cursorModels, raw.modelSelection),
       solo
+    }
+  })
+}
+
+export function resolveIndependentSessionMembers(
+  models: CursorModelOption[],
+  input: CreateIndependentSessionsInput
+): TeamMemberConfiguration[] {
+  if (!Array.isArray(input.sessions) || input.sessions.length < 1 || input.sessions.length > 16) {
+    throw new Error('独立会话数量必须在 1 到 16 之间')
+  }
+  return input.sessions.map((session, index) => {
+    if (!session || typeof session !== 'object' || Array.isArray(session)) {
+      throw new Error(`独立会话 ${index + 1} 配置无效`)
+    }
+    return {
+      channelId: String(index + 1),
+      roleTemplateKey: 'solo',
+      avatarId: AGENT_AVATAR_IDS[(index + 5) % AGENT_AVATAR_IDS.length]!,
+      skills: [],
+      modelSelection: resolveModelSelection(models, session.modelSelection),
+      solo: true
     }
   })
 }

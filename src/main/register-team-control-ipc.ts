@@ -6,9 +6,9 @@ import { CursorSkillCatalog } from '../infrastructure/cursor/cursor-skill-catalo
 import type { CursorWorkspaceDetector } from '../infrastructure/cursor/cursor-workspace-detector'
 import { workspaceIdentityOf } from '../infrastructure/cursor/workspace-identity'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES } from '../domain/team-control'
-import { IPC, type CreateTeamInput, type TeamSetupDraft } from '../shared/desktop-api'
+import { IPC, type CreateIndependentSessionsInput, type CreateTeamInput, type TeamSetupDraft } from '../shared/desktop-api'
 import type { CursorModelSelection } from '../domain/cursor-model'
-import { resolveTeamSetupMembers } from '../application/team-setup'
+import { resolveIndependentSessionMembers, resolveTeamSetupMembers } from '../application/team-setup'
 import { assertTrustedSender } from './ipc-security'
 
 const DEFAULT_LOCAL_CHANNEL_IDS = ['1', '2', '3']
@@ -189,6 +189,35 @@ export function registerTeamControlIpc(
     pendingDrafts.delete(draftId)
     return snapshot
   })
+  ipcMain.handle(IPC.teamControlCreateIndependent, (event, value: unknown) => {
+    assertTrustedSender(event, getWindow)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('独立会话参数无效')
+    const input = value as Partial<CreateIndependentSessionsInput>
+    const workspacePath = requiredString(input.workspacePath, '工作区路径', 2_000)
+    const workspace = workspaceIdentityOf(workspacePath)
+    const members = resolveIndependentSessionMembers(
+      bridge.getSnapshot().cursorModels ?? [],
+      input as CreateIndependentSessionsInput
+    )
+    return service.configureIndependentWorkspace({
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      workspacePath: workspace.path,
+      members
+    })
+  })
+  ipcMain.handle(IPC.teamControlChooseIndependentWorkspace, async (event) => {
+    assertTrustedSender(event, getWindow)
+    const window = getWindow()
+    if (!window) throw new Error('主窗口不可用')
+    const selection = await dialog.showOpenDialog(window, {
+      title: '选择独立会话使用的 Cursor 工作区',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return selection.canceled || !selection.filePaths[0]
+      ? undefined
+      : workspaceIdentityOf(selection.filePaths[0])
+  })
   ipcMain.handle(IPC.teamControlNextRun, (event) => {
     assertTrustedSender(event, getWindow)
     return service.createNextRun()
@@ -218,6 +247,8 @@ export function registerTeamControlIpc(
     ipcMain.removeHandler(IPC.teamControlPrepareDetectedWorkspace)
     ipcMain.removeHandler(IPC.teamControlChooseWorkspace)
     ipcMain.removeHandler(IPC.teamControlCreateTeam)
+    ipcMain.removeHandler(IPC.teamControlCreateIndependent)
+    ipcMain.removeHandler(IPC.teamControlChooseIndependentWorkspace)
     ipcMain.removeHandler(IPC.teamControlNextRun)
     ipcMain.removeHandler(IPC.teamControlPrepareActiveSetup)
     ipcMain.removeHandler(IPC.teamControlUpdateGoal)

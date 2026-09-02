@@ -691,6 +691,32 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     }
   }
 
+  prepareComposerRelaunch(input: {
+    runId: string
+    slotId: string
+    bindingKey: string
+  }): boolean {
+    const bindingKey = input.bindingKey.trim()
+    if (!COMPOSER_BINDING_KEY_PATTERN.test(bindingKey)) throw new Error('Cursor Composer 绑定键无效')
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = this.database.prepare(`
+        UPDATE runtime_bindings
+        SET composer_binding_key = ?, composer_id = NULL, composer_bound_at = NULL,
+            composer_binding_method = NULL, launch_status = 'not_started',
+            launch_command_id = NULL, launch_detail = '', acknowledged_at = NULL,
+            last_check_in_at = NULL, last_check_in_note = ''
+        WHERE run_id = ? AND slot_id = ?
+      `).run(bindingKey, input.runId.trim(), input.slotId.trim())
+      if (numberOf(result.changes) > 0) this.bumpRevision()
+      this.database.exec('COMMIT')
+      return numberOf(result.changes) === 1
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   resolveAgentRuntimeIdentity(identityKey: string, runId = ''): AgentAuthorizationIdentity {
     const normalizedIdentityKey = identityKey.trim()
     const normalizedRunId = runId.trim()

@@ -282,6 +282,34 @@ export class TeamControlService {
     return this.getSnapshot()
   }
 
+  configureIndependentWorkspace(input: Omit<TeamWorkspaceSelection, 'channelIds'> & {
+    members: TeamMemberConfiguration[]
+  }): TeamControlSnapshot {
+    const current = this.getSnapshot()
+    const currentRun = current.activeRun
+    const activeSession = current.members.some((member) => (
+      member.runtime?.online || hasInFlightExecution(member.runtime)
+    ))
+    const unresolvedSession = current.members.some((member) => member.binding && !member.runtime)
+    if (currentRun && (activeSession || unresolvedSession)) {
+      throw new Error('当前仍有在线或执行中的会话，请先结束当前运行后再创建独立会话')
+    }
+    const bundle = createConfiguredTeamBundle({
+      workspaceId: input.workspaceId,
+      workspaceName: input.workspaceName,
+      workspacePath: input.workspacePath,
+      members: input.members,
+      mode: 'independent',
+      runKey: freshTeamRunKey(),
+      now: this.nextRunCreatedAt()
+    })
+    this.repository.upsertWorkspaceTeam(bundle)
+    this.collaborationLifecycle?.clearRun(bundle.run.id)
+    this.syncConversationScope(this.loadState())
+    this.emit()
+    return this.getSnapshot()
+  }
+
   createNextRun(): TeamControlSnapshot {
     let state = this.loadState()
     let previousRun = activeRunOf(state)
@@ -439,6 +467,23 @@ export class TeamControlService {
     })
     if (changed) this.emit()
     return changed
+  }
+
+  prepareComposerRelaunch(channelId: string): string | undefined {
+    const snapshot = this.getSnapshot()
+    const member = snapshot.members.find((candidate) => (
+      (candidate.binding?.channelId ?? candidate.slot.channelId) === channelId
+    ))
+    if (!member?.binding || !member.runtime || member.runtime.online || hasInFlightExecution(member.runtime)) return undefined
+    const bindingKey = randomUUID()
+    const changed = this.repository.prepareComposerRelaunch({
+      runId: member.binding.runId,
+      slotId: member.slot.id,
+      bindingKey
+    })
+    if (!changed) return undefined
+    this.emit()
+    return bindingKey
   }
 
   /**

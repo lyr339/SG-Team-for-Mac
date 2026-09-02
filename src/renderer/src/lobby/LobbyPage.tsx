@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { TeamControlSnapshot } from '../../../domain/team-control'
+import { workspaceRunMode, type TeamControlSnapshot } from '../../../domain/team-control'
 import { isAgentOnDuty } from '../../../domain/channel-message'
 import type { TeamCollaborationSnapshot } from '../../../domain/team-collaboration'
 import type { AgentLaunchPlan, AgentLaunchRequest } from '../../../domain/agent-launch'
 import type { CursorModelOption, CursorModelSelection } from '../../../domain/cursor-model'
 import type { CdpAutoHealEvent } from '../../../domain/cursor-cdp'
-import type { McpInstallationResult } from '../../../shared/desktop-api'
+import type { CreateIndependentSessionsInput, IndependentWorkspaceSelection, McpInstallationResult } from '../../../shared/desktop-api'
+import type { DetectedCursorWorkspace } from '../../../domain/cursor-workspace'
 import { BrandMark } from '../BrandMark'
 import { cursorModelSelectionFromOption, normalizeCursorModelSelection } from '../cursor-model-selection'
 import { teamDashboardPhase, teamRuntimePresence, unresolvedDashboardGates } from '../team/team-dashboard-view'
@@ -14,13 +15,15 @@ import { LobbySessionLaunchTile } from './LobbySessionLaunchTile'
 import { LobbySummaryTile } from './LobbySummaryTile'
 import { LobbyAccountTile, type LobbyAccountTileProps } from './LobbyAccountTile'
 import { lobbyFlowStepsFor } from './lobby-flow'
+import { IndependentSessionPage } from './IndependentSessionPage'
 
-export type ConfigurationSection = 'team' | 'account'
+export type ConfigurationSection = 'team' | 'independent' | 'account'
 
 interface LobbyPageProps {
   section: ConfigurationSection
   onSectionChange: (section: ConfigurationSection) => void
   team: TeamControlSnapshot
+  detectedWorkspace?: DetectedCursorWorkspace
   collaboration: TeamCollaborationSnapshot
   onChooseWorkspace: () => Promise<void>
   onReconfigure: () => Promise<void>
@@ -38,6 +41,9 @@ interface LobbyPageProps {
   agentLaunchPlan?: AgentLaunchPlan
   cursorModels: CursorModelOption[]
   onLaunchAgentSessions: (requests: AgentLaunchRequest[]) => Promise<AgentLaunchPlan>
+  onCreateIndependentSessions: (input: CreateIndependentSessionsInput) => Promise<AgentLaunchPlan>
+  onChooseIndependentWorkspace: () => Promise<IndependentWorkspaceSelection | undefined>
+  onOpenSessions: () => void
   onPersistModelSelection?: (channelId: string, selection: CursorModelSelection) => Promise<TeamControlSnapshot>
   onEnableCursorCdp?: () => Promise<{ ok: boolean; message: string; suggestAutoHeal?: boolean }>
   cdpAutoHealEnabled?: boolean
@@ -51,6 +57,7 @@ export function LobbyPage({
   section,
   onSectionChange,
   team,
+  detectedWorkspace,
   collaboration,
   onChooseWorkspace,
   onReconfigure,
@@ -64,6 +71,9 @@ export function LobbyPage({
   agentLaunchPlan,
   cursorModels,
   onLaunchAgentSessions,
+  onCreateIndependentSessions,
+  onChooseIndependentWorkspace,
+  onOpenSessions,
   onPersistModelSelection,
   onEnableCursorCdp,
   cdpAutoHealEnabled = false,
@@ -157,6 +167,13 @@ export function LobbyPage({
         <span>团队</span><small>目标、成员与会话</small>
       </button>
       <button
+        className={section === 'independent' ? 'is-active' : ''}
+        aria-current={section === 'independent' ? 'page' : undefined}
+        onClick={() => onSectionChange('independent')}
+      >
+        <span>独立会话</span><small>批量创建与常驻待命</small>
+      </button>
+      <button
         className={section === 'account' ? 'is-active' : ''}
         aria-current={section === 'account' ? 'page' : undefined}
         onClick={() => onSectionChange('account')}
@@ -165,6 +182,32 @@ export function LobbyPage({
       </button>
     </nav>
   )
+
+  if (section === 'independent') {
+    return (
+      <div className="lobby-page configuration-page">
+        <div className="configuration-frame">
+          {sectionNavigation}
+          <IndependentSessionPage
+            team={team}
+            detectedWorkspace={detectedWorkspace}
+            cursorModels={cursorModels}
+            plan={agentLaunchPlan}
+            cdpAutoHealEnabled={cdpAutoHealEnabled}
+            cdpAutoHealEvent={cdpAutoHealEvent}
+            onCreate={onCreateIndependentSessions}
+            onChooseWorkspace={onChooseIndependentWorkspace}
+            onLaunch={onLaunchAgentSessions}
+            onPersistModelSelection={onPersistModelSelection}
+            onEnableCursorCdp={onEnableCursorCdp}
+            onToggleCdpAutoHeal={onToggleCdpAutoHeal}
+            onCancelCdpAutoHealCountdown={onCancelCdpAutoHealCountdown}
+            onOpenSessions={onOpenSessions}
+          />
+        </div>
+      </div>
+    )
+  }
 
   if (section === 'account') {
     return (
@@ -191,6 +234,21 @@ export function LobbyPage({
             <button disabled={Boolean(busy)} onClick={() => void run('workspace', onChooseWorkspace)}>
               {busy ? '正在选择…' : '选择 Cursor 工程'}
             </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (workspaceRunMode(activeRun) === 'independent') {
+    return (
+      <div className="lobby-page configuration-page">
+        <div className="configuration-frame">
+          {sectionNavigation}
+          <div className="v2-empty-team">
+            <span><BrandMark /></span><h1>当前正在使用独立会话</h1>
+            <p>独立会话不加入团队协作；可在“独立会话”分页查看状态或补齐掉线会话。</p>
+            <button onClick={() => onSectionChange('independent')}>查看独立会话</button>
           </div>
         </div>
       </div>

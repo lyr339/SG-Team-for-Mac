@@ -151,6 +151,17 @@ export interface CreateTeamInput {
   members: CreateTeamMemberInput[]
 }
 
+export interface CreateIndependentSessionsInput {
+  workspacePath: string
+  sessions: Array<{ modelSelection?: CursorModelSelection }>
+}
+
+export interface IndependentWorkspaceSelection {
+  id: string
+  name: string
+  path: string
+}
+
 export type ChooseTeamWorkspaceResult =
   | { cancelled: true }
   | { kind: 'existing'; snapshot: TeamControlSnapshot }
@@ -262,6 +273,8 @@ export interface QingtianDesktopApi {
   prepareDetectedTeamWorkspace(): Promise<ChooseTeamWorkspaceResult>
   chooseTeamWorkspace(): Promise<ChooseTeamWorkspaceResult>
   createTeam(input: CreateTeamInput): Promise<TeamControlSnapshot>
+  createIndependentSessions(input: CreateIndependentSessionsInput): Promise<TeamControlSnapshot>
+  chooseIndependentWorkspace(): Promise<IndependentWorkspaceSelection | undefined>
   createNextTeamRun(): Promise<TeamControlSnapshot>
   prepareActiveTeamSetup(): Promise<TeamSetupDraft>
   updateTeamGoal(goal: string): Promise<TeamControlSnapshot>
@@ -335,6 +348,8 @@ export const IPC = {
   teamControlPrepareDetectedWorkspace: 'team-control:prepare-detected-workspace',
   teamControlChooseWorkspace: 'team-control:choose-workspace',
   teamControlCreateTeam: 'team-control:create-team',
+  teamControlCreateIndependent: 'team-control:create-independent',
+  teamControlChooseIndependentWorkspace: 'team-control:choose-independent-workspace',
   teamControlNextRun: 'team-control:next-run',
   teamControlPrepareActiveSetup: 'team-control:prepare-active-setup',
   teamControlUpdateGoal: 'team-control:update-goal',

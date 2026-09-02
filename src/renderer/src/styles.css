@@ -481,10 +481,16 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 .shell-columns--wide { display: grid; grid-template-columns: minmax(0, 1fr); }
 
 /* ---------- 统一可拖拽分栏：拖动、键盘方向键、双击复位共用一套实现 ---------- */
-.resizable-columns { --resize-handle-size: 10px; min-width: 0; min-height: 0; display: grid; }
+.resizable-columns { --resize-handle-size: 10px; position: relative; min-width: 0; min-height: 0; display: grid; }
 .resizable-columns--1 { grid-template-columns: minmax(0, 1fr); }
 .resizable-columns--2 { grid-template-columns: minmax(0, var(--resizable-pane-0)) var(--resize-handle-size) minmax(var(--resizable-final-min), 1fr); }
 .resizable-columns--3 { grid-template-columns: minmax(0, var(--resizable-pane-0)) var(--resize-handle-size) minmax(0, var(--resizable-pane-1)) var(--resize-handle-size) minmax(var(--resizable-final-min), 1fr); }
+.resizable-columns--2.is-first-pane-collapsed { grid-template-columns: 38px minmax(var(--resizable-final-min), 1fr); gap: 4px; }
+.resizable-collapsed-rail { min-width: 0; display: flex; justify-content: center; padding-top: 10px; background: color-mix(in srgb, var(--surface-solid) 12%, transparent); border: 1px solid var(--color-border-tertiary); border-radius: var(--r-xl); box-shadow: var(--shadow-hairline); }
+.resizable-pane-toggle { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; color: var(--muted); background: color-mix(in srgb, var(--surface-solid) 54%, transparent); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-hairline); backdrop-filter: blur(8px); transition: color 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease; }
+.resizable-pane-toggle:hover, .resizable-pane-toggle:focus-visible { color: var(--accent-deep); background: var(--surface-solid); border-color: var(--accent-border); outline: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent); }
+.resizable-pane-toggle svg { width: 18px; height: 18px; }
+.resizable-pane-toggle--collapse { position: absolute; z-index: 8; top: 10px; left: calc(var(--resizable-pane-0) - 39px); }
 .resizable-divider {
   position: relative;
   z-index: 4;
@@ -714,6 +720,8 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 .fresh-empty h2 { margin: 15px 0 6px; font-size: var(--fs-15); }
 .fresh-empty p { margin: 0; color: var(--muted); font-size: var(--fs-11); }
 .fresh-empty button { margin-top: 15px; padding: 9px 16px; color: var(--color-text-inverse); background: var(--color-background-inverse); border: 0; border-radius: 10px; font-weight: 600; font-size: var(--fs-12); box-shadow: var(--shadow-sm); }
+.fresh-empty__actions { display: flex; justify-content: center; gap: 8px; }
+.fresh-empty__actions button + button { color: var(--text-soft); background: var(--surface-solid); border: 1px solid var(--line-strong); box-shadow: var(--shadow-hairline); }
 
 /* ============================================================
    会话空状态（有会话时直接进入工作区）
@@ -1373,6 +1381,7 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
   .desktop-body { grid-template-columns: minmax(0, 1fr); padding: 0; }
   .shell-columns { position: relative; display: block; }
   .shell-columns > .resizable-divider { display: none; }
+  .resizable-pane-toggle { display: none; }
   .session-pane, .context-sidebar, .content-stage { border-radius: 0; box-shadow: none; }
   .desktop-body:not(.desktop-body--sessions) .context-sidebar { display: none; }
   .desktop-body:not(.desktop-body--sessions) .content-stage { height: 100%; }

@@ -207,8 +207,15 @@ describe('App 输入框草稿与附件按通道隔离', () => {
     installDesktopMock({ ...snapshot, sessions: [], conversations: {} })
     await renderApp('')
     expect(container.textContent).toContain('还没有发现 Cursor 会话')
-    await act(async () => clickButtonWithText('打开配置'))
+    await act(async () => clickButtonWithText('配置协作团队'))
     expect(container.querySelector('nav[aria-label="配置分类"]')).toBeTruthy()
+  })
+
+  it('空会话首页可直达独立批量创建分页', async () => {
+    installDesktopMock({ ...snapshot, sessions: [], conversations: {} })
+    await renderApp('')
+    await act(async () => clickButtonWithText('批量创建独立会话'))
+    expect(container.querySelector('section[aria-label="独立会话配置"]')).toBeTruthy()
   })
 
   it('draft 按 channelId 保存：切换通道互不干扰，切回后恢复', async () => {

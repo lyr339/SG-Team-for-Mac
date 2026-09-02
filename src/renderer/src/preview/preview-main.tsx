@@ -197,6 +197,17 @@ if (previewRunStatus === 'completed') {
     connected: false,
     waiting: false
   }))
+  state.team.members = state.team.members.map((member) => ({
+    ...member,
+    runtime: member.runtime ? {
+      ...member.runtime,
+      status: 'offline',
+      online: false,
+      waiting: false,
+      connectionPhase: 'cursor_stopped'
+    } : member.runtime,
+    readiness: 'offline'
+  }))
 }
 if (offlineSessionsPreviewMode) {
   const template = state.desktop.sessions[0]!
@@ -520,6 +531,54 @@ const api: QingtianDesktopApi = {
     pushTeam()
     return structuredClone(state.team)
   },
+  createIndependentSessions: async (input) => {
+    const configured = createConfiguredTeamBundle({
+      workspaceId: detectedSetupDraft.workspaceId,
+      workspaceName: detectedSetupDraft.workspaceName,
+      workspacePath: input.workspacePath,
+      mode: 'independent',
+      now: Date.now(),
+      members: input.sessions.map((session, index) => ({
+        channelId: String(index + 1), roleTemplateKey: 'solo', avatarId: AGENT_AVATAR_IDS[(index + 5) % AGENT_AVATAR_IDS.length]!,
+        skills: [], solo: true, modelSelection: session.modelSelection
+      }))
+    })
+    const bindings = configured.slots.map((slot) => ({
+      id: `preview-independent-binding-${slot.channelId}`, workspaceId: configured.workspace.id, runId: configured.run.id,
+      slotId: slot.id, channelId: slot.channelId!, agentSessionId: `preview-independent:ch-${slot.channelId}:g1`,
+      generation: 'g1', installedAt: Date.now(), launchStatus: 'not_started' as const,
+      launchDetail: '', lastCheckInNote: '', composerBindingKey: `preview-independent-${slot.channelId}`
+    }))
+    const members = configured.slots.map((slot, index) => ({
+      slot,
+      role: configured.roles[index]!,
+      binding: bindings[index],
+      runtime: undefined,
+      readiness: 'offline' as const
+    }))
+    state.team = {
+      ...emptyTeamControlSnapshot(), revision: state.team.revision + 1,
+      activeWorkspaceId: configured.workspace.id, workspaces: [configured.workspace], runs: [configured.run],
+      roles: configured.roles, slots: configured.slots, bindings, activeRun: configured.run, members,
+      runtimeChannels: bindings.map((binding) => ({
+        channelId: binding.channelId, displayName: `SG Team CH-${binding.channelId}`, status: 'offline' as const,
+        online: false, waiting: false, queueDepth: 0, registered: true, assignedSlotId: binding.slotId,
+        agentSessionId: binding.agentSessionId, generation: binding.generation
+      })),
+      preflight: {
+        bridgeConnected: true, workspaceBound: true, goalDefined: false, mcpInstalled: true,
+        agentsWaiting: false, canLaunch: false, blockers: []
+      },
+      updatedAt: Date.now()
+    }
+    pushTeam()
+    return structuredClone(state.team)
+  },
+  chooseIndependentWorkspace: async () => ({
+    id: detectedSetupDraft.workspaceId,
+    name: detectedSetupDraft.workspaceName,
+    path: detectedSetupDraft.workspacePath
+  }),
   createNextTeamRun: async () => {
     state.desktop = { ...state.desktop, conversations: {}, updatedAt: Date.now() }
     state.team = {

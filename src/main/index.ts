@@ -450,7 +450,8 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
           (candidate.binding?.channelId ?? candidate.slot.channelId) === channelId
         ))
         return member?.slot.modelSelection ? structuredClone(member.slot.modelSelection) : undefined
-      }
+      },
+      prepareComposerRelaunch: (channelId) => teamControlService?.prepareComposerRelaunch(channelId)
     },
     desktopSessionService,
     {

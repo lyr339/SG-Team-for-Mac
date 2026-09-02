@@ -4,6 +4,7 @@ import {
   buildTeamRoleBriefing,
   createConfiguredTeamBundle,
   createDefaultTeamBundle,
+  workspaceRunMode,
   type RuntimeBinding
 } from '../src/domain/team-control'
 
@@ -204,5 +205,25 @@ describe('team control domain', () => {
     expect(prompt).toContain("record_reply({channel_id:'8'")
     expect(prompt).toContain("check_messages({channel_id:'8'})")
     expect(prompt).not.toContain('team_check_in')
+  })
+
+  it('creates an explicit independent run made only of isolated solo slots', () => {
+    const bundle = createConfiguredTeamBundle({
+      workspaceId: 'independent', workspaceName: 'independent', workspacePath: '/workspace/independent',
+      mode: 'independent', now: 100,
+      members: [
+        { channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true },
+        { channelId: '2', roleTemplateKey: 'solo', avatarId: 'devops', skills: [], solo: true }
+      ]
+    })
+    expect(workspaceRunMode(bundle.run)).toBe('independent')
+    expect(bundle.run.id).toContain('session-run:')
+    expect(bundle.run.status).toBe('running')
+    expect(bundle.slots.every((slot) => slot.solo === true)).toBe(true)
+    expect(() => createConfiguredTeamBundle({
+      workspaceId: 'invalid-independent', workspaceName: 'invalid', workspacePath: '/workspace/invalid',
+      mode: 'independent',
+      members: [{ channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] }]
+    })).toThrowError(/只接受独立席位/)
   })
 })

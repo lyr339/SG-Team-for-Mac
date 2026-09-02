@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   ChooseTeamWorkspaceResult,
+  CreateIndependentSessionsInput,
   DesktopSnapshot,
   TeamSetupDraft
 } from '../../shared/desktop-api'
@@ -450,6 +451,33 @@ export function App(): React.JSX.Element {
     setAgentLaunchPlan(blocked)
     return blocked
   }, [accountAutomationSettings.enabled, cursorAccounts, performAgentLaunch, refreshMembership])
+
+  const createIndependentSessions = useCallback(async (
+    input: CreateIndependentSessionsInput
+  ): Promise<AgentLaunchPlan> => {
+    const created = await window.qingtianDesktop.createIndependentSessions(input)
+    acceptTeamControl(created)
+    mcpReconcileRunRef.current = reconcileKeyOf(created)
+    const installation = await window.qingtianDesktop.installTaskMcp()
+    if (!installation.ok) throw new Error('独立会话 MCP 安装已取消')
+    if (installation.restartRequired) {
+      setTeamMcpReloadRequired(true)
+      throw new Error('SG Team MCP 已更新，请重载 Cursor 后再次补齐独立会话')
+    }
+    const [latest, desktop] = await Promise.all([
+      window.qingtianDesktop.getTeamControlSnapshot(),
+      window.qingtianDesktop.getSnapshot()
+    ])
+    acceptTeamControl(latest)
+    acceptSnapshot(desktop)
+    const requests = latest.members.flatMap((member) => {
+      const channelId = member.binding?.channelId ?? member.slot.channelId
+      return channelId ? [{ channelId, modelSelection: member.slot.modelSelection }] : []
+    })
+    const plan = await launchAgentSessions(requests)
+    if (plan.state === 'done' && requests[0]) selectSession(requests[0].channelId)
+    return plan
+  }, [acceptSnapshot, acceptTeamControl, launchAgentSessions, selectSession])
 
   const continueGuardedLaunch = useCallback(async (): Promise<void> => {
     const guard = runtimeGuard
@@ -911,6 +939,7 @@ export function App(): React.JSX.Element {
           section={configurationSection}
           onSectionChange={setConfigurationSection}
           team={teamControl}
+          detectedWorkspace={cursorWorkspace?.workspace}
           collaboration={activeRunCollaboration}
           externalNotice={teamNotice}
           autoStartOnGoalSave={!teamMcpReloadRequired}
@@ -939,6 +968,9 @@ export function App(): React.JSX.Element {
           agentLaunchPlan={agentLaunchPlan}
           cursorModels={visibleSnapshot.cursorModels ?? []}
           onLaunchAgentSessions={launchAgentSessions}
+          onCreateIndependentSessions={createIndependentSessions}
+          onChooseIndependentWorkspace={() => window.qingtianDesktop.chooseIndependentWorkspace()}
+          onOpenSessions={() => setActiveModule('sessions')}
           onPersistModelSelection={async (channelId, selection) => {
             const result = await window.qingtianDesktop.setSlotModelSelection(channelId, selection)
             acceptTeamControl(result)
@@ -1213,6 +1245,10 @@ export function App(): React.JSX.Element {
         <SessionOverview
           snapshot={visibleSnapshot}
           onOpenConfiguration={() => setActiveModule('lobby')}
+          onCreateIndependentSessions={() => {
+            setConfigurationSection('independent')
+            setActiveModule('lobby')
+          }}
         />
       )}
     </DesktopShell>

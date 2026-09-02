@@ -18,6 +18,13 @@ export type TeamRunStatus =
   | 'paused'
   | 'completed'
 
+export type WorkspaceRunMode = 'team' | 'independent'
+export const INDEPENDENT_SESSION_TEMPLATE_ID = 'independent-session-v1'
+
+export function workspaceRunMode(run?: Pick<TeamRun, 'templateId'>): WorkspaceRunMode {
+  return run?.templateId === INDEPENDENT_SESSION_TEMPLATE_ID ? 'independent' : 'team'
+}
+
 export type TeamRoleAccent = 'mint' | 'periwinkle' | 'apricot' | 'sky'
 
 export type TeamLaunchStatus =
@@ -380,6 +387,7 @@ export function createConfiguredTeamBundle(input: {
   workspacePath: string
   workspaceName: string
   members: TeamMemberConfiguration[]
+  mode?: WorkspaceRunMode
   runKey?: string
   now?: number
 }): WorkspaceTeamBundle {
@@ -388,18 +396,25 @@ export function createConfiguredTeamBundle(input: {
   const workspaceName = input.workspaceName.trim()
   if (!workspaceId || !workspacePath || !workspaceName) throw new Error('工作区信息不完整')
 
+  const mode = input.mode ?? 'team'
   const channelIds = uniqueChannelIds(input.members.map((member) => member.channelId))
   if (!channelIds.length || channelIds.length !== input.members.length) {
     throw new Error('团队通道不能为空、重复或无效')
   }
   const teamMembers = input.members.filter((member) => member.solo !== true)
-  if (!teamMembers.length) throw new Error('团队至少需要 1 个非独立席位（含 1 名主控）')
-  const leadCount = teamMembers.filter((member) => member.roleTemplateKey === 'lead').length
-  if (leadCount !== 1) throw new Error('团队必须且只能有 1 名主控协调（独立席位不参与计数）')
+  if (mode === 'independent') {
+    if (teamMembers.length || input.members.some((member) => member.roleTemplateKey !== 'solo')) {
+      throw new Error('独立会话模式只接受独立席位')
+    }
+  } else {
+    if (!teamMembers.length) throw new Error('团队至少需要 1 个非独立席位（含 1 名主控）')
+    const leadCount = teamMembers.filter((member) => member.roleTemplateKey === 'lead').length
+    if (leadCount !== 1) throw new Error('团队必须且只能有 1 名主控协调（独立席位不参与计数）')
+  }
   const now = input.now ?? Date.now()
   const runKey = input.runKey?.trim()
   if (runKey && !/^[a-zA-Z0-9_-]{8,80}$/.test(runKey)) throw new Error('TeamRun 标识无效')
-  const runId = `team-run:${workspaceId}:${runKey ?? 'main'}`
+  const runId = `${mode === 'independent' ? 'session-run' : 'team-run'}:${workspaceId}:${runKey ?? 'main'}`
   const identityScope = runKey ? `${workspaceId}:${runKey}` : workspaceId
   const occurrences = new Map<string, number>()
   const configured = input.members.map((member) => {
@@ -461,10 +476,10 @@ export function createConfiguredTeamBundle(input: {
     run: {
       id: runId,
       workspaceId,
-      name: `${workspaceName} · ${runKey ? '本轮运行' : '主运行'}`,
+      name: mode === 'independent' ? `${workspaceName} · 独立会话` : `${workspaceName} · ${runKey ? '本轮运行' : '主运行'}`,
       goal: '',
-      templateId: 'software-core-v1',
-      status: 'draft',
+      templateId: mode === 'independent' ? INDEPENDENT_SESSION_TEMPLATE_ID : 'software-core-v1',
+      status: mode === 'independent' ? 'running' : 'draft',
       createdAt: now,
       updatedAt: now
     },

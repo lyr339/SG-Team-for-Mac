@@ -4,11 +4,13 @@ import { SunIcon } from './UiIcons'
 interface SessionOverviewProps {
   snapshot: DesktopSnapshot
   onOpenConfiguration: () => void
+  onCreateIndependentSessions: () => void
 }
 
 export function SessionOverview({
   snapshot,
-  onOpenConfiguration
+  onOpenConfiguration,
+  onCreateIndependentSessions
 }: SessionOverviewProps): React.JSX.Element {
   return (
     <div className="overview-page">
@@ -31,7 +33,10 @@ export function SessionOverview({
             <>
               <h2>还没有发现 Cursor 会话</h2>
               <p>从配置页选择 Cursor 工程并创建会话，准备完成后会自动出现在这里。</p>
-              <button onClick={onOpenConfiguration}>打开配置</button>
+              <div className="fresh-empty__actions">
+                <button onClick={onCreateIndependentSessions}>批量创建独立会话</button>
+                <button onClick={onOpenConfiguration}>配置协作团队</button>
+              </div>
             </>
           )}
         </div>

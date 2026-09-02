@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveTeamSetupMembers } from '../src/application/team-setup'
+import { resolveIndependentSessionMembers, resolveTeamSetupMembers } from '../src/application/team-setup'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES } from '../src/domain/team-control'
 import type { TeamSetupDraft } from '../src/shared/desktop-api'
 
@@ -241,5 +241,24 @@ describe('resolveTeamSetupMembers', () => {
       draftId: draft.draftId,
       members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skillIds: [], solo: false }]
     })).toThrowError(/团队席位不能使用独立执行角色/)
+  })
+
+  it('builds 1–16 isolated sessions with sequential channels and validated models', () => {
+    const resolved = resolveIndependentSessionMembers(draft.cursorModels ?? [], {
+      workspacePath: draft.workspacePath,
+      sessions: [{}, {
+        modelSelection: {
+          modelId: 'kimi-k3', displayName: 'Kimi K3', maxMode: false,
+          parameters: [{ id: 'reasoning', value: 'low' }]
+        }
+      }]
+    })
+    expect(resolved.map((member) => [member.channelId, member.roleTemplateKey, member.solo])).toEqual([
+      ['1', 'solo', true], ['2', 'solo', true]
+    ])
+    expect(resolved[1]?.modelSelection?.parameters).toEqual([{ id: 'reasoning', value: 'low' }])
+    expect(() => resolveIndependentSessionMembers(draft.cursorModels ?? [], {
+      workspacePath: draft.workspacePath, sessions: []
+    })).toThrowError(/1 到 16/)
   })
 })
