@@ -371,6 +371,7 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 .topbar-nav button.is-active { color: var(--accent-deep); font-weight: 600; }
 .topbar-nav button.is-active::after { opacity: 1; transform: scaleX(1); }
 .topbar-nav button svg { width: 16px; height: 16px; }
+.topbar-nav button span { white-space: nowrap; }
 
 .topbar__actions { min-width: 0; justify-self: end; display: flex; align-items: center; gap: 8px; overflow: visible; }
 .appearance-control { position: relative; flex: 0 0 auto; display: grid; place-items: center; }

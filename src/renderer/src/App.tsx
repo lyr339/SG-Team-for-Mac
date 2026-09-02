@@ -12,7 +12,7 @@ import { DesktopShell, type AppModule } from './DesktopShell'
 import { SessionOverview } from './SessionOverview'
 import { SessionWorkspace } from './SessionWorkspace'
 import { SessionSidebar } from './SessionSidebar'
-import { LobbyPage } from './lobby/LobbyPage'
+import { LobbyPage, type ConfigurationSection } from './lobby/LobbyPage'
 import { TeamSetupPage } from './team/TeamSetupPage'
 import { ManualHandoffDialog } from './team/ManualHandoffDialog'
 import type { TeamHandoffOptions } from '../../domain/team-handoff'
@@ -59,6 +59,23 @@ const EMPTY_SNAPSHOT: DesktopSnapshot = {
   updatedAt: 0
 }
 
+const LAST_SESSION_STORAGE_KEY = 'shiguang.lastSessionChannel.v1'
+
+function readLastSessionChannel(): string | undefined {
+  try {
+    const channelId = localStorage.getItem(LAST_SESSION_STORAGE_KEY)?.trim()
+    return channelId && /^\d+$/.test(channelId) ? channelId : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function persistLastSessionChannel(channelId: string): void {
+  try {
+    localStorage.setItem(LAST_SESSION_STORAGE_KEY, channelId)
+  } catch { /* 本次运行内仍保留当前会话。 */ }
+}
+
 function cursorWorkspaceFingerprint(detection?: CursorWorkspaceDetection): string {
   if (!detection) return ''
   return JSON.stringify({
@@ -84,15 +101,16 @@ export function App(): React.JSX.Element {
   const [teamControl, setTeamControl] = useState(emptyTeamControlSnapshot())
   const [collaboration, setCollaboration] = useState(emptyTeamCollaborationSnapshot())
   const [teamSetup, setTeamSetup] = useState<TeamSetupDraft>()
-  // 初始模块支持 URL hash 深链接（如 #sessions:2 直达 CH-2 会话），生产无 hash 时默认大厅。
+  // URL hash 深链接优先；日常启动默认直达会话工作区。
   const [activeModule, setActiveModule] = useState<AppModule>(() => {
     const [module] = window.location.hash.slice(1).split(':')
-    return module === 'sessions' ? module : 'lobby'
+    return module === 'lobby' || module === 'config' ? 'lobby' : 'sessions'
   })
   const [selectedChannelId, setSelectedChannelId] = useState<string | undefined>(() => {
     const [module, channel] = window.location.hash.slice(1).split(':')
-    return module === 'sessions' && channel ? channel : undefined
+    return module === 'sessions' && channel ? channel : readLastSessionChannel()
   })
+  const [configurationSection, setConfigurationSection] = useState<ConfigurationSection>('team')
   const [sessionListRequested, setSessionListRequested] = useState(false)
   const [teamNotice, setTeamNotice] = useState('')
   const [teamMcpReloadRequired, setTeamMcpReloadRequired] = useState(false)
@@ -340,6 +358,7 @@ export function App(): React.JSX.Element {
   }, [refreshRuntimeMatch, refreshMembership, refreshAccountMemberships])
 
   const selectSession = useCallback((channelId: string) => {
+    persistLastSessionChannel(channelId)
     setActiveModule('sessions')
     setSessionListRequested(false)
     setSelectedChannelId(channelId)
@@ -696,10 +715,19 @@ export function App(): React.JSX.Element {
     : undefined
   useEffect(() => {
     if (activeModule !== 'sessions') return
-    if (selectedChannelId && visibleSnapshot.sessions.some((session) => session.channelId === selectedChannelId)) return
+    if (selectedChannelId && visibleSnapshot.sessions.some((session) => session.channelId === selectedChannelId)) {
+      if (readLastSessionChannel() !== selectedChannelId) persistLastSessionChannel(selectedChannelId)
+      return
+    }
     if (sessionListRequested) return
-    const fallback = visibleSnapshot.sessions.find((session) => session.online) ?? visibleSnapshot.sessions[0]
-    if (fallback) setSelectedChannelId(fallback.channelId)
+    const remembered = readLastSessionChannel()
+    const fallback = visibleSnapshot.sessions.find((session) => session.channelId === remembered)
+      ?? visibleSnapshot.sessions.find((session) => session.online)
+      ?? visibleSnapshot.sessions[0]
+    if (fallback) {
+      persistLastSessionChannel(fallback.channelId)
+      setSelectedChannelId(fallback.channelId)
+    }
   }, [activeModule, selectedChannelId, sessionListRequested, visibleSnapshot.sessions])
   const activeRunCollaboration = useMemo(() => (
     visibleTeamCollaborationSnapshot(collaboration, teamControl.activeRun)
@@ -707,7 +735,6 @@ export function App(): React.JSX.Element {
   const changeModule = useCallback((module: AppModule): void => {
     setActiveModule(module)
     if (module === 'sessions') setSessionListRequested(false)
-    if (module !== 'sessions') setSelectedChannelId(undefined)
   }, [])
 
   const openManualHandoff = useCallback(async (slotId: string): Promise<void> => {
@@ -881,6 +908,8 @@ export function App(): React.JSX.Element {
         />
       ) : activeModule === 'lobby' ? (
         <LobbyPage
+          section={configurationSection}
+          onSectionChange={setConfigurationSection}
           team={teamControl}
           collaboration={activeRunCollaboration}
           externalNotice={teamNotice}
@@ -1183,6 +1212,7 @@ export function App(): React.JSX.Element {
       ) : (
         <SessionOverview
           snapshot={visibleSnapshot}
+          onOpenConfiguration={() => setActiveModule('lobby')}
         />
       )}
     </DesktopShell>

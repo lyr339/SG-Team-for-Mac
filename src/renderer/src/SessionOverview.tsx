@@ -3,10 +3,12 @@ import { SunIcon } from './UiIcons'
 
 interface SessionOverviewProps {
   snapshot: DesktopSnapshot
+  onOpenConfiguration: () => void
 }
 
 export function SessionOverview({
-  snapshot
+  snapshot,
+  onOpenConfiguration
 }: SessionOverviewProps): React.JSX.Element {
   return (
     <div className="overview-page">
@@ -28,7 +30,8 @@ export function SessionOverview({
           ) : (
             <>
               <h2>还没有发现 Cursor 会话</h2>
-              <p>在 Cursor 工作区安装拾光通道 MCP 并启动 Agent 会话后，这里会自动出现。</p>
+              <p>从配置页选择 Cursor 工程并创建会话，准备完成后会自动出现在这里。</p>
+              <button onClick={onOpenConfiguration}>打开配置</button>
             </>
           )}
         </div>

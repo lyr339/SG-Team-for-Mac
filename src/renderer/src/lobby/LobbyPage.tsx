@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { TeamControlSnapshot, TeamRunStatus } from '../../../domain/team-control'
+import type { TeamControlSnapshot } from '../../../domain/team-control'
 import { isAgentOnDuty } from '../../../domain/channel-message'
 import type { TeamCollaborationSnapshot } from '../../../domain/team-collaboration'
 import type { AgentLaunchPlan, AgentLaunchRequest } from '../../../domain/agent-launch'
@@ -9,12 +9,17 @@ import type { McpInstallationResult } from '../../../shared/desktop-api'
 import { BrandMark } from '../BrandMark'
 import { cursorModelSelectionFromOption, normalizeCursorModelSelection } from '../cursor-model-selection'
 import { teamDashboardPhase, teamRuntimePresence, unresolvedDashboardGates } from '../team/team-dashboard-view'
-import { LobbyHero, type LobbyHeroStep } from './LobbyHero'
+import { LobbyHero } from './LobbyHero'
 import { LobbySessionLaunchTile } from './LobbySessionLaunchTile'
 import { LobbySummaryTile } from './LobbySummaryTile'
 import { LobbyAccountTile, type LobbyAccountTileProps } from './LobbyAccountTile'
+import { lobbyFlowStepsFor } from './lobby-flow'
+
+export type ConfigurationSection = 'team' | 'account'
 
 interface LobbyPageProps {
+  section: ConfigurationSection
+  onSectionChange: (section: ConfigurationSection) => void
   team: TeamControlSnapshot
   collaboration: TeamCollaborationSnapshot
   onChooseWorkspace: () => Promise<void>
@@ -42,23 +47,9 @@ interface LobbyPageProps {
   account: LobbyAccountTileProps
 }
 
-export function lobbyFlowStepsFor(input: {
-  goal: string
-  status: TeamRunStatus
-  allMembersWaiting: boolean
-}): readonly LobbyHeroStep[] {
-  const launched = ['launching', 'running', 'attention', 'paused', 'completed'].includes(input.status)
-  const completed = input.status === 'completed'
-  const goalDefined = Boolean(input.goal.trim())
-  return [
-    { label: '团队目标', state: goalDefined ? 'done' : 'current' },
-    { label: '启动团队', state: launched ? 'done' : goalDefined ? 'current' : 'todo' },
-    { label: 'Agent 待命', state: completed || input.allMembersWaiting ? 'done' : launched ? 'current' : 'todo' },
-    { label: '协作执行', state: completed ? 'done' : launched && input.allMembersWaiting ? 'current' : 'todo' }
-  ]
-}
-
 export function LobbyPage({
+  section,
+  onSectionChange,
   team,
   collaboration,
   onChooseWorkspace,
@@ -156,16 +147,51 @@ export function LobbyPage({
     }
   }
 
+  const sectionNavigation = (
+    <nav className="configuration-tabs" aria-label="配置分类">
+      <button
+        className={section === 'team' ? 'is-active' : ''}
+        aria-current={section === 'team' ? 'page' : undefined}
+        onClick={() => onSectionChange('team')}
+      >
+        <span>团队</span><small>目标、成员与会话</small>
+      </button>
+      <button
+        className={section === 'account' ? 'is-active' : ''}
+        aria-current={section === 'account' ? 'page' : undefined}
+        onClick={() => onSectionChange('account')}
+      >
+        <span>账号与 Cursor</span><small>账号管线与本机维护</small>
+      </button>
+    </nav>
+  )
+
+  if (section === 'account') {
+    return (
+      <div className="lobby-page configuration-page">
+        <div className="configuration-frame">
+          {sectionNavigation}
+          <main className="configuration-panel" aria-label="账号与 Cursor 配置">
+            <LobbyAccountTile {...account} />
+          </main>
+        </div>
+      </div>
+    )
+  }
+
   if (!activeRun || !workspace) {
     return (
-      <div className="lobby-page">
-        <div className="v2-empty-team">
-          <span><BrandMark /></span><h1>选择一个 Cursor 工程</h1>
-          <p>创建稳定 AgentSlot，并把本机通道作为可替换运行时接入。</p>
-          {error ? <em>{error}</em> : null}
-          <button disabled={Boolean(busy)} onClick={() => void run('workspace', onChooseWorkspace)}>
-            {busy ? '正在选择…' : '选择 Cursor 工程'}
-          </button>
+      <div className="lobby-page configuration-page">
+        <div className="configuration-frame">
+          {sectionNavigation}
+          <div className="v2-empty-team">
+            <span><BrandMark /></span><h1>选择一个 Cursor 工程</h1>
+            <p>创建稳定 AgentSlot，并把本机通道作为可替换运行时接入。</p>
+            {error ? <em>{error}</em> : null}
+            <button disabled={Boolean(busy)} onClick={() => void run('workspace', onChooseWorkspace)}>
+              {busy ? '正在选择…' : '选择 Cursor 工程'}
+            </button>
+          </div>
         </div>
       </div>
     )
@@ -273,8 +299,10 @@ export function LobbyPage({
     && !(runIsActive && runtimePresence !== 'online')
 
   return (
-    <div className="lobby-page">
-      <div className="lobby-stage">
+    <div className="lobby-page configuration-page">
+      <div className="configuration-frame">
+        {sectionNavigation}
+        <div className="lobby-stage">
         <LobbyHero
           workspaceName={workspace.name}
           runName={activeRun.name}
@@ -317,7 +345,7 @@ export function LobbyPage({
           <div className={`v2-inline-notice ${error ? 'is-error' : ''}`} role="status" aria-live="polite">{error || notice}</div>
         ) : null}
 
-        <div className={`lobby-workbench ${showSessionLaunch ? 'has-session-launch' : 'is-stable'}`}>
+        <div className={`lobby-workbench lobby-workbench--team ${showSessionLaunch ? 'has-session-launch' : 'is-stable'}`}>
           <aside className="lobby-workbench__rail" aria-label="运行控制">
             <LobbySummaryTile team={team} collaboration={collaboration} gates={unresolvedGates} />
 
@@ -373,11 +401,8 @@ export function LobbyPage({
               />
             ) : null}
           </aside>
-
-          <main className="lobby-workbench__main" aria-label="账号与自动化">
-            <LobbyAccountTile {...account} />
-          </main>
         </div>
+      </div>
       </div>
     </div>
   )

@@ -66,7 +66,7 @@ function stubMatchMedia(): void {
   }
 }
 
-function installDesktopMock(): void {
+function installDesktopMock(desktopSnapshot: DesktopSnapshot = snapshot): void {
   const base: Record<string, unknown> = {
     onSnapshot: () => () => {},
     onTaskPoolSnapshot: () => () => {},
@@ -76,7 +76,7 @@ function installDesktopMock(): void {
     onAgentLaunchProgress: () => () => {},
     onCdpAutoHealEvent: () => () => {},
     onAccountAutomationProgress: () => () => {},
-    getSnapshot: async () => snapshot,
+    getSnapshot: async () => desktopSnapshot,
     getTaskPoolSnapshot: async () => emptyTaskPoolSnapshot(),
     getTeamControlSnapshot: async () => emptyTeamControlSnapshot(),
     getTeamCollaborationSnapshot: async () => emptyTeamCollaborationSnapshot(),
@@ -175,6 +175,7 @@ describe('App 输入框草稿与附件按通道隔离', () => {
     stubScrollApis()
     stubMatchMedia()
     installDesktopMock()
+    localStorage.clear()
     container = document.createElement('div')
     document.body.appendChild(container)
   })
@@ -185,6 +186,29 @@ describe('App 输入框草稿与附件按通道隔离', () => {
     })
     container.remove()
     window.location.hash = ''
+    localStorage.clear()
+  })
+
+  it('无深链接时会话是首页，并在配置页往返后保留当前会话', async () => {
+    await renderApp('')
+    expect(composerTextarea().getAttribute('aria-label')).toContain('CH-2')
+    expect(container.querySelector('.topbar-nav')?.textContent?.replace(/\s/g, '')).toBe('会话配置')
+    expect(container.querySelector<HTMLButtonElement>('.brand')?.getAttribute('aria-label')).toBe('返回拾光会话')
+
+    await selectChannel('5')
+    await act(async () => clickButtonWithText('配置'))
+    expect(container.querySelector('nav[aria-label="配置分类"]')).toBeTruthy()
+    await act(async () => clickButtonWithText('会话'))
+    expect(composerTextarea().getAttribute('aria-label')).toContain('CH-5')
+    expect(localStorage.getItem('shiguang.lastSessionChannel.v1')).toBe('5')
+  })
+
+  it('首次没有会话时留在会话首页，并可直接打开配置', async () => {
+    installDesktopMock({ ...snapshot, sessions: [], conversations: {} })
+    await renderApp('')
+    expect(container.textContent).toContain('还没有发现 Cursor 会话')
+    await act(async () => clickButtonWithText('打开配置'))
+    expect(container.querySelector('nav[aria-label="配置分类"]')).toBeTruthy()
   })
 
   it('draft 按 channelId 保存：切换通道互不干扰，切回后恢复', async () => {

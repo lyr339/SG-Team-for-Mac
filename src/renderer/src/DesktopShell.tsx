@@ -59,11 +59,11 @@ function cursorLinkState(snapshot: DesktopSnapshot): {
 }
 
 const MODULE_LABELS: Record<AppModule, string> = {
-  lobby: '大厅',
+  lobby: '配置',
   sessions: 'Cursor 会话'
 }
 
-const MODULE_ORDER: AppModule[] = ['lobby', 'sessions']
+const MODULE_ORDER: AppModule[] = ['sessions', 'lobby']
 const CONTEXT_SIDEBAR_SPECS = [{ defaultSize: 270, minSize: 220, maxSize: 500 }] as const
 const SESSION_SIDEBAR_SPECS = [{ defaultSize: 326, minSize: 286, maxSize: 420 }] as const
 // 快捷键提示平台化：mac 显示 ⌘，其余平台（Windows）显示 Ctrl+；事件侧已兼容两键。
@@ -158,7 +158,7 @@ export function DesktopShell({
     <div className="desktop-shell">
       <header className="topbar">
         <div className="topbar__context">
-          <button className="brand" onClick={() => onModuleChange('lobby')} aria-label="返回拾光大厅">
+          <button className="brand" onClick={() => onModuleChange('sessions')} aria-label="返回拾光会话">
             <span className="brand__mark"><BrandMark /></span>
             <strong>拾光</strong>
           </button>
@@ -176,8 +176,8 @@ export function DesktopShell({
         </div>
 
         <nav className="topbar-nav" aria-label="主要功能">
-          {navButton('lobby', <GridIcon />, '大厅')}
           {navButton('sessions', <SessionsIcon />, '会话')}
+          {navButton('lobby', <GridIcon />, '配置')}
         </nav>
 
         <div className="topbar__actions">

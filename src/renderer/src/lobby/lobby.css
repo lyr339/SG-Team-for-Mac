@@ -11,12 +11,59 @@
   background: transparent;
 }
 
+.configuration-frame {
+  display: grid;
+  gap: 12px;
+  max-width: 1520px;
+  margin: 0 auto;
+  padding: 12px 16px 24px;
+}
+
+.configuration-tabs {
+  width: fit-content;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 3px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--surface-solid) 72%, transparent);
+  border: 1px solid var(--color-border-tertiary);
+  border-radius: 11px;
+  box-shadow: var(--shadow-hairline);
+  backdrop-filter: blur(12px) saturate(112%);
+}
+
+.configuration-tabs button {
+  min-width: 0;
+  min-height: 40px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  padding: 5px 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  text-align: left;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.configuration-tabs button:hover { color: var(--text); background: color-mix(in srgb, var(--surface-solid) 42%, transparent); }
+.configuration-tabs button.is-active { color: var(--text); background: var(--surface-solid); border-color: var(--color-border-tertiary); box-shadow: var(--shadow-hairline); }
+.configuration-tabs button.is-active span { color: var(--accent-deep); }
+.configuration-tabs span { font-size: var(--fs-11); font-weight: 650; }
+.configuration-tabs small { overflow: hidden; font-size: var(--fs-10); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+html[data-card-transparency="clear"] .configuration-tabs { background: color-mix(in srgb, var(--canvas-solid) 16%, transparent); border-color: var(--line-strong); }
+html[data-card-transparency="clear"] .configuration-tabs button:hover { background: color-mix(in srgb, var(--surface-solid) 24%, transparent); }
+html[data-card-transparency="clear"] .configuration-tabs button.is-active { background: color-mix(in srgb, var(--surface-solid) 34%, transparent); border-color: var(--accent-border); }
+.configuration-panel { min-width: 0; display: grid; }
+.configuration-frame > .v2-empty-team { min-height: 360px; }
+
 .lobby-stage {
   display: grid;
   gap: 12px;
   max-width: 1520px;
   margin: 0 auto;
-  padding: 14px 16px 24px;
+  padding: 0;
 }
 
 .lobby-stage > .v2-inline-notice { margin: 0; }
@@ -39,6 +86,9 @@
 .lobby-workbench__rail {
   align-content: start;
 }
+
+.lobby-workbench--team { grid-template-columns: minmax(0, 1fr); }
+.lobby-workbench--team .lobby-workbench__rail { grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
 
 /* ---------- 通用面板 ---------- */
 .lobby-tile {
@@ -1469,13 +1519,17 @@
 }
 
 @media (max-width: 760px) {
+  .configuration-frame { padding: 10px 10px 16px; }
+  .configuration-tabs { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .configuration-tabs button { padding-inline: 9px; }
   .lobby-stage {
-    padding: 10px 10px 16px;
+    padding: 0;
   }
 
   .lobby-workbench__rail {
     grid-template-columns: minmax(0, 1fr);
   }
+  .lobby-workbench--team .lobby-workbench__rail { grid-template-columns: minmax(0, 1fr); }
 
   .lobby-command,
   .lobby-command.is-editing {

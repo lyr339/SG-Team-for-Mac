@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { LobbyHero } from '../src/renderer/src/lobby/LobbyHero'
-import { lobbyFlowStepsFor } from '../src/renderer/src/lobby/LobbyPage'
+import { lobbyFlowStepsFor } from '../src/renderer/src/lobby/lobby-flow'
 
 describe('LobbyHero', () => {
   it('renders the command area as a stateful process track', () => {
