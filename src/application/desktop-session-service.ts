@@ -1402,10 +1402,23 @@ export class DesktopSessionService implements DesktopSessionBridge {
       blockFirstSeen.set(id, at)
       return at
     }
-    for (const item of streamItems) {
+    for (const [index, item] of streamItems.entries()) {
       const startedAt = seen(item.id, item.startedAt)
       if (item.kind === 'thinking') {
-        const status = !generating && item.status === 'running' ? 'done' : item.status
+        // 直播尾部 Thinking 的 done 逐帧抖动：Cursor 在两次写入之间会把该 bubble 暂时
+        // 移出 generatingBubbleIds，observer 照抄成 done，下一帧又回到 running。若原样
+        // 投影，头部会在「• thinking」与「for ~Ns」之间来回换元素、completedAt 反复盖章
+        // ——用户看到的就是「每来一段新内容就闪一下」。规则：回合仍在生成、该块仍是过程
+        // 尾部、上一帧为 running 且没有原生 thinkingDurationMs 时，本帧的 done 视为抖动
+        // 保持 running；真正收尾由「其后出现新块 / 原生时长到达 / 回合停止生成」之一决定。
+        const heldRunning = generating
+          && index === streamItems.length - 1
+          && item.status === 'done'
+          && item.durationMs === undefined
+          && previousById.get(item.id)?.status === 'running'
+        const status = heldRunning
+          ? 'running'
+          : !generating && item.status === 'running' ? 'done' : item.status
         upsert({
           kind: 'thinking', id: item.id, text: item.text, status,
           durationMs: item.durationMs,

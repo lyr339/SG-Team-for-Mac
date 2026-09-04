@@ -117,6 +117,8 @@ html[data-card-transparency="clear"] .configuration-tabs button.is-active { back
 .independent-config__workspace > button { width: fit-content; min-height: 28px; padding: 0 9px; color: var(--text-soft); background: var(--surface-solid); border: 1px solid var(--line-strong); border-radius: 7px; font-size: var(--fs-10); font-weight: 600; }
 .independent-config__workspace > button:hover:not(:disabled) { color: var(--accent-deep); border-color: var(--accent-border); }
 .independent-config__count, .independent-config__status { grid-column: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; }
+/* 状态行现在有三个动作（打开 / 结束 / 新建）：窄列下允许换行，不挤压也不溢出。 */
+.independent-config__status { flex-wrap: wrap; }
 .independent-config__count > span { display: grid; gap: 2px; }
 .independent-config__count strong { font-size: var(--fs-11); }
 .independent-config__count small { color: var(--muted); font-size: var(--fs-10); }

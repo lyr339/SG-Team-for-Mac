@@ -597,6 +597,110 @@ describe('desktop Cursor session enrichment', () => {
     }
   })
 
+  it('holds the live tail Thinking as running while Cursor flips its done flag between chunks (Thought 头部闪烁)', () => {
+    const service = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')), { readWorkspace: () => telemetry() }
+    )
+    const update = (service as unknown as {
+      updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+    }).updateLiveCursorProcess.bind(service)
+    const blocks = () => service.getSnapshot().liveProcess?.['1']?.blocks ?? []
+    const frame = (input: {
+      at: number
+      text: string
+      status: 'running' | 'done'
+      durationMs?: number
+      generating?: boolean
+      after?: boolean
+    }): void => {
+      update('1', {
+        composerId: 'composer-alpha-123', state: 'active', detail: 'observer', observedAt: input.at,
+        isGenerating: input.generating ?? true,
+        process: {
+          turnId: 'turn-flicker',
+          items: [
+            { kind: 'thinking', id: 'th-live', text: input.text, status: input.status, startedAt: 1_000, durationMs: input.durationMs },
+            ...(input.after ? [{ kind: 'tool' as const, id: 'read-after', toolName: 'read_file', toolKind: 'read' as const, summary: 'a.ts', status: 'running' as const, startedAt: input.at }] : [])
+          ],
+          generatingBubbleCount: input.generating === false ? 0 : 1,
+          snapshotComplete: true
+        }
+      })
+    }
+    try {
+      // 逐块到达：running → done（同文本）→ running（新内容）→ done …
+      frame({ at: 2_000, text: '先看', status: 'running' })
+      frame({ at: 2_300, text: '先看', status: 'done' })
+      expect(blocks()[0]).toMatchObject({ id: 'th-live', status: 'running', completedAt: undefined })
+      frame({ at: 2_600, text: '先看一下', status: 'running' })
+      frame({ at: 2_900, text: '先看一下测试', status: 'done' })
+      expect(blocks()[0]).toMatchObject({ id: 'th-live', status: 'running', text: '先看一下测试', completedAt: undefined })
+
+      // 原生 thinkingDurationMs 到达 = Cursor 明确宣告思考结束：按 done 收尾，时长用原生值。
+      frame({ at: 3_200, text: '先看一下测试', status: 'done', durationMs: 2_200 })
+      expect(blocks()[0]).toMatchObject({ id: 'th-live', status: 'done', completedAt: 3_200, durationMs: 2_200, timingEstimated: false })
+      // 再来的采样帧不改写已收尾块的 completedAt。
+      frame({ at: 3_800, text: '先看一下测试', status: 'done', durationMs: 2_200 })
+      expect(blocks()[0]).toMatchObject({ id: 'th-live', status: 'done', completedAt: 3_200 })
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('settles a held Thinking when later work appears or the turn stops generating', () => {
+    const build = () => {
+      const service = new DesktopSessionService(
+        new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')), { readWorkspace: () => telemetry() }
+      )
+      const update = (service as unknown as {
+        updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
+      }).updateLiveCursorProcess.bind(service)
+      const frame = (at: number, status: 'running' | 'done', options: { generating?: boolean; after?: boolean } = {}): void => {
+        update('1', {
+          composerId: 'composer-alpha-123', state: 'active', detail: 'observer', observedAt: at,
+          isGenerating: options.generating ?? true,
+          process: {
+            turnId: 'turn-settle',
+            items: [
+              { kind: 'thinking', id: 'th-live', text: '思考中', status, startedAt: 1_000 },
+              ...(options.after ? [{ kind: 'tool' as const, id: 'read-after', toolName: 'read_file', toolKind: 'read' as const, summary: 'a.ts', status: 'running' as const, startedAt: at }] : [])
+            ],
+            generatingBubbleCount: options.generating === false ? 0 : 1,
+            snapshotComplete: true
+          }
+        })
+      }
+      return { service, frame, blocks: () => service.getSnapshot().liveProcess?.['1']?.blocks ?? [] }
+    }
+
+    // 其后出现新块：Thinking 不再是尾部，done 生效且只盖一次章。
+    const withLater = build()
+    try {
+      withLater.frame(2_000, 'running')
+      withLater.frame(2_300, 'done')
+      expect(withLater.blocks()[0]).toMatchObject({ status: 'running' })
+      withLater.frame(2_600, 'done', { after: true })
+      expect(withLater.blocks()[0]).toMatchObject({ id: 'th-live', status: 'done', completedAt: 2_600 })
+      expect(withLater.blocks()[1]).toMatchObject({ id: 'read-after', status: 'running' })
+      withLater.frame(2_900, 'done', { after: true })
+      expect(withLater.blocks()[0]).toMatchObject({ completedAt: 2_600 })
+    } finally {
+      withLater.service.dispose()
+    }
+
+    // 回合停止生成：尾部 Thinking 收尾。
+    const stopped = build()
+    try {
+      stopped.frame(2_000, 'running')
+      stopped.frame(2_300, 'done')
+      expect(stopped.blocks()[0]).toMatchObject({ status: 'running' })
+      stopped.frame(2_600, 'done', { generating: false })
+      expect(stopped.blocks()[0]).toMatchObject({ id: 'th-live', status: 'done', completedAt: 2_600 })
+    } finally {
+      stopped.service.dispose()
+    }
+  })
+
   it('keeps consecutive native turns FIFO-bound to their exact assistant replies', () => {
     const active = teamSnapshot('composer-alpha-123')
     active.runs = [{
