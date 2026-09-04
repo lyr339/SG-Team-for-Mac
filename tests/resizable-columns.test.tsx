@@ -23,7 +23,7 @@ describe('ResizableColumns collapsible first pane', () => {
     localStorage.clear()
   })
 
-  it('collapses to a restore rail, persists the choice, and restores the saved pane width', async () => {
+  it('collapses to a floating restore control, persists the choice, and restores the saved pane width', async () => {
     const render = () => (
       <ResizableColumns
         finalPaneMinSize={420}
@@ -39,6 +39,8 @@ describe('ResizableColumns collapsible first pane', () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="收起会话列表"]')!.click())
     expect(container.querySelector('.resizable-columns')?.classList.contains('is-first-pane-collapsed')).toBe(true)
     expect(container.textContent).not.toContain('sessions')
+    expect(container.querySelector('.resizable-collapsed-rail')).toBeNull()
+    expect(container.querySelector('.resizable-pane-toggle--expand')).toBeTruthy()
     expect(localStorage.getItem('qingtian-team.layout:v1:collapse-test:collapsed')).toBe('1')
 
     await act(async () => root.unmount())

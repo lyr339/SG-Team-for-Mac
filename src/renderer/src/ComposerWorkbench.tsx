@@ -392,7 +392,10 @@ export function ComposerWorkbench({
         </div>
         <div className="composer-topbar__right">
           <QueueStatus session={session} />
-          <span className="composer-duration" title={session.online ? '当前 Cursor 会话累计运行时长' : 'Cursor Agent 离线后已截止'}>
+          <span
+            className={`composer-duration ${session.online ? 'is-running' : 'is-inactive'}`}
+            title={session.online ? '当前 Cursor 会话累计运行时长' : 'Cursor 会话未启动或运行时长已截止'}
+          >
             <ClockIcon />
             {formatAgentSessionDuration(session)}
           </span>

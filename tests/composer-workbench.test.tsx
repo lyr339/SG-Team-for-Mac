@@ -52,6 +52,7 @@ describe('ComposerWorkbench', () => {
     expect(html).not.toContain('session-usage')
     expect(html).not.toContain('composer-binding-status')
     expect(html).toContain('composer-queue-popover')
+    expect(html).toContain('composer-duration is-running')
     expect(html).toContain('当前没有等待处理的消息')
     expect(html).toContain('Agent 正在监听，新消息会立即投递')
   })
@@ -73,6 +74,7 @@ describe('ComposerWorkbench', () => {
     expect(html).toContain('role="alert"')
     expect(html).toContain('Agent 当前离线')
     expect(html).toContain('稍后发送')
+    expect(html).toContain('composer-duration is-inactive')
   })
 
   it('uses the current project name as the composer chip primary label', () => {

@@ -247,15 +247,13 @@ export function ResizableColumns({
     >
       {collapsed ? (
         <>
-          <aside className="resizable-collapsed-rail">
-            <button
-              className="resizable-pane-toggle"
-              aria-label={firstPaneCollapsible!.expandLabel}
-              title={firstPaneCollapsible!.expandLabel}
-              onClick={() => setCollapsed(false)}
-            ><PaneToggleIcon collapsed /></button>
-          </aside>
           {items.at(-1)}
+          <button
+            className="resizable-pane-toggle resizable-pane-toggle--expand"
+            aria-label={firstPaneCollapsible!.expandLabel}
+            title={firstPaneCollapsible!.expandLabel}
+            onClick={() => setCollapsed(false)}
+          ><PaneToggleIcon collapsed /></button>
         </>
       ) : items.flatMap((item, index) => {
         const output: ReactNode[] = [item]
