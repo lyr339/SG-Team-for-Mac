@@ -47,11 +47,17 @@ describe('DesktopShell right workspace dock', () => {
         <section>会话内容</section>
       </DesktopShell>
     ))
+    expect(container.textContent).toContain('会话栏')
+    expect(container.querySelectorAll('.panel-button')).toHaveLength(2)
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="收起会话列表"]')!.click())
+    expect(container.textContent).not.toContain('会话栏')
+    expect(localStorage.getItem('qingtian-team.layout:v1:shell.sessions.v2:collapsed')).toBe('1')
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
+    expect(container.textContent).toContain('会话栏')
     expect(container.textContent).not.toContain('Review 内容')
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开右侧工作区"]')!.click())
     expect(container.textContent).toContain('Review 内容')
     expect(container.querySelector('.workspace-dock.is-fixed-end')).toBeTruthy()
-    expect(container.querySelector('.desktop-body.has-workspace-inspector')).toBeTruthy()
     expect(localStorage.getItem('qingtian-team.layout:v1:workspace-inspector:open')).toBe('1')
     await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '关闭 Review')!.click())
     expect(container.textContent).not.toContain('Review 内容')

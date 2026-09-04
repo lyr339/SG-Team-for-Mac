@@ -23,33 +23,24 @@ describe('ResizableColumns collapsible first pane', () => {
     localStorage.clear()
   })
 
-  it('collapses to a floating restore control, persists the choice, and restores the saved pane width', async () => {
-    const render = () => (
+  it('applies an externally controlled first-pane collapse without rendering a duplicate toggle', async () => {
+    const render = (collapsed: boolean) => (
       <ResizableColumns
         finalPaneMinSize={420}
+        firstPaneCollapsed={collapsed}
         paneSpecs={[{ defaultSize: 326, minSize: 286, maxSize: 420 }]}
         storageKey="collapse-test"
-        firstPaneCollapsible={{ collapseLabel: '收起会话列表', expandLabel: '展开会话列表' }}
       >
         <aside>sessions</aside><main>content</main>
       </ResizableColumns>
     )
-    let root = createRoot(container)
-    await act(async () => root.render(render()))
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="收起会话列表"]')!.click())
+    const root = createRoot(container)
+    await act(async () => root.render(render(true)))
     expect(container.querySelector('.resizable-columns')?.classList.contains('is-first-pane-collapsed')).toBe(true)
     expect(container.textContent).not.toContain('sessions')
-    expect(container.querySelector('.resizable-collapsed-rail')).toBeNull()
-    expect(container.querySelector('.resizable-pane-toggle--expand')).toBeTruthy()
-    expect(localStorage.getItem('qingtian-team.layout:v1:collapse-test:collapsed')).toBe('1')
-
-    await act(async () => root.unmount())
-    root = createRoot(container)
-    await act(async () => root.render(render()))
-    expect(container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')).toBeTruthy()
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
+    expect(container.querySelector('.resizable-pane-toggle')).toBeNull()
+    await act(async () => root.render(render(false)))
     expect(container.textContent).toContain('sessions')
-    expect(localStorage.getItem('qingtian-team.layout:v1:collapse-test:collapsed')).toBe('0')
     await act(async () => root.unmount())
   })
 
@@ -73,26 +64,20 @@ describe('ResizableColumns collapsible first pane', () => {
     await act(async () => root.unmount())
   })
 
-  it('temporarily collapses the first pane without persisting over the user preference', async () => {
-    let forcedExpand = 0
+  it('lets the shell force a temporary collapse without adding local state or controls', async () => {
     const root = createRoot(container)
     await act(async () => root.render(
       <ResizableColumns
         finalPaneMinSize={420}
         forceFirstPaneCollapsed
-        onForcedFirstPaneExpand={() => { forcedExpand += 1 }}
         paneSpecs={[{ defaultSize: 326, minSize: 286, maxSize: 420 }]}
         storageKey="forced-collapse-test"
-        firstPaneCollapsible={{ collapseLabel: '收起会话列表', expandLabel: '展开会话列表' }}
       >
         <aside>sessions</aside><main>content</main>
       </ResizableColumns>
     ))
     expect(container.textContent).not.toContain('sessions')
-    expect(localStorage.getItem('qingtian-team.layout:v1:forced-collapse-test:collapsed')).toBeNull()
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
-    expect(forcedExpand).toBe(1)
-    expect(localStorage.getItem('qingtian-team.layout:v1:forced-collapse-test:collapsed')).toBeNull()
+    expect(container.querySelector('.resizable-pane-toggle')).toBeNull()
     await act(async () => root.unmount())
   })
 })

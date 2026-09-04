@@ -3,7 +3,7 @@ import type { DesktopSnapshot } from '../../shared/desktop-api'
 import type { CursorWorkspaceDetection } from '../../domain/cursor-workspace'
 import {
   GridIcon,
-  InspectorIcon,
+  PanelIcon,
   SettingsIcon,
   SessionsIcon,
   WorkspaceIcon
@@ -71,6 +71,7 @@ const CONTEXT_SIDEBAR_SPECS = [{ defaultSize: 270, minSize: 220, maxSize: 500 }]
 const SESSION_SIDEBAR_SPECS = [{ defaultSize: 326, minSize: 286, maxSize: 420 }] as const
 const INSPECTOR_SPECS = [{ defaultSize: 420, minSize: 300, maxSize: 720 }] as const
 const INSPECTOR_OPEN_KEY = 'qingtian-team.layout:v1:workspace-inspector:open'
+const SESSION_SIDEBAR_COLLAPSED_KEY = 'qingtian-team.layout:v1:shell.sessions.v2:collapsed'
 // 快捷键提示平台化：mac 显示 ⌘，其余平台（Windows）显示 Ctrl+；事件侧已兼容两键。
 const MODULE_SWITCH_MODIFIER = typeof document !== 'undefined'
   && document.documentElement.dataset.platform === 'darwin'
@@ -99,6 +100,9 @@ export function DesktopShell({
   const [showInspector, setShowInspector] = useState(() => {
     try { return localStorage.getItem(INSPECTOR_OPEN_KEY) === '1' } catch { return false }
   })
+  const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem(SESSION_SIDEBAR_COLLAPSED_KEY) === '1' } catch { return false }
+  })
   const [compactInspectorLayout, setCompactInspectorLayout] = useState(() => (
     typeof window !== 'undefined' && window.matchMedia?.('(max-width: 1320px)').matches === true
   ))
@@ -118,10 +122,18 @@ export function DesktopShell({
     ? `${cursorWorkspace.candidates.length || '多'} 个 Cursor 工程`
     : detectedWorkspace ? `Cursor · ${detectedWorkspace.name}` : ''
   const inspectorVisible = activeModule === 'sessions' && Boolean(rightPanel) && showInspector
+  const sidebarForcedCollapsed = inspectorVisible && compactInspectorLayout
+  const sidebarVisible = activeModule === 'sessions' && !sessionSidebarCollapsed && !sidebarForcedCollapsed
 
   const setInspectorVisible = (value: boolean): void => {
     setShowInspector(value)
     try { localStorage.setItem(INSPECTOR_OPEN_KEY, value ? '1' : '0') } catch { /* 当前窗口仍然生效。 */ }
+  }
+
+  const setSidebarVisible = (value: boolean): void => {
+    if (value && sidebarForcedCollapsed) setInspectorVisible(false)
+    setSessionSidebarCollapsed(!value)
+    try { localStorage.setItem(SESSION_SIDEBAR_COLLAPSED_KEY, value ? '0' : '1') } catch { /* 当前窗口仍然生效。 */ }
   }
 
   useEffect(() => {
@@ -208,15 +220,26 @@ export function DesktopShell({
         </nav>
 
         <div className="topbar__actions">
+          {activeModule === 'sessions' ? (
+            <button
+              className={`panel-button ${sidebarVisible ? 'is-active' : ''}`}
+              onClick={() => setSidebarVisible(!sidebarVisible)}
+              title={sidebarVisible ? '收起会话列表' : '展开会话列表'}
+              aria-label={sidebarVisible ? '收起会话列表' : '展开会话列表'}
+              aria-expanded={sidebarVisible}
+            >
+              <PanelIcon side="left" />
+            </button>
+          ) : null}
           {activeModule === 'sessions' && rightPanel ? (
             <button
-              className={`inspector-button ${inspectorVisible ? 'is-active' : ''}`}
+              className={`panel-button ${inspectorVisible ? 'is-active' : ''}`}
               onClick={() => setInspectorVisible(!inspectorVisible)}
               title={inspectorVisible ? '收起右侧工作区' : '展开右侧工作区'}
               aria-label={inspectorVisible ? '收起右侧工作区' : '展开右侧工作区'}
               aria-expanded={inspectorVisible}
             >
-              <InspectorIcon />
+              <PanelIcon side="right" />
             </button>
           ) : null}
           <div className="appearance-control" ref={appearanceRef}>
@@ -282,7 +305,7 @@ export function DesktopShell({
         )}
       </header>
 
-      <div className={`desktop-body desktop-body--${activeModule}${wideContent ? ' desktop-body--wide' : ''}${inspectorVisible ? ' has-workspace-inspector' : ''}`}>
+      <div className={`desktop-body desktop-body--${activeModule}${wideContent ? ' desktop-body--wide' : ''}`}>
         {wideContent ? (
           <div className="shell-columns shell-columns--wide">
             <main className="content-stage">{children}</main>
@@ -295,12 +318,8 @@ export function DesktopShell({
             key={activeModule === 'sessions' ? 'shell.sessions' : 'shell.context'}
             paneSpecs={activeModule === 'sessions' ? SESSION_SIDEBAR_SPECS : CONTEXT_SIDEBAR_SPECS}
             storageKey={activeModule === 'sessions' ? 'shell.sessions.v2' : 'shell.context'}
-            forceFirstPaneCollapsed={inspectorVisible && compactInspectorLayout}
-            onForcedFirstPaneExpand={() => setInspectorVisible(false)}
-            firstPaneCollapsible={activeModule === 'sessions' ? {
-              collapseLabel: '收起会话列表',
-              expandLabel: '展开会话列表'
-            } : undefined}
+            firstPaneCollapsed={activeModule === 'sessions' && sessionSidebarCollapsed}
+            forceFirstPaneCollapsed={sidebarForcedCollapsed}
           >
             {sidebar}
             {inspectorVisible ? (

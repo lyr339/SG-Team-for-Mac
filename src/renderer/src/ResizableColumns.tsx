@@ -25,13 +25,10 @@ interface ResizableColumnsProps {
   storageKey: string
   /** 两栏布局中固定宽度栏所在边；默认左侧。 */
   fixedPaneSide?: 'start' | 'end'
+  /** 首栏收起态由外层导航控制；组件只负责布局。 */
+  firstPaneCollapsed?: boolean
   /** 窄窗口的临时收起态；不会覆盖用户保存的偏好。 */
   forceFirstPaneCollapsed?: boolean
-  onForcedFirstPaneExpand?: () => void
-  firstPaneCollapsible?: {
-    collapseLabel: string
-    expandLabel: string
-  }
 }
 
 const STORAGE_PREFIX = 'qingtian-team.layout:v1:'
@@ -57,30 +54,6 @@ function storeSizes(storageKey: string, sizes: readonly number[]): void {
   }
 }
 
-function readCollapsed(storageKey: string): boolean {
-  try {
-    return localStorage.getItem(`${STORAGE_PREFIX}${storageKey}:collapsed`) === '1'
-  } catch {
-    return false
-  }
-}
-
-function storeCollapsed(storageKey: string, collapsed: boolean): void {
-  try {
-    localStorage.setItem(`${STORAGE_PREFIX}${storageKey}:collapsed`, collapsed ? '1' : '0')
-  } catch { /* 当前运行内仍然生效。 */ }
-}
-
-function PaneToggleIcon({ collapsed }: { collapsed: boolean }): React.JSX.Element {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <rect x="2.5" y="2.5" width="15" height="15" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-      <path d="M7 3v14" fill="none" stroke="currentColor" strokeWidth="1.2" />
-      <path d={collapsed ? 'm10.5 7 3 3-3 3' : 'm13.5 7-3 3 3 3'} fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4" />
-    </svg>
-  )
-}
-
 function sizesEqual(left: readonly number[], right: readonly number[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
@@ -93,16 +66,11 @@ export function ResizableColumns({
   paneSpecs,
   storageKey,
   fixedPaneSide = 'start',
+  firstPaneCollapsed = false,
   forceFirstPaneCollapsed = false,
-  onForcedFirstPaneExpand,
-  firstPaneCollapsible
 }: ResizableColumnsProps): React.JSX.Element {
   const items = Children.toArray(children)
-  const collapsible = firstPaneCollapsible !== undefined && items.length === 2
   const [committedSizes, setCommittedSizes] = useState(() => readStoredSizes(storageKey, paneSpecs))
-  const [firstPaneCollapsed, setFirstPaneCollapsed] = useState(() => (
-    collapsible ? readCollapsed(storageKey) : false
-  ))
   const [compactLayout, setCompactLayout] = useState(() => (
     typeof window !== 'undefined' && window.matchMedia?.('(max-width: 760px)').matches === true
   ))
@@ -140,8 +108,7 @@ export function ResizableColumns({
     const next = readStoredSizes(storageKey, specsRef.current)
     sizesRef.current = next
     setCommittedSizes(next)
-    setFirstPaneCollapsed(collapsible ? readCollapsed(storageKey) : false)
-  }, [collapsible, storageKey])
+  }, [storageKey])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return
@@ -245,12 +212,7 @@ export function ResizableColumns({
     '--resizable-final-min': `${finalPaneMinSize}px`,
     ...Object.fromEntries(sizesRef.current.map((size, index) => [`--resizable-pane-${index}`, `${size}px`]))
   } as CSSProperties
-  const forcedCollapsed = collapsible && forceFirstPaneCollapsed && !compactLayout
-  const collapsed = collapsible && (firstPaneCollapsed || forcedCollapsed) && !compactLayout
-  const setCollapsed = (value: boolean): void => {
-    setFirstPaneCollapsed(value)
-    storeCollapsed(storageKey, value)
-  }
+  const collapsed = items.length === 2 && (firstPaneCollapsed || forceFirstPaneCollapsed) && !compactLayout
 
   return (
     <div
@@ -258,17 +220,7 @@ export function ResizableColumns({
       ref={containerRef}
       style={style}
     >
-      {collapsed ? (
-        <>
-          {items.at(-1)}
-          <button
-            className="resizable-pane-toggle resizable-pane-toggle--expand"
-            aria-label={firstPaneCollapsible!.expandLabel}
-            title={firstPaneCollapsible!.expandLabel}
-            onClick={() => forcedCollapsed ? onForcedFirstPaneExpand?.() : setCollapsed(false)}
-          ><PaneToggleIcon collapsed /></button>
-        </>
-      ) : items.flatMap((item, index) => {
+      {collapsed ? items.at(-1) : items.flatMap((item, index) => {
         const output: ReactNode[] = [item]
         if (index < items.length - 1) {
           const spec = paneSpecs[index]
@@ -292,14 +244,6 @@ export function ResizableColumns({
         }
         return output
       })}
-      {!collapsed && collapsible ? (
-        <button
-          className="resizable-pane-toggle resizable-pane-toggle--collapse"
-          aria-label={firstPaneCollapsible.collapseLabel}
-          title={firstPaneCollapsible.collapseLabel}
-          onClick={() => setCollapsed(true)}
-        ><PaneToggleIcon collapsed={false} /></button>
-      ) : null}
     </div>
   )
 }
