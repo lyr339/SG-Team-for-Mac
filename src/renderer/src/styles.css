@@ -987,13 +987,13 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
   .composer-queue-status { padding-inline: 7px; }
   .composer-agent-chip { max-width: 190px; }
 }
-/* 单行工具条只在真正紧张的窄区间收成闹钟；更窄时工具条换行并恢复完整时间。 */
-@container composer (min-width: 561px) and (max-width: 620px) {
+/* 单行工具条只在临界宽度收成闹钟；有 521px 即保留完整时间，避免空白仍换行。 */
+@container composer (min-width: 461px) and (max-width: 520px) {
   .composer-duration { width: 32px; justify-content: center; gap: 0; padding: 0; }
   .composer-duration__text { display: none; }
   .composer-duration::before, .composer-duration::after { display: block; }
 }
-@container composer (max-width: 560px) {
+@container composer (max-width: 460px) {
   .composer-topbar { grid-template-columns: minmax(0, 1fr); align-items: start; }
   .composer-topbar__right { justify-content: flex-start; flex-wrap: wrap; overflow: visible; }
   .composer-agent-chip { max-width: 160px; }
