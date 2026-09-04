@@ -217,8 +217,10 @@ export function ProcessTurnCard({
                     else next.add(step.id)
                     return next
                   })} aria-expanded={stepOpen}>
-                    <strong>Thought</strong>
-                    {duration ? <time>for {duration}</time> : step.status === 'running' ? <span><i />thinking</span> : null}
+                    {/* 与 Cursor 自身一致：进行中是「Thinking」+ 脉冲点，结束后变成「Thought for Ns」。 */}
+                    {step.status === 'running'
+                      ? <><strong>Thinking</strong><i className="cursor-native-thought__pulse" aria-hidden="true" /></>
+                      : <><strong>Thought</strong>{duration ? <time>for {duration}</time> : null}</>}
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d={stepOpen ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'} fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg>
                   </button>
                   {stepOpen && step.body ? <StreamingTextBody step={step} live={live} className="cursor-native-thought__body" /> : null}

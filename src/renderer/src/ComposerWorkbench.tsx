@@ -1,6 +1,15 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
 import type { ConversationEntry, MessageAttachment } from '../../domain/conversation-entry'
+import {
+  clampManualHeight,
+  COMPOSER_TEXTAREA_MIN_HEIGHT,
+  dragManualHeight,
+  readStoredComposerHeight,
+  resolveComposerHeight,
+  storeComposerHeight
+} from './composer-height'
+import { AttachmentThumbnail } from './AttachmentImageViewer'
 import {
   badgeTone,
   executionBadges,
@@ -310,9 +319,75 @@ export function ComposerWorkbench({
   const [attachmentError, setAttachmentError] = useState('')
   const [pendingAttachmentIntakes, setPendingAttachmentIntakes] = useState(0)
   const [draggingAttachment, setDraggingAttachment] = useState(false)
+  // 输入区高度：内容自适应 + 上边缘可拖（手动高度 = 最低高度，持久化）。
+  const [manualHeight, setManualHeight] = useState<number | undefined>(() => readStoredComposerHeight())
+  const [resizingHeight, setResizingHeight] = useState(false)
+  const manualHeightRef = useRef(manualHeight)
+  manualHeightRef.current = manualHeight
   useEffect(() => {
     attachmentsRef.current = attachments
   }, [attachments])
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    const apply = (): void => {
+      // 先收到最小高度量出内容真实高度，再按模型夹紧；避免 scrollHeight 被上一次高度撑大。
+      textarea.style.height = `${COMPOSER_TEXTAREA_MIN_HEIGHT}px`
+      const next = resolveComposerHeight({
+        contentHeight: textarea.scrollHeight,
+        manualHeight: manualHeightRef.current,
+        viewportHeight: window.innerHeight
+      })
+      textarea.style.height = `${next}px`
+    }
+    apply()
+    window.addEventListener('resize', apply)
+    return () => window.removeEventListener('resize', apply)
+  }, [draft, manualHeight])
+
+  const commitManualHeight = (value: number | undefined): void => {
+    setManualHeight(value)
+    storeComposerHeight(value)
+  }
+
+  const beginHeightResize = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const startY = event.clientY
+    const startHeight = manualHeightRef.current ?? textareaRef.current?.getBoundingClientRect().height ?? COMPOSER_TEXTAREA_MIN_HEIGHT
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    setResizingHeight(true)
+    let latest = startHeight
+    const move = (moveEvent: PointerEvent): void => {
+      latest = dragManualHeight(startHeight, startY, moveEvent.clientY, window.innerHeight)
+      setManualHeight(latest)
+    }
+    const finish = (): void => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
+      setResizingHeight(false)
+      // 拖回默认高度即视为清除手动高度（回到纯内容自适应）。
+      commitManualHeight(latest <= COMPOSER_TEXTAREA_MIN_HEIGHT ? undefined : latest)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', finish, { once: true })
+    window.addEventListener('pointercancel', finish, { once: true })
+  }
+
+  const resizeHeightWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'Home') {
+      event.preventDefault()
+      commitManualHeight(undefined)
+      return
+    }
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+    event.preventDefault()
+    const current = manualHeightRef.current ?? textareaRef.current?.getBoundingClientRect().height ?? COMPOSER_TEXTAREA_MIN_HEIGHT
+    const step = (event.shiftKey ? 40 : 10) * (event.key === 'ArrowUp' ? 1 : -1)
+    const next = clampManualHeight(current + step, window.innerHeight)
+    commitManualHeight(next <= COMPOSER_TEXTAREA_MIN_HEIGHT ? undefined : next)
+  }
   const profile = session.executionProfile
   const profileName = modelDisplayName(profile, session.modelName)
   const badges = executionBadges(profile)
@@ -399,7 +474,7 @@ export function ComposerWorkbench({
 
   return (
     <section
-      className={`workspace-composer ${canSend ? 'is-ready' : 'is-offline'} ${draggingAttachment ? 'is-dragging-attachment' : ''}`}
+      className={`workspace-composer ${canSend ? 'is-ready' : 'is-offline'} ${draggingAttachment ? 'is-dragging-attachment' : ''} ${resizingHeight ? 'is-resizing-height' : ''}`}
       aria-label="会话消息工作台"
       onDragEnter={handleDragOver}
       onDragOver={handleDragOver}
@@ -413,6 +488,22 @@ export function ComposerWorkbench({
         textareaRef.current?.focus({ preventScroll: true })
       }}
     >
+      <div
+        className="composer-resize-handle"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="拖动调整输入区高度；↑/↓ 微调，Home 恢复默认"
+        aria-valuenow={manualHeight ?? COMPOSER_TEXTAREA_MIN_HEIGHT}
+        aria-valuemin={COMPOSER_TEXTAREA_MIN_HEIGHT}
+        title={manualHeight ? '拖动调整输入区高度 · 双击恢复自适应' : '向上拖动可加高输入区'}
+        tabIndex={0}
+        onPointerDown={beginHeightResize}
+        onDoubleClick={() => commitManualHeight(undefined)}
+        onKeyDown={resizeHeightWithKeyboard}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <i aria-hidden="true" />
+      </div>
       <div className="composer-topbar">
         <div className="composer-topbar__left">
           <span
@@ -492,7 +583,11 @@ export function ComposerWorkbench({
           {attachments.map((attachment) => (
             <div key={attachment.id} className="composer-attachment">
               {attachment.previewUrl ? (
-                <img src={attachment.previewUrl} alt={attachment.name} className="composer-attachment-preview" />
+                <AttachmentThumbnail
+                  attachment={attachment}
+                  className="composer-attachment-preview"
+                  onRemove={() => removeAttachment(attachment.id)}
+                />
               ) : (
                 <div className="composer-attachment-file">
                   <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.2"/><path d="M9 2v3h3" fill="none" stroke="currentColor" strokeWidth="1.2"/></svg>

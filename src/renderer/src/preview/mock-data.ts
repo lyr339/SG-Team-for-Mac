@@ -363,7 +363,9 @@ export const desktopSnapshot: DesktopSnapshot = {
             { content: '实现 Review 与 Cursor Todos 标签', status: 'in_progress' },
             { content: '完成响应式和透明模式走查', status: 'pending' }
           ]
-        }
+        },
+        // 进行中的思考：头部显示「Thinking」+ 脉冲点；结束后变「Thought for Ns」（上面 live-1）。
+        { kind: 'thinking', id: 'live-5', text: '测试全绿，接下来核对右侧工作区在窄栏下的折叠行为，再决定是否需要补一条回归用例……', status: 'running' }
       ]
     }
   },

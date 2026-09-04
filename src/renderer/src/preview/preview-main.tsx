@@ -497,6 +497,8 @@ const api: QingtianDesktopApi = {
     }
   },
   revealPathInFolder: async () => true,
+  copyImageToClipboard: async () => true,
+  saveImageAs: async () => true,
   getTaskPoolSnapshot: async () => structuredClone(previewTasks),
   installTaskMcp: async () => ({
     ok: true,

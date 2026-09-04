@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { join } from 'node:path'
 import type { ConversationEntry } from '../domain/conversation-entry'
 import {
   buildSessionHandoffMessage,
@@ -27,16 +27,8 @@ export interface SessionHandoffPorts {
   conversationsOf(channelId: string): readonly ConversationEntry[] | undefined
   /** 拾光会话记录落盘目录（userData/handoff）。 */
   handoffRoot: string
-  /** Cursor 项目目录根（~/.cursor/projects）；用于限定「在 Finder 中显示」的可见范围。 */
-  transcriptsRoot: string
   now?: () => number
   onerror?: (error: unknown) => void
-}
-
-function isInside(root: string, candidate: string): boolean {
-  const normalizedRoot = resolve(root)
-  const normalizedCandidate = resolve(candidate)
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(normalizedRoot + sep)
 }
 
 /**
@@ -119,13 +111,6 @@ export class SessionHandoffService {
       commandId: accepted.commandId,
       issuedAt
     }
-  }
-
-  /** 只允许显示拾光自己产出/定位过的文件：交接记录目录与 Cursor 转录目录。 */
-  canReveal(path: string): boolean {
-    const candidate = String(path ?? '').trim()
-    if (!candidate) return false
-    return isInside(this.ports.handoffRoot, candidate) || isInside(this.ports.transcriptsRoot, candidate)
   }
 
   private writeRecord(source: SessionHandoffContext, issuedAt: number, team: TeamControlSnapshot): string | undefined {

@@ -72,6 +72,7 @@ import { createTeamAgentLaunchPromptPort } from '../application/team-agent-launc
 import { WorkspaceReviewReader } from '../infrastructure/git/workspace-review-reader'
 import { registerWorkspaceReviewIpc } from './register-workspace-review-ipc'
 import { SessionHandoffService } from '../application/session-handoff-service'
+import { RevealPathPolicy } from '../application/reveal-path-policy'
 import { registerSessionHandoffIpc } from './register-session-handoff-ipc'
 import { homedir } from 'node:os'
 
@@ -638,16 +639,28 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   disposeCursorUsageIpc = registerCursorUsageIpc(cursorUsageTracker, () => mainWindow)
   disposeWorkspaceReviewIpc = registerWorkspaceReviewIpc(workspaceReviewReader, () => mainWindow)
   // 会话交接：上下文文档 = Cursor 转录（遥测读取器定位），拾光会话记录落 userData/handoff。
+  const handoffRoot = join(app.getPath('userData'), 'handoff')
   const sessionHandoffService = new SessionHandoffService({
     team: teamControlService,
     sessions: desktopSessionService,
     locateTranscript: (composerId, workspacePath) => cursorTelemetry.locateTranscript(composerId, workspacePath),
     conversationsOf: (channelId) => channelMessageRelay?.conversationsOf(channelId),
-    handoffRoot: join(app.getPath('userData'), 'handoff'),
-    transcriptsRoot: process.env.QINGTIAN_CURSOR_PROJECTS_ROOT?.trim() || join(homedir(), '.cursor', 'projects'),
+    handoffRoot,
     onerror: (error) => process.stderr.write(`[session-handoff] ${error instanceof Error ? error.message : String(error)}\n`)
   })
-  disposeSessionHandoffIpc = registerSessionHandoffIpc(sessionHandoffService, desktopSessionService, () => mainWindow)
+  // 「在 Finder 中显示」白名单：交接记录、Cursor 转录、通道附件（三处都是拾光自己写入/定位的文件）。
+  const revealPolicy = new RevealPathPolicy([
+    handoffRoot,
+    process.env.QINGTIAN_CURSOR_PROJECTS_ROOT?.trim() || join(homedir(), '.cursor', 'projects'),
+    join(app.getPath('userData'), 'channel-attachments')
+  ])
+  disposeSessionHandoffIpc = registerSessionHandoffIpc(
+    sessionHandoffService,
+    desktopSessionService,
+    revealPolicy,
+    () => mainWindow,
+    { downloadsPath: () => app.getPath('downloads') }
+  )
   disposeCursorUpdateIpc = registerCursorUpdateIpc(cursorUpdatePreferencesStore, () => mainWindow)
   disposeWindowChromeIpc = registerWindowChromeIpc(() => mainWindow)
   disposeAccountAutomationIpc = registerAccountAutomationIpc(accountAutomationService, () => mainWindow, {

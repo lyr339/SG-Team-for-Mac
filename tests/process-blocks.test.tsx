@@ -52,11 +52,23 @@ describe('ProcessBlocks', () => {
     const html = renderToStaticMarkup(<ProcessBlocks blocks={blocks} />)
 
     expect(html).toContain('搜索')
-    expect(html).toContain('Thought')
+    // 进行中的思考：标题即状态「Thinking」+ 脉冲点，不再并列 “Thought · thinking”
+    expect(html).toContain('<strong>Thinking</strong>')
+    expect(html).toContain('cursor-native-thought__pulse')
+    expect(html).not.toContain('<strong>Thought</strong>')
     expect(html).toContain('运行验证')
-    expect(html).toContain('thinking')
     expect(html).toContain('失败')
     expect(html).toContain('aria-expanded="false"')
+  })
+
+  it('flips the thinking header to “Thought for …” once the block is done', () => {
+    const html = renderToStaticMarkup(<ProcessBlocks blocks={[
+      { kind: 'thinking', id: 'th-done', text: '想清楚了。', status: 'done', durationMs: 38_429 }
+    ]} />)
+    expect(html).toContain('<strong>Thought</strong>')
+    expect(html).toContain('for 38s')
+    expect(html).not.toContain('Thinking')
+    expect(html).not.toContain('cursor-native-thought__pulse')
   })
 
   it('does not expose disclosure aria on non-expandable disabled heads', () => {

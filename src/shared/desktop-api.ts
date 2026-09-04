@@ -297,6 +297,10 @@ export interface QingtianDesktopApi {
   deliverSessionHandoff(input: SessionHandoffRequest): Promise<SessionHandoffResult>
   /** 在系统文件管理器中显示该路径（仅允许拾光已解析出的文件）。 */
   revealPathInFolder(input: { path: string }): Promise<boolean>
+  /** 把图片（data URL）写入系统剪贴板；成功返回 true。 */
+  copyImageToClipboard(input: { dataUrl: string }): Promise<boolean>
+  /** 弹出保存对话框把图片（data URL）另存为文件；用户取消返回 false。 */
+  saveImageAs(input: { dataUrl: string; name?: string }): Promise<boolean>
   getTaskPoolSnapshot(): Promise<TaskPoolSnapshot>
   installTaskMcp(): Promise<McpInstallationResult>
   getTeamControlSnapshot(): Promise<TeamControlSnapshot>
@@ -386,6 +390,8 @@ export const IPC = {
   sessionHandoffContext: 'sg-team-session:handoff-context',
   sessionHandoffDeliver: 'sg-team-session:handoff-deliver',
   revealPathInFolder: 'sg-team-session:reveal-path',
+  copyImageToClipboard: 'sg-team-session:copy-image',
+  saveImageAs: 'sg-team-session:save-image',
   snapshot: 'sg-team-session:snapshot',
   taskPoolGet: 'task-pool:get',
   taskPoolSnapshot: 'task-pool:snapshot',

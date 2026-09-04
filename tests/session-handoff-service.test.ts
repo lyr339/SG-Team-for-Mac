@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { SessionHandoffService } from '../src/application/session-handoff-service'
+import { RevealPathPolicy } from '../src/application/reveal-path-policy'
 import type { AgentSession } from '../src/domain/agent-session'
 import type { ConversationEntry } from '../src/domain/conversation-entry'
 import { emptyTeamControlSnapshot, type TeamControlSnapshot } from '../src/domain/team-control'
@@ -83,7 +84,6 @@ function harness(options: { sessionToken?: string; transcriptExists?: boolean } 
     locateTranscript: (composerId, workspacePath) => reader.locateTranscript(composerId, workspacePath),
     conversationsOf: (channelId) => desktop.conversations[channelId],
     handoffRoot: join(root, 'handoff'),
-    transcriptsRoot: projectsRoot,
     now: () => new Date(2026, 8, 4, 20, 5).getTime()
   })
   return { service, sent, root, projectsRoot, transcriptDir }
@@ -117,7 +117,7 @@ describe('SessionHandoffService', () => {
   })
 
   it('delivers to the same seat with the hold flag and writes the 拾光 record next to the message', () => {
-    const { service, sent, root } = harness({ sessionToken: 'seat-A' })
+    const { service, sent, root, projectsRoot } = harness({ sessionToken: 'seat-A' })
     const result = service.deliver({ sourceChannelId: '1', target: { kind: 'self' }, note: '接着做队列弹层' })
     expect(result).toMatchObject({ targetChannelId: '1', held: true, commandId: 'cmd-1' })
     expect(sent).toHaveLength(1)
@@ -131,9 +131,12 @@ describe('SessionHandoffService', () => {
     expect(record).toContain('# 拾光会话记录 · CH-1 独立席 1')
     expect(record).toContain('你好！我是 Claude。')
     expect(record).toContain(`- Cursor 转录：${result.transcriptPath}`)
-    expect(service.canReveal(result.recordPath!)).toBe(true)
-    expect(service.canReveal(result.transcriptPath)).toBe(true)
-    expect(service.canReveal('/etc/passwd')).toBe(false)
+    // 「在 Finder 中显示」白名单：交接记录目录与转录目录内允许，其余拒绝
+    const policy = new RevealPathPolicy([join(root, 'handoff'), projectsRoot])
+    expect(policy.allows(result.recordPath!)).toBe(true)
+    expect(policy.allows(result.transcriptPath)).toBe(true)
+    expect(policy.allows('/etc/passwd')).toBe(false)
+    expect(policy.allows(`${join(root, 'handoff')}-evil/x.md`)).toBe(false)
   })
 
   it('delivers to another session as a plain queued message and refuses self via the channel form', () => {

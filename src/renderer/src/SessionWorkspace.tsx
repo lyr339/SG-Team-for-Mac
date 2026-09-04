@@ -4,6 +4,7 @@ import { conversationTextIdentity, type ConversationEntry, type MessageAttachmen
 import type { LiveAgentResponseState, LiveProcessState, NativeProcessStreamStatus } from '../../shared/desktop-api'
 import { formatClock, formatFileSize, formatRelativeTime, statusLabel } from './format'
 import { ComposerWorkbench } from './ComposerWorkbench'
+import { AttachmentThumbnail } from './AttachmentImageViewer'
 import { AgentAvatar } from './AgentAvatar'
 import { ClampedMessage } from './ClampedMessage'
 import { ProcessTurnCard } from './ProcessTurnCard'
@@ -64,7 +65,7 @@ function renderAttachments(entry: ConversationEntry): React.JSX.Element | null {
       {entry.attachments.map((attachment) => (
         <div key={attachment.id} className="chat-attachment">
           {attachment.mimeType.startsWith('image/') && attachment.previewUrl ? (
-            <img src={attachment.previewUrl} alt={attachment.name} className="chat-attachment-image" />
+            <AttachmentThumbnail attachment={attachment} className="chat-attachment-image" />
           ) : (
             <div className="chat-attachment-file">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.2"/><path d="M9 2v3h3" fill="none" stroke="currentColor" strokeWidth="1.2"/></svg>
