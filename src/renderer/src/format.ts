@@ -37,14 +37,15 @@ export function formatSessionDuration(
 
 export function formatDurationMilliseconds(durationMs: number, prefix = '运行'): string {
   const minutes = Math.max(0, Math.floor(durationMs / 60_000))
-  if (minutes < 1) return `${prefix}不到 1 分钟`
-  if (minutes < 60) return `${prefix} ${minutes} 分钟`
+  const lead = prefix ? `${prefix} ` : ''
+  if (minutes < 1) return `${lead}不到 1 分钟`
+  if (minutes < 60) return `${lead}${minutes} 分钟`
   const hours = Math.floor(minutes / 60)
   const remainingMinutes = minutes % 60
-  if (hours < 24) return `${prefix} ${hours} 小时${remainingMinutes ? ` ${remainingMinutes} 分` : ''}`
+  if (hours < 24) return `${lead}${hours} 小时${remainingMinutes ? ` ${remainingMinutes} 分` : ''}`
   const days = Math.floor(hours / 24)
   const remainingHours = hours % 24
-  return `${prefix} ${days} 天${remainingHours ? ` ${remainingHours} 小时` : ''}`
+  return `${lead}${days} 天${remainingHours ? ` ${remainingHours} 小时` : ''}`
 }
 
 export function formatAgentSessionDuration(
@@ -52,12 +53,12 @@ export function formatAgentSessionDuration(
   now = Date.now()
 ): string {
   if (session.activeDurationMs !== undefined) {
-    const label = formatDurationMilliseconds(session.activeDurationMs)
-    return session.online ? label : `${label} · 已截止`
+    const label = formatDurationMilliseconds(session.activeDurationMs, '')
+    return session.online ? label : `${label} · 截止`
   }
-  if (session.online) return formatSessionDuration(session.startedAt, now, '运行')
-  if (!session.startedAt || !session.disconnectedAt) return '已离线'
-  return `${formatSessionDuration(session.startedAt, session.disconnectedAt, '运行')} · 已截止`
+  if (session.online) return formatSessionDuration(session.startedAt, now, '')
+  if (!session.startedAt || !session.disconnectedAt) return '离线'
+  return `${formatSessionDuration(session.startedAt, session.disconnectedAt, '')} · 截止`
 }
 
 /**

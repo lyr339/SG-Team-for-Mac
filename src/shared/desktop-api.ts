@@ -305,7 +305,7 @@ export interface QingtianDesktopApi {
   /** 当前活动工作区的真实 Git 工作树审查摘要；右栏打开时按需读取。 */
   getWorkspaceReview(): Promise<WorkspaceReviewSummary>
   /** 按仓库相对路径读取单文件 unified diff；路径由主进程再次做工作区边界校验。 */
-  getWorkspaceReviewFile(input: { path: string; previousPath?: string }): Promise<WorkspaceReviewFileDiff>
+  getWorkspaceReviewFile(input: { path: string }): Promise<WorkspaceReviewFileDiff>
   onTaskPoolSnapshot(listener: (snapshot: TaskPoolSnapshot) => void): () => void
   onTeamControlSnapshot(listener: (state: TeamControlSnapshot) => void): () => void
   onTeamCollaborationSnapshot(listener: (state: TeamCollaborationSnapshot) => void): () => void

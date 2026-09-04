@@ -89,6 +89,14 @@ function dividerLabel(timestamp: number): string {
   return `${date.getMonth() + 1}月${date.getDate()}日 ${formatClock(timestamp)}`
 }
 
+/** 页头副标题只保留一个身份线索；状态由旁边的状态胶囊承担。 */
+function workspaceSubtitle(session: AgentSession): string {
+  const identity = session.roleTemplateKey === 'solo'
+    ? session.roleName
+    : session.composerTitle?.trim() || `SG Team · CH-${session.channelId}`
+  return session.online ? `${identity} · ${formatRelativeTime(session.lastSeenAt)}` : identity
+}
+
 function CopyIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -632,11 +640,7 @@ export function SessionWorkspace({
             <h1>{session.displayName}</h1>
             <span className={`status-pill status-pill--${session.status}`}>{statusLabel(session.status)}</span>
           </div>
-          <p>
-            {session.composerTitle || `SG Team · CH-${session.channelId}`} · {session.roleName} · {session.online
-              ? formatRelativeTime(session.lastSeenAt)
-              : 'Agent 当前离线'}
-          </p>
+          <p>{workspaceSubtitle(session)}</p>
         </div>
         <div className="workspace-header__usage">
           <SessionUsageStat usage={session.usage} />
@@ -711,7 +715,6 @@ export function SessionWorkspace({
         onHandoff={onHandoff}
         attachments={attachments}
         onAttachmentsChange={onAttachmentsChange}
-        onQuickSend={(text) => void quickSend(text)}
       />
     </section>
   )

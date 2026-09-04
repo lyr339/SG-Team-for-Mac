@@ -31,30 +31,6 @@ interface ComposerWorkbenchProps {
   onHandoff?: () => void
   attachments?: MessageAttachment[]
   onAttachmentsChange?: (attachments: MessageAttachment[]) => void
-  /** 快捷提示词直发（点击 chips 上的发送钮）。 */
-  onQuickSend?: (text: string) => void
-}
-
-/** 快捷提示词：localStorage 持久化，全应用共享一份。 */
-const QUICK_PROMPTS_STORAGE_KEY = 'qingtian.quickPrompts'
-const DEFAULT_QUICK_PROMPTS = [
-  '按建议来，做之前深度分析审查',
-  '继续',
-  '汇报当前进度',
-  '注意：全程不要使用 subagent'
-]
-
-function loadQuickPrompts(): string[] {
-  try {
-    const raw = localStorage.getItem(QUICK_PROMPTS_STORAGE_KEY)
-    if (!raw) return [...DEFAULT_QUICK_PROMPTS]
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return [...DEFAULT_QUICK_PROMPTS]
-    const prompts = parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    return prompts.length ? prompts.map((item) => item.trim().slice(0, 200)) : [...DEFAULT_QUICK_PROMPTS]
-  } catch {
-    return [...DEFAULT_QUICK_PROMPTS]
-  }
 }
 
 function WindowIcon(): React.JSX.Element {
@@ -102,10 +78,11 @@ function QueueStatus({ session }: { session: AgentSession }): React.JSX.Element 
   )
 }
 
-function ClockIcon(): React.JSX.Element {
+function AlarmIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
-      <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="m5.2 3.6-2 2M14.8 3.6l2 2M6 17l-1 1.4M14 17l1 1.4" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+      <circle cx="10" cy="10.5" r="6.3" fill="none" stroke="currentColor" strokeWidth="1.6" />
       <path d="M10 6.3V10l2.7 1.7" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" />
     </svg>
   )
@@ -129,7 +106,11 @@ function agentState(session: AgentSession): string {
 function projectChipLabel(session: AgentSession, currentProjectName?: string): string {
   const projectName = currentProjectName?.trim()
   if (projectName) return projectName
-  return session.composerTitle?.trim() || session.displayName
+  const composerTitle = session.composerTitle?.trim()
+  if (session.roleTemplateKey === 'solo' && composerTitle?.toLowerCase() === 'independent agent mode') {
+    return session.displayName
+  }
+  return composerTitle || session.displayName
 }
 
 function AttachmentIcon(): React.JSX.Element {
@@ -222,8 +203,7 @@ export function ComposerWorkbench({
   exportEnabled = false,
   onHandoff,
   attachments = [],
-  onAttachmentsChange,
-  onQuickSend
+  onAttachmentsChange
 }: ComposerWorkbenchProps): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -232,13 +212,9 @@ export function ComposerWorkbench({
   const [attachmentError, setAttachmentError] = useState('')
   const [pendingAttachmentIntakes, setPendingAttachmentIntakes] = useState(0)
   const [draggingAttachment, setDraggingAttachment] = useState(false)
-  const [quickPrompts, setQuickPrompts] = useState<string[]>(loadQuickPrompts)
   useEffect(() => {
     attachmentsRef.current = attachments
   }, [attachments])
-  useEffect(() => {
-    try { localStorage.setItem(QUICK_PROMPTS_STORAGE_KEY, JSON.stringify(quickPrompts)) } catch { /* 存储不可用时静默 */ }
-  }, [quickPrompts])
   const profile = session.executionProfile
   const profileName = modelDisplayName(profile, session.modelName)
   const badges = executionBadges(profile)
@@ -252,6 +228,7 @@ export function ComposerWorkbench({
   const projectLabel = projectChipLabel(session, currentProjectName)
   const stateLabel = agentState(session)
   const attachmentBusy = pendingAttachmentIntakes > 0
+  const durationLabel = formatAgentSessionDuration(session)
   const placeholder = canSend
     ? attachmentBusy
       ? `正在读取附件，完成后再给「${session.displayName}」发送…`
@@ -394,52 +371,18 @@ export function ComposerWorkbench({
           <QueueStatus session={session} />
           <span
             className={`composer-duration ${session.online ? 'is-running' : 'is-inactive'}`}
-            title={session.online ? '当前 Cursor 会话累计运行时长' : 'Cursor 会话未启动或运行时长已截止'}
+            data-tooltip={durationLabel}
+            aria-label={session.online ? `会话运行时间：${durationLabel}` : `会话截止时间：${durationLabel}`}
+            tabIndex={0}
           >
-            <ClockIcon />
-            {formatAgentSessionDuration(session)}
+            <AlarmIcon />
+            <span className="composer-duration__text">{durationLabel}</span>
           </span>
         </div>
       </div>
 
       {attachmentBusy ? <p className="composer-attachment-status" role="status">正在读取附件，完成后再发送。</p> : null}
       {attachmentError ? <p className="composer-attachment-error" role="alert">{attachmentError}</p> : null}
-
-      <div className="composer-quick-prompts" role="group" aria-label="快捷提示词">
-        {quickPrompts.map((prompt) => (
-          <span className="quick-prompt" key={prompt}>
-            <button
-              className="quick-prompt__fill"
-              title="填入输入框"
-              disabled={submitting}
-              onClick={() => onDraftChange(draft ? `${draft}\n${prompt}` : prompt)}
-            >{prompt}</button>
-            <button
-              className="quick-prompt__send"
-              title={`直接发送：${prompt}`}
-              aria-label={`直接发送：${prompt}`}
-              disabled={!canSend || submitting || attachmentBusy}
-              onClick={() => onQuickSend?.(prompt)}
-            >➤</button>
-            <button
-              className="quick-prompt__remove"
-              title="删除这条快捷提示词"
-              aria-label={`删除快捷提示词：${prompt}`}
-              onClick={() => setQuickPrompts((current) => current.filter((item) => item !== prompt))}
-            >×</button>
-          </span>
-        ))}
-        <button
-          className="quick-prompt quick-prompt__add"
-          title="把当前输入框内容存为快捷提示词"
-          disabled={!draft.trim()}
-          onClick={() => {
-            const text = draft.trim().slice(0, 200)
-            if (!text || quickPrompts.includes(text)) return
-            setQuickPrompts((current) => [...current, text])
-          }}
-        >＋ 存当前草稿</button>
-      </div>
 
       {attachments.length > 0 && (
         <div className="composer-attachments">

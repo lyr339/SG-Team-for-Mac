@@ -52,6 +52,7 @@ describe('workspace review parsers', () => {
     ].join('\n'))
     expect(parsed.truncated).toBe(false)
     expect(parsed.hunks[0]).toMatchObject({ skippedBefore: 9 })
+    expect(parsed.hunks[0]?.header).toBe('@@ -10,3 +10,3 @@')
     expect(parsed.hunks[0]?.lines).toEqual([
       { kind: 'context', text: 'before', oldLine: 10, newLine: 10 },
       { kind: 'deletion', text: 'old', oldLine: 11 },
@@ -96,6 +97,9 @@ describe('WorkspaceReviewReader', () => {
       expect.objectContaining({ kind: 'addition', text: 'const added = true' })
     ]))
     expect(execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: root, encoding: 'utf8' })).toBe('')
+    await expect(reader.fileDiff({ path: '.git/config' })).resolves.toMatchObject({
+      state: 'missing', detail: '文件已无待审查变更'
+    })
   })
 
   it('changes the summary revision when content changes but line counts stay equal', async () => {

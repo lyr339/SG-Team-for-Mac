@@ -139,8 +139,7 @@ function ReviewPanel({ workspaceKey }: { workspaceKey: string }): React.JSX.Elem
     setDiffs((current) => ({ ...current, [file.path]: 'loading' }))
     try {
       const diff = await window.qingtianDesktop.getWorkspaceReviewFile({
-        path: file.path,
-        previousPath: file.previousPath
+        path: file.path
       })
       if (revisionRef.current !== revision) return
       setDiffs((current) => ({ ...current, [file.path]: diff }))

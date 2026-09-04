@@ -22,7 +22,7 @@ const session: AgentSession = {
 }
 
 describe('ComposerWorkbench', () => {
-  it('renders quick prompts, attachment affordance and attached files', () => {
+  it('renders the focused composer toolbar, duration and attached files', () => {
     const html = renderToStaticMarkup(
       <ComposerWorkbench
         session={session}
@@ -44,8 +44,7 @@ describe('ComposerWorkbench', () => {
       />
     )
 
-    expect(html).toContain('快捷提示词')
-    expect(html).toContain('按建议来，做之前深度分析审查')
+    expect(html).not.toContain('composer-quick-prompts')
     expect(html).toContain('title="添加图片或文件附件"')
     expect(html).toContain('report.md')
     expect(html).toContain('2.0 KB')
@@ -53,6 +52,8 @@ describe('ComposerWorkbench', () => {
     expect(html).not.toContain('composer-binding-status')
     expect(html).toContain('composer-queue-popover')
     expect(html).toContain('composer-duration is-running')
+    expect(html).toContain('composer-duration__text')
+    expect(html).toContain('aria-label="会话运行时间：')
     expect(html).toContain('当前没有等待处理的消息')
     expect(html).toContain('Agent 正在监听，新消息会立即投递')
   })

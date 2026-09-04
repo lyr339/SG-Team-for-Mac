@@ -282,7 +282,7 @@ export function DesktopShell({
         )}
       </header>
 
-      <div className={`desktop-body desktop-body--${activeModule} ${wideContent ? 'desktop-body--wide' : ''}`}>
+      <div className={`desktop-body desktop-body--${activeModule}${wideContent ? ' desktop-body--wide' : ''}${inspectorVisible ? ' has-workspace-inspector' : ''}`}>
         {wideContent ? (
           <div className="shell-columns shell-columns--wide">
             <main className="content-stage">{children}</main>

@@ -3,16 +3,11 @@ import type { WorkspaceReviewReader } from '../infrastructure/git/workspace-revi
 import { IPC } from '../shared/desktop-api'
 import { assertTrustedSender } from './ipc-security'
 
-function fileInputOf(value: unknown): { path: string; previousPath?: string } {
+function fileInputOf(value: unknown): { path: string } {
   if (!value || typeof value !== 'object') throw new Error('差异文件参数无效')
   const raw = value as Record<string, unknown>
   if (typeof raw.path !== 'string' || !raw.path.trim()) throw new Error('差异文件参数无效')
-  return {
-    path: raw.path,
-    ...(typeof raw.previousPath === 'string' && raw.previousPath.trim()
-      ? { previousPath: raw.previousPath }
-      : {})
-  }
+  return { path: raw.path }
 }
 
 export function registerWorkspaceReviewIpc(

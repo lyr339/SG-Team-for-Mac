@@ -778,8 +778,8 @@ const api: QingtianDesktopApi = {
       { path: 'src/renderer/src/styles.css', status: 'modified', staged: false, unstaged: true, additions: 7, deletions: 3 }
     ]
   }),
-  getWorkspaceReviewFile: async ({ path, previousPath }) => ({
-    state: 'ready', path, previousPath, truncated: false,
+  getWorkspaceReviewFile: async ({ path }) => ({
+    state: 'ready', path, truncated: false,
     hunks: [{
       header: '@@ -628 +628 @@', skippedBefore: 627,
       lines: [

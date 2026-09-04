@@ -115,7 +115,7 @@ export function parseUnifiedDiff(value: string, maxLines = MAX_DIFF_LINES): { hu
       oldLine = Number.parseInt(header[1]!, 10)
       newLine = Number.parseInt(header[2]!, 10)
       current = {
-        header: `@@ -${header[1]} +${header[2]} @@${header[3] ?? ''}`,
+        header: raw,
         skippedBefore: Math.max(0, oldLine - previousOldEnd - 1),
         lines: []
       }
@@ -302,21 +302,29 @@ export class WorkspaceReviewReader {
     }
   }
 
-  async fileDiff(input: { path: string; previousPath?: string }): Promise<WorkspaceReviewFileDiff> {
+  async fileDiff(input: { path: string }): Promise<WorkspaceReviewFileDiff> {
     const context = await this.context()
     if (!context?.root) {
       return { state: 'missing', path: input.path, hunks: [], truncated: false, detail: '当前没有可读取差异的 Git 工作区' }
     }
     const filePath = await assertSafePath(context.root, input.path, context.workspacePath)
-    if (input.previousPath) await assertSafePath(context.root, input.previousPath, context.workspacePath)
+    const statusRaw = await runGit(context.root, [
+      'status', '--porcelain=v2', '-z', '--untracked-files=all', '--', context.scope
+    ])
+    const changedFile = parsePorcelainV2(statusRaw).find((file) => file.path === input.path)
+    if (!changedFile) {
+      return { state: 'missing', path: input.path, hunks: [], truncated: false, detail: '文件已无待审查变更' }
+    }
+    const previousPath = changedFile.previousPath
+    if (previousPath) await assertSafePath(context.root, previousPath, context.workspacePath)
     const tracked = (await runGit(context.root, ['ls-files', '--', input.path], true)).trim()
-    const paths = [input.previousPath, input.path].filter((value): value is string => Boolean(value))
+    const paths = [previousPath, input.path].filter((value): value is string => Boolean(value))
 
     try {
       if (!context.hasHead || !tracked) {
         const content = await readFile(filePath)
         if (content.subarray(0, 8_192).includes(0)) {
-          return { state: 'binary', path: input.path, previousPath: input.previousPath, hunks: [], truncated: false }
+          return { state: 'binary', path: input.path, previousPath, hunks: [], truncated: false }
         }
         const allLines = content.toString('utf8').replace(/\r\n?/g, '\n').split('\n')
         if (allLines.at(-1) === '') allLines.pop()
@@ -325,7 +333,7 @@ export class WorkspaceReviewReader {
           kind: 'addition', text, newLine: index + 1
         }))
         return {
-          state: 'ready', path: input.path, previousPath: input.previousPath,
+          state: 'ready', path: input.path, previousPath,
           hunks: lines.length ? [{ header: `@@ -0 +1 @@`, skippedBefore: 0, lines }] : [],
           truncated
         }
@@ -335,11 +343,11 @@ export class WorkspaceReviewReader {
         'diff', '--no-ext-diff', '--no-color', '--find-renames', '--unified=3', 'HEAD', '--', ...paths
       ])
       if (/^(?:Binary files .* differ|GIT binary patch)$/m.test(raw)) {
-        return { state: 'binary', path: input.path, previousPath: input.previousPath, hunks: [], truncated: false }
+        return { state: 'binary', path: input.path, previousPath, hunks: [], truncated: false }
       }
       const parsed = parseUnifiedDiff(raw)
       return {
-        state: 'ready', path: input.path, previousPath: input.previousPath,
+        state: 'ready', path: input.path, previousPath,
         hunks: parsed.hunks, truncated: parsed.truncated
       }
     } catch (error) {
@@ -347,7 +355,7 @@ export class WorkspaceReviewReader {
       return {
         state: code === 'ENOENT' ? 'missing' : 'error',
         path: input.path,
-        previousPath: input.previousPath,
+        previousPath,
         hunks: [],
         truncated: false,
         detail: error instanceof Error ? error.message : String(error)

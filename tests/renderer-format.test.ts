@@ -14,7 +14,7 @@ describe('session duration formatting', () => {
     expect(formatAgentSessionDuration({
       startedAt: 1_000_000,
       online: true
-    }, 1_000_000 + 28 * 60_000)).toBe('运行 28 分钟')
+    }, 1_000_000 + 28 * 60_000)).toBe('28 分钟')
   })
 
   it('freezes an offline session at its first disconnect time', () => {
@@ -24,15 +24,22 @@ describe('session duration formatting', () => {
       online: false
     }
     expect(formatAgentSessionDuration(session, 1_000_000 + 28 * 60_000))
-      .toBe('运行 8 分钟 · 已截止')
+      .toBe('8 分钟 · 截止')
     expect(formatAgentSessionDuration(session, 1_000_000 + 88 * 60_000))
-      .toBe('运行 8 分钟 · 已截止')
+      .toBe('8 分钟 · 截止')
   })
 
   it('does not fabricate an elapsed duration when disconnect evidence is missing', () => {
     expect(formatAgentSessionDuration({ startedAt: 1_000_000, online: false }, 9_000_000))
-      .toBe('已离线')
+      .toBe('离线')
     expect(formatSessionDuration(undefined, 9_000_000)).toBe('时长待绑定')
+  })
+
+  it('uses the persisted active duration as the concise frozen label', () => {
+    expect(formatAgentSessionDuration({
+      activeDurationMs: 90 * 60_000,
+      online: false
+    })).toBe('1 小时 30 分 · 截止')
   })
 
   it('formats compact count totals', () => {

@@ -974,10 +974,27 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 .composer-queue-popover dl > div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; align-items: start; }
 .composer-queue-popover dt { color: var(--muted); font-size: var(--fs-10); }
 .composer-queue-popover dd { margin: 0; color: var(--text); font-size: var(--fs-10); line-height: 1.4; }
-.composer-duration { min-height: 30px; flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 0 11px; color: var(--muted); background: var(--canvas); border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-full); font: 600 var(--fs-10)/1 var(--mono); }
+.composer-duration { position: relative; min-height: 30px; flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 0 11px; color: var(--muted); background: var(--canvas); border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-full); outline: none; font: 600 var(--fs-10)/1 var(--mono); }
 .composer-duration.is-running { color: var(--color-text-success); background: var(--color-background-success); border-color: var(--color-border-success); }
 .composer-duration.is-inactive { color: var(--color-text-danger); background: var(--color-background-danger); border-color: var(--color-border-danger); }
 .composer-duration svg { width: 14px; height: 14px; }
+
+/* 左右辅助栏同时展开时把时长收成闹钟；完整时间只在悬浮/键盘聚焦时出现。 */
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .workspace-composer { overflow: visible; }
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration { width: 32px; justify-content: center; gap: 0; padding: 0; }
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration__text { display: none; }
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration::before,
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration::after { position: absolute; z-index: 110; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 130ms ease, transform 130ms ease, visibility 130ms ease; }
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration::before { content: ''; right: 9px; bottom: calc(100% + 4px); width: 9px; height: 9px; background: var(--surface-solid); border-right: 1px solid var(--color-border-secondary); border-bottom: 1px solid var(--color-border-secondary); transform: translateY(2px) rotate(45deg); }
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration::after { content: attr(data-tooltip); right: 0; bottom: calc(100% + 8px); width: max-content; max-width: 240px; padding: 7px 9px; color: var(--text); background: var(--surface-solid); border: 1px solid var(--color-border-secondary); border-radius: 8px; box-shadow: var(--shadow-md); transform: translateY(4px); font: 600 var(--fs-10)/1.2 var(--mono); white-space: nowrap; }
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration:hover::before,
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration:hover::after,
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration:focus-visible::before,
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration:focus-visible::after { opacity: 1; visibility: visible; }
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration:hover::before,
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration:focus-visible::before { transform: translateY(0) rotate(45deg); }
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration:hover::after,
+.desktop-body.has-workspace-inspector > .shell-columns:not(.is-first-pane-collapsed) .composer-duration:focus-visible::after { transform: none; }
 
 @container composer (max-width: 860px) {
   .composer-tool span { display: none; }
@@ -1668,21 +1685,4 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 .composer-attachment-error { margin: 0; padding: 7px 12px; color: var(--red); background: var(--red-soft); border-top: var(--border-width-regular) solid var(--line-faint); font-size: var(--fs-10); line-height: 1.5; }
 .composer-attachment-status { margin: 0; padding: 7px 12px; color: var(--accent-strong); background: var(--accent-soft); border-top: var(--border-width-regular) solid var(--line-faint); font-size: var(--fs-10); line-height: 1.5; }
 
-/* 快捷提示词 chips */
-.composer-quick-prompts { display: flex; flex-wrap: nowrap; gap: 5px; padding: 6px 10px 0; overflow-x: auto; scrollbar-width: none; }
-.composer-quick-prompts::-webkit-scrollbar { display: none; }
-.composer-quick-prompts > * { flex: 0 0 auto; }
-.quick-prompt { display: inline-flex; align-items: stretch; max-width: 260px; background: var(--canvas); border: 1px solid var(--color-border-secondary); border-radius: 8px; overflow: hidden; }
-.quick-prompt:hover { border-color: var(--line-strong); }
-.quick-prompt button { padding: 4px 8px; color: var(--text-soft); background: transparent; border: 0; font-size: var(--fs-10); cursor: pointer; }
-.quick-prompt button:disabled { color: var(--faint); cursor: not-allowed; }
-.quick-prompt__fill { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-.quick-prompt__fill:hover:not(:disabled) { color: var(--accent); }
-.quick-prompt__send { border-left: var(--border-width-regular) solid var(--line-faint); color: var(--accent); }
-.quick-prompt__send:hover:not(:disabled) { background: var(--accent); color: var(--surface); }
-.quick-prompt__remove { display: none; border-left: var(--border-width-regular) solid var(--line-faint); color: var(--faint); }
-.quick-prompt:hover .quick-prompt__remove { display: block; }
-.quick-prompt__remove:hover { color: var(--red); }
-.quick-prompt__add { border: var(--border-width-regular) dashed var(--line-strong); color: var(--faint); background: transparent; }
-.quick-prompt__add:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .composer-attachment-remove svg { width: 12px; height: 12px; }

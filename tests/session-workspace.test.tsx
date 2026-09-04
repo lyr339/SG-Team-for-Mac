@@ -330,6 +330,17 @@ describe('SessionWorkspace', () => {
     expect(html).not.toContain('待轮询')
   })
 
+  it('精简独立会话页头：状态胶囊已经表达离线，副标题只保留席位身份', () => {
+    const html = renderWorkspace({
+      session: {
+        roleTemplateKey: 'solo', roleName: '独立席 1', composerTitle: 'Independent agent mode',
+        online: false, connected: false, waiting: false, status: 'offline'
+      }
+    })
+    expect(html).toContain('<p>独立席 1</p>')
+    expect(html).not.toContain('Independent agent mode')
+  })
+
   it('只在工作台顶部渲染一次用量与费用；页头和底栏不重复', () => {
     const html = renderWorkspace({
       session: {
