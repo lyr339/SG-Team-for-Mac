@@ -425,6 +425,78 @@ const api: QingtianDesktopApi = {
     pushDesktop()
     return { commandId: entry.id }
   },
+  withdrawQueuedMessage: async ({ channelId, entryId }) => {
+    const entries = state.desktop.conversations[channelId] ?? []
+    if (!entries.some((entry) => entry.id === entryId && entry.deliveredAt === undefined)) return false
+    state.desktop.conversations = {
+      ...state.desktop.conversations,
+      [channelId]: entries.filter((entry) => entry.id !== entryId)
+    }
+    pushDesktop()
+    return true
+  },
+  releaseQueuedMessage: async ({ channelId, entryId }) => {
+    const entries = state.desktop.conversations[channelId] ?? []
+    if (!entries.some((entry) => entry.id === entryId && entry.heldForNextSession)) return false
+    state.desktop.conversations = {
+      ...state.desktop.conversations,
+      [channelId]: entries.map((entry) => entry.id === entryId ? { ...entry, heldForNextSession: undefined } : entry)
+    }
+    pushDesktop()
+    return true
+  },
+  getSessionHandoffContext: async ({ channelId }) => {
+    const session = state.desktop.sessions.find((candidate) => candidate.channelId === channelId)
+    const entries = state.desktop.conversations[channelId] ?? []
+    const composerId = session?.composerId ?? 'preview-composer-0000'
+    return {
+      channelId,
+      displayName: session?.displayName ?? `CH-${channelId}`,
+      composerId,
+      modelName: session?.executionProfile?.displayName ?? session?.modelName,
+      transcript: {
+        path: `/Users/preview/.cursor/projects/Users-preview-workspace/agent-transcripts/${composerId}/${composerId}.jsonl`,
+        exists: true,
+        sizeBytes: 347_478,
+        modifiedAt: Date.now() - 42 * 60_000,
+        recordCount: 191,
+        resolution: 'workspace'
+      },
+      holdSupported: true,
+      userMessageCount: entries.filter((entry) => entry.role === 'user').length,
+      assistantMessageCount: entries.filter((entry) => entry.role === 'assistant').length,
+      firstMessageAt: entries[0]?.timestamp,
+      lastMessageAt: entries.at(-1)?.timestamp
+    }
+  },
+  deliverSessionHandoff: async ({ sourceChannelId, target, note }) => {
+    const targetChannelId = target.kind === 'self' ? sourceChannelId : target.channelId
+    const held = target.kind === 'self'
+    const entry: ConversationEntry = {
+      id: `outbox:preview-handoff-${Date.now()}`,
+      channelId: targetChannelId,
+      role: 'user',
+      text: `【会话交接】来自 CH-${sourceChannelId}${note ? `\n\n交接说明：${note}` : ''}`,
+      timestamp: Date.now(),
+      status: 'complete',
+      source: 'desktop',
+      heldForNextSession: held ? true : undefined
+    }
+    state.desktop.conversations = {
+      ...state.desktop.conversations,
+      [targetChannelId]: [...(state.desktop.conversations[targetChannelId] ?? []), entry]
+    }
+    pushDesktop()
+    return {
+      targetChannelId,
+      held,
+      transcriptPath: '/Users/preview/.cursor/projects/Users-preview-workspace/agent-transcripts/preview/preview.jsonl',
+      recordPath: '/Users/preview/Library/Application Support/qingtian-team/handoff/CH-1-preview-20260904-200000.md',
+      commandId: entry.id,
+      issuedAt: entry.timestamp
+    }
+  },
+  revealPathInFolder: async () => true,
   getTaskPoolSnapshot: async () => structuredClone(previewTasks),
   installTaskMcp: async () => ({
     ok: true,

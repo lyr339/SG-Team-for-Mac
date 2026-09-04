@@ -20,6 +20,21 @@ export interface ChannelOutboundMessage {
   deliveredAt?: number
   /** 内部投递消息只用于 Agent 调度/对账，不进入用户可见会话时间线。 */
   silent?: boolean
+  /**
+   * 「等待新会话」保持位：入队时该席位现任会话的令牌。携带同一令牌（或不带令牌）的
+   * check_messages 取不到这条消息；只有该通道之后的新会话（新令牌）才会收到。
+   * 用于会话交接：把上下文文档路径留给重建/重启后的自己。
+   */
+  holdSessionToken?: string
+  /** 用户在投递前撤回的时间：不再计数、不再投递，行保留审计。 */
+  withdrawnAt?: number
+}
+
+/** 该消息是否对携带 `session` 令牌（缺省 = 无令牌）的调用方可投递。 */
+export function isOutboundDeliverableTo(message: Pick<ChannelOutboundMessage, 'holdSessionToken' | 'withdrawnAt'>, session?: string): boolean {
+  if (message.withdrawnAt !== undefined) return false
+  if (!message.holdSessionToken) return true
+  return Boolean(session) && session !== message.holdSessionToken
 }
 
 export const INTERNAL_COLLABORATION_NOTIFICATION_PREFIX = '【拾光内部协作通知】'

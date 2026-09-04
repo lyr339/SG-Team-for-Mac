@@ -325,7 +325,7 @@ describe('SessionWorkspace', () => {
       }
     })
 
-    expect(html).toContain('Agent 当前离线')
+    expect(html).toContain('Agent 离线：消息保留在本地队列')
     expect(html).toContain('Cursor Agent 已离线，消息会先进入队列')
     expect(html).not.toContain('待轮询')
   })

@@ -276,6 +276,27 @@ describe('ChannelMessageService', () => {
   })
 
 
+  it('skips hold-token messages for the issuing session and delivers them to the rebuilt session (会话交接「等待新会话」)', async () => {
+    const { repository, service } = fixture()
+    try {
+      repository.enqueueOutbound('1', '【会话交接】请读取转录', 1_000, undefined, false, undefined, { holdSessionToken: 'seat-A' })
+      // 现任会话（seat-A）轮询：队列对它为空 → keepalive；保持位消息原地不动
+      const held = await service.checkMessages({ channelId: '1', session: 'seat-A', keepaliveTimeoutMs: 1_000, pollIntervalMs: 100 })
+      expect(held.type).toBe('keepalive')
+      expect(repository.countPendingOutbound('1')).toBe(1)
+      // 无令牌的旧会话同样取不到
+      const legacy = await service.checkMessages({ channelId: '1', keepaliveTimeoutMs: 1_000, pollIntervalMs: 100 })
+      expect(legacy.type).toBe('keepalive')
+      // 重建后的新会话（seat-B）首次轮询即取到，并打开回复守门
+      const delivered = await service.checkMessages({ channelId: '1', session: 'seat-B' })
+      expect(delivered).toMatchObject({ type: 'delivered', message: { text: '【会话交接】请读取转录' } })
+      expect(repository.countPendingOutbound('1')).toBe(0)
+      expect(repository.getPresence('1')?.pendingOutboundId).toBe(delivered.type === 'delivered' ? delivered.message.id : undefined)
+    } finally {
+      repository.close()
+    }
+  })
+
   it('truncates tool-call token leakage in record_reply content and warns the agent', async () => {
     const { repository, service } = fixture()
     try {

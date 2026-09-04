@@ -371,6 +371,57 @@ describe('SqliteChannelMessageRepository', () => {
     }
   })
 
+  it('holds a hold-token message from the issuing session and releases it to the next session token (会话交接)', () => {
+    const repository = fixture()
+    try {
+      repository.enqueueOutbound('1', '普通消息', 100)
+      const held = repository.enqueueOutbound('1', '【会话交接】上下文文档路径', 200, undefined, false, undefined, { holdSessionToken: 'seat-A' })
+      expect(held.holdSessionToken).toBe('seat-A')
+      // 主进程视角（不传 forSession）：两条都在队列，计数 2
+      expect(repository.listPendingOutbound('1').map((message) => message.text)).toEqual(['普通消息', '【会话交接】上下文文档路径'])
+      expect(repository.countPendingOutbound('1')).toBe(2)
+      // 现任会话（seat-A）与无令牌调用方：都取不到保持位消息
+      expect(repository.listPendingOutbound('1', { forSession: 'seat-A' }).map((message) => message.text)).toEqual(['普通消息'])
+      expect(repository.listPendingOutbound('1', { forSession: null }).map((message) => message.text)).toEqual(['普通消息'])
+      // 重建后的新会话（seat-B）：按 seq 顺序取到全部
+      expect(repository.listPendingOutbound('1', { forSession: 'seat-B' }).map((message) => message.text))
+        .toEqual(['普通消息', '【会话交接】上下文文档路径'])
+      // 保持位消息不与同文本普通消息合并去重，也不参与入队查重
+      const again = repository.enqueueOutbound('1', '【会话交接】上下文文档路径', 210, undefined, false, undefined, { holdSessionToken: 'seat-A' })
+      expect(again.id).not.toBe(held.id)
+      expect(repository.dedupePendingOutbound('1', 220)).toBe(0)
+      // 放行：回到普通排队，现任会话即可取走
+      expect(repository.releaseOutboundHold(held.id)).toBe(true)
+      expect(repository.releaseOutboundHold(held.id)).toBe(false)
+      expect(repository.listPendingOutbound('1', { forSession: 'seat-A' }).map((message) => message.id)).toContain(held.id)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('withdraws a queued message before delivery and never afterwards', () => {
+    const repository = fixture()
+    try {
+      const first = repository.enqueueOutbound('1', '第一条', 100)
+      const second = repository.enqueueOutbound('1', '第二条', 200)
+      expect(repository.withdrawOutbound(second.id, 300)).toBe(true)
+      expect(repository.countPendingOutbound('1')).toBe(1)
+      expect(repository.listPendingOutbound('1').map((message) => message.id)).toEqual([first.id])
+      // 撤回后不可再被投递，也不会被重复撤回
+      repository.markOutboundDelivered([second.id], 400)
+      expect(repository.listOutboundSince(0).find((message) => message.id === second.id)).toMatchObject({
+        withdrawnAt: 300, deliveredAt: undefined
+      })
+      expect(repository.withdrawOutbound(second.id, 500)).toBe(false)
+      // 已投递的消息不能撤回
+      repository.markOutboundDelivered([first.id], 600)
+      expect(repository.withdrawOutbound(first.id, 700)).toBe(false)
+      expect(repository.countPendingOutbound('1')).toBe(0)
+    } finally {
+      repository.close()
+    }
+  })
+
   it('shares the outbox between two repository instances (WAL multi-process)', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-')), 'channel.sqlite3')
     const main = new SqliteChannelMessageRepository(path)

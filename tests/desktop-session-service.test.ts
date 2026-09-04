@@ -2471,6 +2471,67 @@ describe('直播正文改判为过程 message 时立即撤下（2026-09-04 双�
   })
 })
 
+describe('会话交接「等待新会话」：sendMessage 把意图换算为席位现任会话令牌', () => {
+  function relayHarness(sessionToken?: string) {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    active.bindings[0]!.sessionToken = sessionToken
+    const repository = new SqliteChannelMessageRepository(
+      join(mkdtempSync(join(tmpdir(), 'qingtian-hold-send-')), 'channel.sqlite3')
+    )
+    const relay = new ChannelMessageRelay(repository)
+    repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
+    relay.resetScope('run-a', 1)
+    const service = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
+    )
+    return { service, repository, relay }
+  }
+
+  it('enqueues with the seat token as hold so only a rebuilt session (new token) receives it', () => {
+    const { service, repository, relay } = relayHarness('seat-token-A')
+    try {
+      expect(service.currentSessionToken('1')).toBe('seat-token-A')
+      service.sendMessage({ channelId: '1', text: '【会话交接】读转录', holdUntilNewSession: true })
+      const rows = repository.listPendingOutbound('1')
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.holdSessionToken).toBe('seat-token-A')
+      expect(repository.listPendingOutbound('1', { forSession: 'seat-token-A' })).toHaveLength(0)
+      expect(repository.listPendingOutbound('1', { forSession: 'seat-token-B' })).toHaveLength(1)
+      expect(service.getSnapshot().conversations['1']?.[0]?.heldForNextSession).toBe(true)
+      // 渲染层撤回/放行经服务层转发
+      const entryId = service.getSnapshot().conversations['1']![0]!.id
+      expect(service.releaseQueuedMessage('1', entryId)).toBe(true)
+      expect(repository.listPendingOutbound('1', { forSession: 'seat-token-A' })).toHaveLength(1)
+      expect(service.withdrawQueuedMessage('1', entryId)).toBe(true)
+      expect(repository.countPendingOutbound('1')).toBe(0)
+      expect(service.getSnapshot().conversations['1'] ?? []).toHaveLength(0)
+    } finally {
+      service.dispose()
+      relay.stop()
+      repository.close()
+    }
+  })
+
+  it('refuses the hold when the seat has no token and never leaks the internal hold field from the renderer', () => {
+    const { service, repository, relay } = relayHarness(undefined)
+    try {
+      expect(() => service.sendMessage({ channelId: '1', text: 'x', holdUntilNewSession: true })).toThrowError(/没有会话令牌/)
+      // 普通发送不带保持位
+      service.sendMessage({ channelId: '1', text: '普通消息' })
+      expect(repository.listPendingOutbound('1')[0]?.holdSessionToken).toBeUndefined()
+    } finally {
+      service.dispose()
+      relay.stop()
+      repository.close()
+    }
+  })
+})
+
 describe('遥测落盘态 contextTokensUsed → 用量采样转发（长会话近实时 TOKENS/COST 的活水源）', () => {
   function telemetryWithUsed(used?: number): CursorTelemetrySnapshot {
     const base = telemetry()

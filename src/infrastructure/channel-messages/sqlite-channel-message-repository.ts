@@ -10,6 +10,7 @@ import {
   PRESENCE_RETIRED_PHASE,
   PRESENCE_REVIVED_PHASE,
   isExplicitlyStoppedPhase,
+  isOutboundDeliverableTo,
   type ChannelInboundReply,
   type ChannelOutboundMessage,
   type ChannelPresence
@@ -66,9 +67,14 @@ function outboundOf(row: SqliteRow): ChannelOutboundMessage {
     attachments: attachmentsOf(row.attachments_json),
     createdAt: numberOf(row.created_at),
     deliveredAt: row.delivered_at === null ? undefined : numberOf(row.delivered_at),
-    silent: numberOf(row.silent) === 1 ? true : undefined
+    silent: numberOf(row.silent) === 1 ? true : undefined,
+    holdSessionToken: optionalString(row.hold_session_token),
+    withdrawnAt: row.withdrawn_at === null || row.withdrawn_at === undefined ? undefined : numberOf(row.withdrawn_at)
   }
 }
+
+/** 待投递行的公共谓词：未投递、未退役、未撤回。 */
+const PENDING_OUTBOUND_WHERE = 'delivered_at IS NULL AND retired_at IS NULL AND withdrawn_at IS NULL'
 
 function replyOf(row: SqliteRow): ChannelInboundReply {
   const visible = row.visible === undefined || row.visible === null || numberOf(row.visible) !== 0
@@ -162,12 +168,14 @@ export class SqliteChannelMessageRepository {
     now = Date.now(),
     attachments?: MessageAttachment[],
     silent = false,
-    runId?: string
+    runId?: string,
+    options: { holdSessionToken?: string } = {}
   ): ChannelOutboundMessage {
     const normalizedChannel = String(channelId).trim()
     if (!/^\d+$/.test(normalizedChannel)) throw new Error(`通道号无效：${channelId}`)
     const normalizedText = String(text ?? '').trim()
     const normalizedRunId = runId?.trim() || undefined
+    const holdSessionToken = options.holdSessionToken?.trim() || undefined
     const activeRunId = this.currentScopeRunId()
     if (normalizedRunId && activeRunId && normalizedRunId !== activeRunId) {
       throw new Error(`消息属于已结束的 TeamRun，拒绝写入当前队列`)
@@ -178,7 +186,8 @@ export class SqliteChannelMessageRepository {
 
     this.database.exec('BEGIN IMMEDIATE')
     try {
-      const duplicate = attachments?.length
+      // 保持位消息不参与文本查重：交接消息文本相同也各自独立（不同时刻/不同目标）。
+      const duplicate = attachments?.length || holdSessionToken
         ? undefined
         : this.findRecentDuplicateOutbound(
           normalizedChannel,
@@ -192,7 +201,7 @@ export class SqliteChannelMessageRepository {
         return duplicate
       }
       const depth = this.database.prepare(
-        'SELECT COUNT(*) AS count FROM channel_outbox WHERE channel_id = ? AND delivered_at IS NULL AND retired_at IS NULL'
+        `SELECT COUNT(*) AS count FROM channel_outbox WHERE channel_id = ? AND ${PENDING_OUTBOUND_WHERE}`
       ).get(normalizedChannel) as SqliteRow
       if (numberOf(depth.count) >= CHANNEL_OUTBOX_MAX_PENDING) {
         throw new Error(`CH-${normalizedChannel} 待投递消息已达上限，请等待 Agent 消费`)
@@ -208,10 +217,11 @@ export class SqliteChannelMessageRepository {
         text: normalizedText,
         attachments: attachments?.length ? attachments : undefined,
         createdAt: now,
-        silent: silent ? true : undefined
+        silent: silent ? true : undefined,
+        holdSessionToken
       }
       this.database.prepare(
-        'INSERT INTO channel_outbox (id, run_id, channel_id, seq, text, attachments_json, created_at, silent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO channel_outbox (id, run_id, channel_id, seq, text, attachments_json, created_at, silent, hold_session_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(
         message.id,
         message.runId ?? null,
@@ -220,7 +230,8 @@ export class SqliteChannelMessageRepository {
         message.text,
         message.attachments ? JSON.stringify(message.attachments) : null,
         message.createdAt,
-        message.silent ? 1 : 0
+        message.silent ? 1 : 0,
+        holdSessionToken ?? null
       )
       this.database.exec('COMMIT')
       return message
@@ -259,23 +270,47 @@ export class SqliteChannelMessageRepository {
     return row ? outboundOf(row) : undefined
   }
 
-  /** Agent 侧：按 seq 升序读取通道待投递消息。 */
-  listPendingOutbound(channelId: string): ChannelOutboundMessage[] {
+  /**
+   * 按 seq 升序读取通道待投递消息。
+   * `forSession`：调用方的会话令牌（Agent 侧 check_messages 必传；无令牌传 null）——
+   * 带「等待新会话」保持位的消息只对持有不同令牌的新会话可见。主进程侧列队列
+   * （计数/去重/展示）不传，得到全部待投递行。
+   */
+  listPendingOutbound(channelId: string, options: { forSession?: string | null } = {}): ChannelOutboundMessage[] {
     const runId = this.currentScopeRunId()
     const rows = this.database.prepare(`
       SELECT * FROM channel_outbox
-      WHERE channel_id = ? AND delivered_at IS NULL AND retired_at IS NULL
+      WHERE channel_id = ? AND ${PENDING_OUTBOUND_WHERE}
         AND ${runId ? 'run_id = ?' : 'run_id IS NULL'}
       ORDER BY seq ASC
     `).all(String(channelId).trim(), ...(runId ? [runId] : [])) as SqliteRow[]
-    return rows.map(outboundOf)
+    const messages = rows.map(outboundOf)
+    if (options.forSession === undefined) return messages
+    const session = options.forSession ?? undefined
+    return messages.filter((message) => isOutboundDeliverableTo(message, session))
+  }
+
+  /** 用户在投递前撤回：软删除（withdrawn_at），不再计数/投递，行保留审计。 */
+  withdrawOutbound(id: string, now = Date.now()): boolean {
+    const result = this.database.prepare(
+      `UPDATE channel_outbox SET withdrawn_at = ? WHERE id = ? AND ${PENDING_OUTBOUND_WHERE}`
+    ).run(now, String(id).trim())
+    return numberOf(result.changes) > 0
+  }
+
+  /** 解除「等待新会话」保持位：消息回到普通排队，当前会话下一次轮询即可取走。 */
+  releaseOutboundHold(id: string): boolean {
+    const result = this.database.prepare(
+      `UPDATE channel_outbox SET hold_session_token = NULL WHERE id = ? AND hold_session_token IS NOT NULL AND ${PENDING_OUTBOUND_WHERE}`
+    ).run(String(id).trim())
+    return numberOf(result.changes) > 0
   }
 
   /** Agent 侧：标记消息已投递（取出即标记，保证最多一次投递）。 */
   markOutboundDelivered(ids: string[], now = Date.now()): void {
     if (!ids.length) return
     const statement = this.database.prepare(
-      'UPDATE channel_outbox SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL AND retired_at IS NULL'
+      `UPDATE channel_outbox SET delivered_at = ? WHERE id = ? AND ${PENDING_OUTBOUND_WHERE}`
     )
     this.database.exec('BEGIN IMMEDIATE')
     try {
@@ -305,7 +340,7 @@ export class SqliteChannelMessageRepository {
     const runId = this.currentScopeRunId()
     const row = this.database.prepare(`
       SELECT COUNT(*) AS count FROM channel_outbox
-      WHERE channel_id = ? AND delivered_at IS NULL AND retired_at IS NULL
+      WHERE channel_id = ? AND ${PENDING_OUTBOUND_WHERE}
         AND ${runId ? 'run_id = ?' : 'run_id IS NULL'}
     `).get(String(channelId).trim(), ...(runId ? [runId] : [])) as SqliteRow
     return numberOf(row.count)
@@ -324,7 +359,7 @@ export class SqliteChannelMessageRepository {
     const recent = new Map<string, number>()
     const duplicateIds: string[] = []
     for (const message of pending) {
-      if (message.attachments?.length) continue
+      if (message.attachments?.length || message.holdSessionToken) continue
       const key = `${message.silent ? 1 : 0}\0${message.text.trim()}`
       const previousAt = recent.get(key)
       if (previousAt !== undefined && message.createdAt - previousAt <= CHANNEL_OUTBOUND_DEDUPE_WINDOW_MS) {
@@ -899,8 +934,15 @@ export class SqliteChannelMessageRepository {
     this.migratePresencePendingOutboundColumn()
     this.migrateReplyProcessColumns()
     this.migrateReplyOutboundColumn()
+    this.migrateOutboundHoldColumns()
     // 旧版过程事件来自 Agent 主动上报，与 Cursor 原生过程重复且失真；迁移时彻底清除。
     this.database.exec('DROP TABLE IF EXISTS channel_process_events')
+  }
+
+  /** 老库增量迁移：出站消息补「等待新会话」保持位与用户撤回时间（会话交接 / 队列撤回）。 */
+  private migrateOutboundHoldColumns(): void {
+    this.migrateColumn('channel_outbox', 'hold_session_token', 'TEXT')
+    this.migrateColumn('channel_outbox', 'withdrawn_at', 'INTEGER')
   }
 
   /** 老库增量迁移：channel_replies 补 visible 列，用于隐藏后台 record_reply。 */

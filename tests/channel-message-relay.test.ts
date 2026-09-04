@@ -74,6 +74,75 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('projects hold-token messages as 等待新会话, lets the user release or withdraw them, and clears the flag on delivery', () => {
+    vi.useFakeTimers()
+    const { repository, relay } = fixture(20_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      relay.resetScope('run-hold', 20_000)
+      relay.start(250)
+      relay.sendMessage({ channelId: '1', text: '【会话交接】读转录', holdSessionToken: 'seat-A' })
+      relay.sendMessage({ channelId: '1', text: '普通排队消息' })
+      let entries = relay.applyTo(baseSnapshot()).conversations['1']!
+      expect(entries.map((entry) => [entry.text, entry.heldForNextSession ?? false])).toEqual([
+        ['【会话交接】读转录', true],
+        ['普通排队消息', false]
+      ])
+      expect(relay.applyTo(baseSnapshot()).sessions[0]?.queueDepth).toBe(2)
+      const heldEntry = entries[0]!
+      const plainEntry = entries[1]!
+
+      // 撤回普通消息：时间线立即移除、队列计数减一、SQLite 行软删除
+      expect(relay.withdrawQueuedMessage('1', plainEntry.id)).toBe(true)
+      expect(relay.withdrawQueuedMessage('1', plainEntry.id)).toBe(false)
+      entries = relay.applyTo(baseSnapshot()).conversations['1']!
+      expect(entries.map((entry) => entry.id)).toEqual([heldEntry.id])
+      expect(relay.applyTo(baseSnapshot()).sessions[0]?.queueDepth).toBe(1)
+      expect(repository.listPendingOutbound('1')).toHaveLength(1)
+
+      // 现任会话（seat-A）取不到保持位消息；新会话（seat-B）取走后时间线的 held 标记随投递清除
+      expect(repository.listPendingOutbound('1', { forSession: 'seat-A' })).toHaveLength(0)
+      const delivered = repository.listPendingOutbound('1', { forSession: 'seat-B' })[0]!
+      repository.markOutboundDelivered([delivered.id], 20_900)
+      vi.advanceTimersByTime(300)
+      entries = relay.applyTo(baseSnapshot()).conversations['1']!
+      expect(entries[0]).toMatchObject({ id: heldEntry.id, deliveredAt: 20_900 })
+      expect(entries[0]?.heldForNextSession).toBeUndefined()
+
+      // 重启水合：撤回的消息不回流，已投递的保持位消息不再带 held 标记
+      const rehydrated = new ChannelMessageRelay(repository, () => 21_000)
+      rehydrated.start(250)
+      try {
+        const hydrated = rehydrated.applyTo(baseSnapshot()).conversations['1']!
+        expect(hydrated.map((entry) => entry.text)).toEqual(['【会话交接】读转录'])
+        expect(hydrated[0]?.heldForNextSession).toBeUndefined()
+      } finally {
+        rehydrated.stop()
+      }
+    } finally {
+      relay.stop()
+      vi.useRealTimers()
+      repository.close()
+    }
+  })
+
+  it('releases a hold so the current session can take the message on its next poll', () => {
+    const { repository, relay } = fixture(30_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      relay.resetScope('run-release', 30_000)
+      relay.sendMessage({ channelId: '1', text: '【会话交接】读转录', holdSessionToken: 'seat-A' })
+      const entry = relay.applyTo(baseSnapshot()).conversations['1']![0]!
+      expect(entry.heldForNextSession).toBe(true)
+      expect(relay.releaseQueuedMessage('1', entry.id)).toBe(true)
+      expect(relay.releaseQueuedMessage('1', entry.id)).toBe(false)
+      expect(relay.applyTo(baseSnapshot()).conversations['1']![0]?.heldForNextSession).toBeUndefined()
+      expect(repository.listPendingOutbound('1', { forSession: 'seat-A' })).toHaveLength(1)
+    } finally {
+      repository.close()
+    }
+  })
+
   it('projects the authoritative MCP delivery time into the live conversation entry', () => {
     vi.useFakeTimers()
     const { repository, relay } = fixture(10_000)

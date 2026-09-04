@@ -174,6 +174,8 @@ export interface ConversationEntry {
   source: 'desktop' | 'cursor' | 'recovery'
   /** 出站消息被 check_messages 实际取走的时间；缺失表示仍在队列中。 */
   deliveredAt?: number
+  /** 排队中的用户消息带「等待新会话」保持位：当前会话取不到，留给该席位重建后的新会话。 */
+  heldForNextSession?: boolean
   /** 助手回复对应的用户时间线条目（outbox:<id>）。 */
   replyToEntryId?: string
   commandId?: string

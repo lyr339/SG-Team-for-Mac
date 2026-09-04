@@ -71,6 +71,9 @@ import { IPC } from '../shared/desktop-api'
 import { createTeamAgentLaunchPromptPort } from '../application/team-agent-launch-prompts'
 import { WorkspaceReviewReader } from '../infrastructure/git/workspace-review-reader'
 import { registerWorkspaceReviewIpc } from './register-workspace-review-ipc'
+import { SessionHandoffService } from '../application/session-handoff-service'
+import { registerSessionHandoffIpc } from './register-session-handoff-ipc'
+import { homedir } from 'node:os'
 
 let mainWindow: BrowserWindow | undefined
 let disposeIpc: (() => void) | undefined
@@ -89,6 +92,7 @@ let disposeCursorUsageIpc: (() => void) | undefined
 let disposeCursorUpdateIpc: (() => void) | undefined
 let disposeWindowChromeIpc: (() => void) | undefined
 let disposeWorkspaceReviewIpc: (() => void) | undefined
+let disposeSessionHandoffIpc: (() => void) | undefined
 let cursorCdpKeeperRef: CursorCdpKeeper | undefined
 /** 退出前清理账号自动化浏览器宿主（按当前设置解析：指纹=关窗断连；外部=noop）。 */
 let accountBrowserHostDisposeRef: (() => Promise<void>) | undefined
@@ -633,6 +637,17 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   disposeCdpKeeperIpc = registerCdpKeeperIpc(cursorCdpKeeper, cursorCdpSettingsStore, () => mainWindow)
   disposeCursorUsageIpc = registerCursorUsageIpc(cursorUsageTracker, () => mainWindow)
   disposeWorkspaceReviewIpc = registerWorkspaceReviewIpc(workspaceReviewReader, () => mainWindow)
+  // 会话交接：上下文文档 = Cursor 转录（遥测读取器定位），拾光会话记录落 userData/handoff。
+  const sessionHandoffService = new SessionHandoffService({
+    team: teamControlService,
+    sessions: desktopSessionService,
+    locateTranscript: (composerId, workspacePath) => cursorTelemetry.locateTranscript(composerId, workspacePath),
+    conversationsOf: (channelId) => channelMessageRelay?.conversationsOf(channelId),
+    handoffRoot: join(app.getPath('userData'), 'handoff'),
+    transcriptsRoot: process.env.QINGTIAN_CURSOR_PROJECTS_ROOT?.trim() || join(homedir(), '.cursor', 'projects'),
+    onerror: (error) => process.stderr.write(`[session-handoff] ${error instanceof Error ? error.message : String(error)}\n`)
+  })
+  disposeSessionHandoffIpc = registerSessionHandoffIpc(sessionHandoffService, desktopSessionService, () => mainWindow)
   disposeCursorUpdateIpc = registerCursorUpdateIpc(cursorUpdatePreferencesStore, () => mainWindow)
   disposeWindowChromeIpc = registerWindowChromeIpc(() => mainWindow)
   disposeAccountAutomationIpc = registerAccountAutomationIpc(accountAutomationService, () => mainWindow, {
@@ -709,6 +724,7 @@ app.on('before-quit', () => {
   disposeCursorUpdateIpc?.()
   disposeWindowChromeIpc?.()
   disposeWorkspaceReviewIpc?.()
+  disposeSessionHandoffIpc?.()
   cursorCdpKeeperRef?.stop()
   teamControlService?.dispose()
   teamControlRepository?.close()

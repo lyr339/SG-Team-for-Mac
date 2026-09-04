@@ -114,6 +114,8 @@ export const sessions: AgentSession[] = [
     online: false,
     connected: false,
     waiting: false,
+    deliveryMode: 'queued',
+    roleTemplateKey: 'solo',
     contextUsage: usage(0.91),
     changes: undefined,
     workingFiles: [],
@@ -123,6 +125,48 @@ export const sessions: AgentSession[] = [
 ]
 
 export const conversations: Record<string, ConversationEntry[]> = {
+  // 独立席位（离线）：两条仍在队列的用户消息，其中一条带会话交接的「等待新会话」保持位。
+  '3': [
+    {
+      id: 'outbox:solo-1',
+      channelId: '3',
+      role: 'user',
+      text: '把 docs/OPTIMIZATION-BACKLOG.md 里 2.1 的硬编码 hex 收敛进设计令牌。',
+      timestamp: NOW - 40 * MIN,
+      deliveredAt: NOW - 40 * MIN + 2_000,
+      status: 'complete',
+      source: 'desktop'
+    },
+    {
+      id: 'reply:solo-1',
+      channelId: '3',
+      role: 'assistant',
+      text: '已收敛 styles.css 中过程徽章区的 38 处 hex 到 --color-* 令牌，`npm test` 全绿。',
+      timestamp: NOW - 34 * MIN,
+      status: 'complete',
+      source: 'cursor',
+      replyToEntryId: 'outbox:solo-1'
+    },
+    {
+      id: 'outbox:solo-2',
+      channelId: '3',
+      role: 'user',
+      text: '继续处理 3.1：把 fs-10 的关键状态文本提到 11px 基线，并抽测浅色主题对比度。',
+      timestamp: NOW - 6 * MIN,
+      status: 'complete',
+      source: 'desktop'
+    },
+    {
+      id: 'outbox:solo-3',
+      channelId: '3',
+      role: 'user',
+      text: '【会话交接】CH-3（质量验证 · CH-3） 上一段会话的上下文 · 2026-09-04 20:05\n\n你是该席位重建后的新会话。请先阅读并接续下面的上下文，再处理后续消息：\n\n1. Cursor 会话转录（JSONL）：\n   /Users/lyr/.cursor/projects/Users-lyr-Downloads-20260904/agent-transcripts/6cb64c14-e08d-4b31-860d-a598595fc601/6cb64c14-e08d-4b31-860d-a598595fc601.jsonl',
+      timestamp: NOW - 2 * MIN,
+      status: 'complete',
+      source: 'desktop',
+      heldForNextSession: true
+    }
+  ],
   '2': [
     {
       id: 'e1',

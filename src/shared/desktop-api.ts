@@ -19,6 +19,7 @@ import type { AccountAutomationRun, AccountAutomationSettings } from '../domain/
 import type { CursorUpdatePreferences, CursorUpdateWriteResult } from '../domain/cursor-update'
 import type { CursorUsageSnapshot } from '../domain/cursor-usage'
 import type { WorkspaceReviewFileDiff, WorkspaceReviewSummary } from '../domain/workspace-review'
+import type { SessionHandoffContext, SessionHandoffRequest, SessionHandoffResult } from '../domain/session-handoff'
 
 export type BridgeConnectionState =
   | 'disconnected'
@@ -98,6 +99,19 @@ export interface SendMessageInput {
    * 用于系统内部协作通知（如团队消息投递提醒），避免对用户刷屏。
    */
   silent?: boolean
+  /**
+   * 「等待新会话」：消息留给该席位重建/重启后的新会话，当前会话取不到。
+   * 渲染层只填这个布尔；主进程按席位现任会话令牌换算为 holdSessionToken。
+   */
+  holdUntilNewSession?: boolean
+  /** 主进程内部：保持位令牌（渲染层不填写）。 */
+  holdSessionToken?: string
+}
+
+export interface QueuedMessageRef {
+  channelId: string
+  /** 时间线条目 id（outbox:<id>）。 */
+  entryId: string
 }
 
 export interface SendMessageAccepted {
@@ -273,6 +287,16 @@ export interface QingtianDesktopApi {
   setWindowChromeColorMode(mode: 'light' | 'dark'): Promise<boolean>
   getSnapshot(): Promise<DesktopSnapshot>
   sendMessage(input: SendMessageInput): Promise<SendMessageAccepted>
+  /** 撤回仍在队列中的用户消息（已投递则返回 false）。 */
+  withdrawQueuedMessage(input: QueuedMessageRef): Promise<boolean>
+  /** 解除「等待新会话」保持位，消息回到普通排队。 */
+  releaseQueuedMessage(input: QueuedMessageRef): Promise<boolean>
+  /** 会话交接：定位该通道 Cursor 会话的上下文文档（转录）与可用投递方式。 */
+  getSessionHandoffContext(input: { channelId: string }): Promise<SessionHandoffContext>
+  /** 会话交接：把上下文文档路径（连同拾光会话记录）排进目标通道队列。 */
+  deliverSessionHandoff(input: SessionHandoffRequest): Promise<SessionHandoffResult>
+  /** 在系统文件管理器中显示该路径（仅允许拾光已解析出的文件）。 */
+  revealPathInFolder(input: { path: string }): Promise<boolean>
   getTaskPoolSnapshot(): Promise<TaskPoolSnapshot>
   installTaskMcp(): Promise<McpInstallationResult>
   getTeamControlSnapshot(): Promise<TeamControlSnapshot>
@@ -357,6 +381,11 @@ export const IPC = {
   windowSetChromeColorMode: 'window:set-chrome-color-mode',
   getSnapshot: 'sg-team-session:get-snapshot',
   sendMessage: 'sg-team-session:send-message',
+  withdrawQueuedMessage: 'sg-team-session:withdraw-queued-message',
+  releaseQueuedMessage: 'sg-team-session:release-queued-message',
+  sessionHandoffContext: 'sg-team-session:handoff-context',
+  sessionHandoffDeliver: 'sg-team-session:handoff-deliver',
+  revealPathInFolder: 'sg-team-session:reveal-path',
   snapshot: 'sg-team-session:snapshot',
   taskPoolGet: 'task-pool:get',
   taskPoolSnapshot: 'task-pool:snapshot',

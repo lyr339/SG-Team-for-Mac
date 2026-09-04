@@ -54,8 +54,49 @@ describe('ComposerWorkbench', () => {
     expect(html).toContain('composer-duration is-running')
     expect(html).toContain('composer-duration__text')
     expect(html).toContain('aria-label="会话运行时间：')
-    expect(html).toContain('当前没有等待处理的消息')
-    expect(html).toContain('Agent 正在监听，新消息会立即投递')
+    expect(html).toContain('队列为空')
+    expect(html).toContain('Agent 正在监听：下一条消息会立即投递')
+  })
+
+  it('lists queued messages in the queue popover with withdraw and release actions', () => {
+    const html = renderToStaticMarkup(
+      <ComposerWorkbench
+        session={{ ...session, queueDepth: 3, waiting: false, status: 'running', connectionPhase: 'processing' }}
+        draft=""
+        canSend
+        notWaiting
+        submitting={false}
+        sendError=""
+        onDraftChange={() => {}}
+        onSubmit={() => {}}
+        queuedEntries={[
+          {
+            id: 'outbox:a', channelId: '2', role: 'user', source: 'desktop', status: 'complete',
+            timestamp: new Date(2026, 8, 4, 20, 5).getTime(), text: '先把队列弹层收尾'
+          },
+          {
+            id: 'outbox:b', channelId: '2', role: 'user', source: 'desktop', status: 'complete',
+            timestamp: new Date(2026, 8, 4, 20, 6).getTime(), text: '【会话交接】来自 CH-1', heldForNextSession: true,
+            attachments: [{ id: 'att', name: 'a.png', mimeType: 'image/png', size: 10 }]
+          }
+        ]}
+        onWithdrawQueued={() => {}}
+        onReleaseQueued={() => {}}
+      />
+    )
+    // 数字口径 = 服务端计数（含 1 条内部静默消息），列表口径 = 用户可见条目
+    expect(html).toContain('队列 <b>3</b>')
+    expect(html).toContain('另有 1 条系统内部消息在队列中')
+    expect(html).toContain('Agent 正在处理当前任务：新消息按顺序等待')
+    expect(html).toContain('先把队列弹层收尾')
+    expect(html).toContain('等待新会话')
+    expect(html).toContain('1 个附件')
+    expect(html).toContain('composer-queue-item is-held')
+    // 撤回对每条可用，放行只对保持位消息出现
+    expect(html.match(/>撤回</g)?.length).toBe(2)
+    expect(html.match(/>放行</g)?.length).toBe(1)
+    // 芯片上的保持位角标
+    expect(html).toContain('composer-queue-status__held')
   })
 
   it('renders send errors as alerts without hiding the draft', () => {

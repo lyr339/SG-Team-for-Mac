@@ -21,10 +21,14 @@ describe('theme surface contracts', () => {
     expect(styles).not.toMatch(/\.composer-submit button:disabled\s*\{[^}]*rgba\(255,\s*255,\s*255/)
   })
 
-  it('keeps an accessible queue popover', () => {
+  it('keeps an accessible queue popover that opens upward and never covers the composer', () => {
     // 绑定状态徽章已按需求移除（信息保留在会话卡遥测状态里）。
     expect(styles).not.toContain('.composer-binding-status')
-    expect(styles).toMatch(/\.composer-queue-popover\s*\{[^}]*z-index:\s*90/)
+    // 向上展开（bottom 锚定）、右对齐；层级不低于时长气泡（110），交互态可点击。
+    expect(styles).toMatch(/\.composer-queue-popover\s*\{[^}]*z-index:\s*1[1-9]\d/)
+    expect(styles).toMatch(/\.composer-queue-popover\s*\{[^}]*bottom:\s*calc\(100% \+ \d+px\)/)
+    expect(styles).not.toMatch(/\.composer-queue-popover\s*\{[^}]*top:\s*calc\(100%/)
+    expect(styles).toMatch(/\.composer-queue-status\.is-pinned \.composer-queue-popover[^{]*\{[^}]*pointer-events:\s*auto/)
   })
 
   it('uses the cool Orbit palette instead of the former yellow parchment palette', () => {

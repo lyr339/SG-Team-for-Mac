@@ -1,0 +1,155 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
+import type { ConversationEntry } from '../domain/conversation-entry'
+import {
+  buildSessionHandoffMessage,
+  buildSessionHandoffRecord,
+  handoffRecordFileName,
+  SESSION_HANDOFF_NOTE_MAX_CHARS,
+  type SessionHandoffContext,
+  type SessionHandoffRequest,
+  type SessionHandoffResult,
+  type SessionTranscriptLocation
+} from '../domain/session-handoff'
+import type { TeamControlSnapshot } from '../domain/team-control'
+import type { DesktopSnapshot, SendMessageAccepted, SendMessageInput } from '../shared/desktop-api'
+
+export interface SessionHandoffPorts {
+  team: { getSnapshot(): TeamControlSnapshot }
+  sessions: {
+    getSnapshot(): DesktopSnapshot
+    sendMessage(input: SendMessageInput): SendMessageAccepted
+    currentSessionToken(channelId: string): string | undefined
+  }
+  /** Cursor 转录定位（CursorComposerTelemetryReader.locateTranscript）。 */
+  locateTranscript(composerId: string, workspacePath?: string): SessionTranscriptLocation | undefined
+  /** 通道时间线（relay.conversationsOf）。 */
+  conversationsOf(channelId: string): readonly ConversationEntry[] | undefined
+  /** 拾光会话记录落盘目录（userData/handoff）。 */
+  handoffRoot: string
+  /** Cursor 项目目录根（~/.cursor/projects）；用于限定「在 Finder 中显示」的可见范围。 */
+  transcriptsRoot: string
+  now?: () => number
+  onerror?: (error: unknown) => void
+}
+
+function isInside(root: string, candidate: string): boolean {
+  const normalizedRoot = resolve(root)
+  const normalizedCandidate = resolve(candidate)
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(normalizedRoot + sep)
+}
+
+/**
+ * 会话交接：把当前 Cursor 会话的上下文文档（转录）路径连同拾光会话记录，作为一条
+ * 用户消息排进目标通道队列。目标为本会话时携带「等待新会话」保持位。
+ */
+export class SessionHandoffService {
+  private readonly now: () => number
+
+  constructor(private readonly ports: SessionHandoffPorts) {
+    this.now = ports.now ?? Date.now
+  }
+
+  context(channelId: string): SessionHandoffContext {
+    const id = String(channelId ?? '').trim()
+    if (!/^\d+$/.test(id)) throw new Error('通道号无效')
+    const team = this.ports.team.getSnapshot()
+    const snapshot = this.ports.sessions.getSnapshot()
+    const session = snapshot.sessions.find((candidate) => candidate.channelId === id)
+    const runId = team.activeRun?.id
+    const binding = team.bindings.find((candidate) => candidate.channelId === id && (!runId || candidate.runId === runId))
+    const workspacePath = team.workspaces.find((workspace) => workspace.id === team.activeWorkspaceId)?.path
+    const composerId = session?.composerId ?? binding?.composerId ?? session?.telemetryChannelComposerId
+    const entries = (this.ports.conversationsOf(id) ?? []).filter((entry) => !entry.silent)
+    const users = entries.filter((entry) => entry.role === 'user')
+    const assistants = entries.filter((entry) => entry.role === 'assistant')
+    return {
+      channelId: id,
+      displayName: session?.displayName ?? `CH-${id}`,
+      composerId,
+      modelName: session?.executionProfile?.displayName ?? session?.modelName,
+      transcript: composerId ? this.ports.locateTranscript(composerId, workspacePath) : undefined,
+      holdSupported: Boolean(this.ports.sessions.currentSessionToken(id)),
+      userMessageCount: users.length,
+      assistantMessageCount: assistants.length,
+      firstMessageAt: entries[0]?.timestamp,
+      lastMessageAt: entries.at(-1)?.timestamp
+    }
+  }
+
+  deliver(request: SessionHandoffRequest): SessionHandoffResult {
+    const source = this.context(request.sourceChannelId)
+    if (!source.composerId || !source.transcript) {
+      throw new Error(`CH-${source.channelId} 尚未绑定 Cursor Composer，找不到它的上下文文档`)
+    }
+    const target = request.target
+    const targetChannelId = target.kind === 'self' ? source.channelId : String(target.channelId ?? '').trim()
+    if (!/^\d+$/.test(targetChannelId)) throw new Error('目标通道无效')
+    if (target.kind === 'channel' && targetChannelId === source.channelId) {
+      throw new Error('投递给本会话请选择「本会话（等待新会话）」')
+    }
+    const snapshot = this.ports.sessions.getSnapshot()
+    if (!snapshot.sessions.some((candidate) => candidate.channelId === targetChannelId)) {
+      throw new Error(`CH-${targetChannelId} 不在当前运行中`)
+    }
+    const issuedAt = this.now()
+    const held = target.kind === 'self' && source.holdSupported
+    const team = this.ports.team.getSnapshot()
+    const recordPath = this.writeRecord(source, issuedAt, team)
+    const text = buildSessionHandoffMessage({
+      sourceChannelId: source.channelId,
+      sourceDisplayName: source.displayName,
+      sourceModelName: source.modelName,
+      target,
+      issuedAt,
+      transcript: source.transcript,
+      recordPath,
+      note: request.note?.trim().slice(0, SESSION_HANDOFF_NOTE_MAX_CHARS) || undefined
+    })
+    const accepted = this.ports.sessions.sendMessage({
+      channelId: targetChannelId,
+      text,
+      ...(held ? { holdUntilNewSession: true } : {})
+    })
+    return {
+      targetChannelId,
+      held,
+      transcriptPath: source.transcript.path,
+      recordPath,
+      commandId: accepted.commandId,
+      issuedAt
+    }
+  }
+
+  /** 只允许显示拾光自己产出/定位过的文件：交接记录目录与 Cursor 转录目录。 */
+  canReveal(path: string): boolean {
+    const candidate = String(path ?? '').trim()
+    if (!candidate) return false
+    return isInside(this.ports.handoffRoot, candidate) || isInside(this.ports.transcriptsRoot, candidate)
+  }
+
+  private writeRecord(source: SessionHandoffContext, issuedAt: number, team: TeamControlSnapshot): string | undefined {
+    try {
+      const entries = this.ports.conversationsOf(source.channelId) ?? []
+      const markdown = buildSessionHandoffRecord({
+        channelId: source.channelId,
+        displayName: source.displayName,
+        workspacePath: team.workspaces.find((workspace) => workspace.id === team.activeWorkspaceId)?.path,
+        runId: team.activeRun?.id,
+        composerId: source.composerId,
+        modelName: source.modelName,
+        transcriptPath: source.transcript?.path,
+        issuedAt,
+        entries
+      })
+      mkdirSync(this.ports.handoffRoot, { recursive: true })
+      const path = join(this.ports.handoffRoot, handoffRecordFileName(source.channelId, source.composerId, issuedAt))
+      writeFileSync(path, markdown, 'utf8')
+      return path
+    } catch (error) {
+      // 记录文件只是补充材料：写入失败不阻断交接，Cursor 转录路径仍然投递。
+      this.ports.onerror?.(error)
+      return undefined
+    }
+  }
+}

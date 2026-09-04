@@ -38,6 +38,7 @@ import {
   type CursorTelemetrySnapshot
 } from '../../domain/cursor-telemetry'
 import type { ProcessBlock } from '../../domain/conversation-entry'
+import type { SessionTranscriptLocation } from '../../domain/session-handoff'
 import { isCursorInternalToolName } from './cursor-cdp-session-creator'
 
 const COMPOSER_HEADERS_KEY = 'composer.composerHeaders'
@@ -681,11 +682,28 @@ function parseComposer(header: unknown, expectedWorkspace: string): ParsedCompos
   }
 }
 
-function cursorProjectDirectoryNames(workspacePath: string): string[] {
+export function cursorProjectDirectoryNames(workspacePath: string): string[] {
   const withoutRoot = normalize(workspacePath).replace(/^[/\\]+/, '')
   const separatorSlug = withoutRoot.replace(/[:/\\]+/g, '-')
   const strictSlug = withoutRoot.replace(/[^\p{L}\p{N}._-]+/gu, '-')
-  return [...new Set([separatorSlug, strictSlug].filter(Boolean))]
+  // 实测（Cursor 3.6，2026-09）：非 ASCII 字符被直接丢弃而不是替换——
+  // `/Users/lyr/Downloads/20260904测试` → `Users-lyr-Downloads-20260904`。
+  const asciiSlug = separatorSlug.replace(/[^A-Za-z0-9._-]+/g, '')
+  return [...new Set([asciiSlug, separatorSlug, strictSlug].filter(Boolean))]
+}
+
+/** JSONL 记录数（非空行）；超大文件只读不解析，失败返回 undefined。 */
+function countTranscriptRecords(path: string, size: number): number | undefined {
+  if (size <= 0) return 0
+  if (size > 64 * 1024 * 1024) return undefined
+  try {
+    const text = readFileSync(path, 'utf8')
+    let count = 0
+    for (const line of text.split('\n')) if (line.trim()) count += 1
+    return count
+  } catch {
+    return undefined
+  }
 }
 
 function emptyTranscriptSignals(): TranscriptSignals {
@@ -1433,6 +1451,44 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
     this.isProcessAlive = isProcessAlive ?? processIsAlive
     this.channelActivityPollMs = Math.max(0, channelActivityPollMs ?? DEFAULT_CHANNEL_ACTIVITY_POLL_MS)
     this.transcriptIndexTtlMs = Math.max(0, transcriptIndexTtlMs ?? DEFAULT_TRANSCRIPT_INDEX_TTL_MS)
+  }
+
+  /**
+   * 定位某 Composer 的 Cursor 转录（上下文文档）：先按工作区推导的项目目录直接命中，
+   * 再跨目录按 composerId 全局命中；都没有时返回按工作区推导的预计路径（exists=false），
+   * 供会话交接在 Cursor 尚未落盘时也能给出精确位置。
+   */
+  locateTranscript(composerId: string, workspacePath?: string): SessionTranscriptLocation | undefined {
+    const id = composerId.trim()
+    if (!SAFE_COMPOSER_ID.test(id)) return undefined
+    const directoryNames = workspacePath ? cursorProjectDirectoryNames(workspacePath) : []
+    const tried = new Set<string>()
+    const describe = (path: string, resolution: SessionTranscriptLocation['resolution']): SessionTranscriptLocation => {
+      try {
+        const stat = statSync(path)
+        if (!stat.isFile()) return { path, exists: false, resolution }
+        return {
+          path,
+          exists: true,
+          sizeBytes: stat.size,
+          modifiedAt: stat.mtimeMs,
+          recordCount: countTranscriptRecords(path, stat.size),
+          resolution
+        }
+      } catch {
+        return { path, exists: false, resolution }
+      }
+    }
+    for (const directoryName of directoryNames) {
+      tried.add(directoryName)
+      const candidate = join(this.paths.projectsRoot, directoryName, 'agent-transcripts', id, `${id}.jsonl`)
+      if (existsSync(candidate)) return describe(candidate, 'workspace')
+    }
+    const global = transcriptPathGlobalFallback(this.paths, id, tried)
+    if (global) return describe(global, 'global')
+    const expectedDirectory = directoryNames[0]
+    if (!expectedDirectory) return undefined
+    return describe(join(this.paths.projectsRoot, expectedDirectory, 'agent-transcripts', id, `${id}.jsonl`), 'expected')
   }
 
   /** 进程退出/测试收尾时关闭复用连接（未打开过则空操作）。 */

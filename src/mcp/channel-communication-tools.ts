@@ -247,6 +247,8 @@ export function registerChannelCommunicationTools(
     const result = await service.checkMessages({
       channelId,
       reply: input.reply,
+      // 围栏已放行的令牌继续下传：保持位消息（会话交接「等待新会话」）按令牌投递。
+      session: input.session,
       signal,
       keepaliveTimeoutMs: deps.keepaliveTimeoutMs
     })

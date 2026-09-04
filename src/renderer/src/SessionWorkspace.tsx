@@ -20,6 +20,12 @@ interface SessionWorkspaceProps {
   onSend: (text: string, attachments?: MessageAttachment[]) => Promise<void>
   onBack: () => void
   onHandoff?: () => void
+  /** 交接按钮说明（不可用时解释原因）。 */
+  handoffTitle?: string
+  /** 撤回仍在队列中的用户消息（成功返回 true）。 */
+  onWithdrawQueued?: (entryId: string) => Promise<boolean>
+  /** 解除「等待新会话」保持位。 */
+  onReleaseQueued?: (entryId: string) => Promise<boolean>
   draft: string
   onDraftChange: (value: string) => void
   attachments: MessageAttachment[]
@@ -133,6 +139,9 @@ export function SessionWorkspace({
   onSend,
   onBack,
   onHandoff,
+  handoffTitle,
+  onWithdrawQueued,
+  onReleaseQueued,
   draft,
   onDraftChange,
   attachments,
@@ -146,6 +155,13 @@ export function SessionWorkspace({
   const [copiedId, setCopiedId] = useState('')
   const [starredIds, setStarredIds] = useState<ReadonlySet<string>>(new Set())
   const visibleEntries = useMemo(() => entries.filter((entry) => !entry.silent), [entries])
+  // 队列弹层的条目口径：仍未被 check_messages 取走的用户消息（离线队列传输下才有该边界）。
+  const queuedEntries = useMemo(() => (
+    session.deliveryMode === 'queued'
+      ? visibleEntries.filter((entry) => entry.role === 'user' && entry.source === 'desktop'
+          && entry.status === 'complete' && entry.deliveredAt === undefined)
+      : []
+  ), [session.deliveryMode, visibleEntries])
   const latestAssistantId = [...visibleEntries].reverse().find((entry) => entry.role === 'assistant')?.id
   const seenCount = useRef(visibleEntries.length)
   const agentOffline = !session.online
@@ -347,9 +363,13 @@ export function SessionWorkspace({
               )}
             </div>
             <div className="chat-tail">
-              <span className={`chat-state ${entry.status === 'failed' ? 'is-failed' : ''}`}>
+              <span className={`chat-state ${entry.status === 'failed' ? 'is-failed' : ''} ${entry.status === 'complete' && queuedTransport && entry.deliveredAt === undefined ? 'is-queued' : ''}`}>
                 {entry.status === 'pending' && '发送中…'}
-                {entry.status === 'complete' && `已发送 ${formatClock(entry.timestamp)}`}
+                {entry.status === 'complete' && (queuedTransport && entry.deliveredAt === undefined
+                  ? (entry.heldForNextSession
+                    ? `等待新会话 · 排队于 ${formatClock(entry.timestamp)}`
+                    : `排队中 · ${formatClock(entry.timestamp)}`)
+                  : `已发送 ${formatClock(entry.timestamp)}`)}
                 {entry.status === 'streaming' && '实时生成中'}
                 {entry.status === 'failed' && `发送失败：${entry.error || '未知原因'}`}
               </span>
@@ -713,8 +733,20 @@ export function SessionWorkspace({
         onExport={exportTranscript}
         exportEnabled={visibleEntries.length > 0}
         onHandoff={onHandoff}
+        handoffTitle={handoffTitle}
         attachments={attachments}
         onAttachmentsChange={onAttachmentsChange}
+        queuedEntries={queuedEntries}
+        onWithdrawQueued={onWithdrawQueued ? (entryId) => {
+          void onWithdrawQueued(entryId).catch((error: unknown) => {
+            setSendError(error instanceof Error ? error.message : String(error))
+          })
+        } : undefined}
+        onReleaseQueued={onReleaseQueued ? (entryId) => {
+          void onReleaseQueued(entryId).catch((error: unknown) => {
+            setSendError(error instanceof Error ? error.message : String(error))
+          })
+        } : undefined}
       />
     </section>
   )

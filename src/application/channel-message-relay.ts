@@ -187,7 +187,10 @@ export class ChannelMessageRelay {
     const silent = input.silent === true || isInternalCollaborationNotificationText(text)
     this.repository.dedupePendingOutbound(channelId, this.now())
     const runId = input.scopeRunId?.trim() || this.scopeRunId
-    const message = this.repository.enqueueOutbound(channelId, text, this.now(), attachments, silent, runId)
+    const holdSessionToken = input.holdSessionToken?.trim() || undefined
+    const message = this.repository.enqueueOutbound(
+      channelId, text, this.now(), attachments, silent, runId, { holdSessionToken }
+    )
     const commandId = randomUUID()
     const entry: ConversationEntry = {
       id: `outbox:${message.id}`,
@@ -196,6 +199,7 @@ export class ChannelMessageRelay {
       text: message.text,
       timestamp: message.createdAt,
       deliveredAt: message.deliveredAt,
+      heldForNextSession: message.holdSessionToken ? true : undefined,
       status: 'complete',
       source: 'desktop',
       commandId,
@@ -205,6 +209,42 @@ export class ChannelMessageRelay {
     if (silent) this.storeCommandReceipt(entry)
     else this.appendEntry(entry)
     return { commandId }
+  }
+
+  private outboundIdOf(entryId: string): string {
+    const id = String(entryId ?? '').trim()
+    return id.startsWith('outbox:') ? id.slice('outbox:'.length) : ''
+  }
+
+  /** 撤回仍在队列中的用户消息：SQLite 软删除 + 时间线立即移除；已投递/不存在返回 false。 */
+  withdrawQueuedMessage(channelId: string, entryId: string): boolean {
+    const outboundId = this.outboundIdOf(entryId)
+    if (!outboundId) return false
+    if (!this.repository.withdrawOutbound(outboundId, this.now())) return false
+    const key = String(channelId).trim()
+    const entries = this.conversations.get(key)
+    if (entries?.some((entry) => entry.id === entryId)) {
+      this.conversations.set(key, entries.filter((entry) => entry.id !== entryId))
+    }
+    this.sessionCache.delete(key)
+    this.emit()
+    return true
+  }
+
+  /** 解除「等待新会话」保持位：消息回到普通排队，当前会话下一次轮询即可取走。 */
+  releaseQueuedMessage(channelId: string, entryId: string): boolean {
+    const outboundId = this.outboundIdOf(entryId)
+    if (!outboundId) return false
+    if (!this.repository.releaseOutboundHold(outboundId)) return false
+    const key = String(channelId).trim()
+    const entries = this.conversations.get(key)
+    if (entries) {
+      this.conversations.set(key, entries.map((entry) => (
+        entry.id === entryId && entry.heldForNextSession ? { ...entry, heldForNextSession: undefined } : entry
+      )))
+    }
+    this.emit()
+    return true
   }
 
   /**
@@ -369,6 +409,8 @@ export class ChannelMessageRelay {
 
   private entryFromOutbound(message: ChannelOutboundMessage): ConversationEntry | undefined {
     if (message.silent || isInternalCollaborationNotificationText(message.text)) return undefined
+    // 用户撤回的消息不回放：它从未投递，留在时间线只会像一条永远排队的消息。
+    if (message.withdrawnAt !== undefined) return undefined
     return {
       id: `outbox:${message.id}`,
       channelId: message.channelId,
@@ -376,6 +418,7 @@ export class ChannelMessageRelay {
       text: message.text,
       timestamp: message.createdAt,
       deliveredAt: message.deliveredAt,
+      heldForNextSession: message.deliveredAt === undefined && message.holdSessionToken ? true : undefined,
       status: 'complete',
       source: 'desktop',
       attachments: message.attachments
@@ -467,10 +510,12 @@ export class ChannelMessageRelay {
       for (let index = 0; index < entries.length; index += 1) {
         const entry = entries[index]
         if (!entry || entry.role !== 'user' || entry.source !== 'desktop' || entry.deliveredAt !== undefined) continue
-        const deliveredAt = outbound.get(entry.id)?.deliveredAt
+        const row = outbound.get(entry.id)
+        const deliveredAt = row?.deliveredAt
         if (deliveredAt === undefined) continue
         if (next === entries) next = [...entries]
-        next[index] = { ...entry, deliveredAt }
+        // 投递即结束保持位（新会话已取走）：时间线不再显示「等待新会话」。
+        next[index] = { ...entry, deliveredAt, heldForNextSession: undefined }
       }
       if (next !== entries) {
         this.conversations.set(channelId, next)

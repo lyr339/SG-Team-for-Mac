@@ -14,6 +14,11 @@ export interface ChannelCheckInput {
   channelId: string
   /** Agent 顺带提交的上轮回复（等价于先 record_reply）。 */
   reply?: string
+  /**
+   * 调用方会话令牌（围栏已放行）。带「等待新会话」保持位的消息只投递给持有不同令牌的
+   * 新会话；未携带令牌的旧会话取不到它们。
+   */
+  session?: string
   signal?: AbortSignal
   keepaliveTimeoutMs?: number
   pollIntervalMs?: number
@@ -115,10 +120,11 @@ export class ChannelMessageService {
     }
 
     const startedAt = Date.now()
+    const session = input.session?.trim() || null
     while (!input.signal?.aborted) {
       this.repository.touchPresence(channelId, { lastSeenAt: Date.now(), waiting: true })
       this.repository.dedupePendingOutbound(channelId)
-      const pending = this.repository.listPendingOutbound(channelId)
+      const pending = this.repository.listPendingOutbound(channelId, { forSession: session })
       if (pending.length > 0) {
         const { head, mergedCount } = mergeConsecutiveDuplicates(pending)
         if (!head) continue

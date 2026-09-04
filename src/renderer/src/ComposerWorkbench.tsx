@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
-import type { MessageAttachment } from '../../domain/conversation-entry'
+import type { ConversationEntry, MessageAttachment } from '../../domain/conversation-entry'
 import {
   badgeTone,
   executionBadges,
@@ -29,8 +29,14 @@ interface ComposerWorkbenchProps {
   onExport?: () => void
   exportEnabled?: boolean
   onHandoff?: () => void
+  /** 交接按钮的悬停说明（不可用时解释原因）。 */
+  handoffTitle?: string
   attachments?: MessageAttachment[]
   onAttachmentsChange?: (attachments: MessageAttachment[]) => void
+  /** 仍在排队（未投递）的用户消息，供队列弹层逐条展示与撤回。 */
+  queuedEntries?: ConversationEntry[]
+  onWithdrawQueued?: (entryId: string) => void
+  onReleaseQueued?: (entryId: string) => void
 }
 
 function WindowIcon(): React.JSX.Element {
@@ -54,26 +60,114 @@ function QueueIcon(): React.JSX.Element {
   )
 }
 
-function QueueStatus({ session }: { session: AgentSession }): React.JSX.Element {
-  const tooltipId = useId()
+function queuePreview(text: string): string {
+  const compact = text.replace(/\s+/g, ' ').trim()
+  return compact.length > 120 ? `${compact.slice(0, 120)}…` : compact || '（仅附件）'
+}
+
+function queueClock(timestamp: number): string {
+  const date = new Date(timestamp)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * 队列弹层：向上展开（永不遮住输入区），悬停即览、点击钉住；列出仍在排队的用户消息，
+ * 每条可撤回，带「等待新会话」保持位的可放行。数字口径 = 服务端待投递计数（含内部
+ * 静默消息），列表口径 = 用户可见条目，两者相差时如实注明。
+ */
+function QueueStatus({
+  session,
+  queuedEntries = [],
+  onWithdraw,
+  onRelease
+}: {
+  session: AgentSession
+  queuedEntries?: ConversationEntry[]
+  onWithdraw?: (entryId: string) => void
+  onRelease?: (entryId: string) => void
+}): React.JSX.Element {
+  const popoverId = useId()
+  const rootRef = useRef<HTMLSpanElement>(null)
+  const [pinned, setPinned] = useState(false)
+  useEffect(() => {
+    if (!pinned) return
+    const onPointer = (event: MouseEvent): void => {
+      if (!rootRef.current?.contains(event.target as Node | null)) setPinned(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setPinned(false)
+    }
+    document.addEventListener('mousedown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [pinned])
+  const depth = session.queueDepth
+  const heldCount = queuedEntries.filter((entry) => entry.heldForNextSession).length
+  const hiddenCount = Math.max(0, depth - queuedEntries.length)
+  const tone = !session.online ? 'offline' : session.waiting ? 'waiting' : 'busy'
   const state = !session.online
-    ? 'Agent 当前离线，消息会保留在本地队列'
+    ? 'Agent 离线：消息保留在本地队列，恢复轮询后按顺序送达'
     : session.waiting
-      ? 'Agent 正在监听，新消息会立即投递'
-      : 'Agent 正在处理当前任务，新消息将按顺序等待'
-  const delivery = session.deliveryMode === 'queued' ? '离线队列' : '实时通道'
+      ? 'Agent 正在监听：下一条消息会立即投递'
+      : 'Agent 正在处理当前任务：新消息按顺序等待'
   return (
-    <span className="composer-queue-status" tabIndex={0} aria-describedby={tooltipId}>
-      <QueueIcon />
-      <span>队列 <b>{session.queueDepth}</b></span>
-      <span className="composer-queue-popover" id={tooltipId} role="tooltip">
-        <header><span><QueueIcon /></span><strong>消息队列</strong><em>{session.queueDepth}</em></header>
-        <p>{session.queueDepth > 0 ? `${session.queueDepth} 条消息等待当前 Agent 获取。` : '当前没有等待处理的消息。'}</p>
-        <dl>
-          <div><dt>通道状态</dt><dd>{state}</dd></div>
-          <div><dt>投递路径</dt><dd>{delivery}</dd></div>
-        </dl>
-      </span>
+    <span className={`composer-queue-status ${pinned ? 'is-pinned' : ''} ${depth > 0 ? 'has-items' : ''}`} ref={rootRef}>
+      <button
+        type="button"
+        className="composer-queue-status__chip"
+        aria-expanded={pinned}
+        aria-controls={popoverId}
+        title={pinned ? '收起消息队列' : '查看消息队列'}
+        onClick={() => setPinned((value) => !value)}
+      >
+        <QueueIcon />
+        <span>队列 <b>{depth}</b></span>
+        {heldCount > 0 ? <i className="composer-queue-status__held" title={`${heldCount} 条等待新会话`}>{heldCount}</i> : null}
+      </button>
+      <div className="composer-queue-popover" id={popoverId} role="dialog" aria-label="消息队列">
+        <header>
+          <span><QueueIcon /></span>
+          <strong>消息队列</strong>
+          <em>{depth}</em>
+        </header>
+        <p className={`composer-queue-popover__state is-${tone}`}><i />{state}</p>
+        {queuedEntries.length ? (
+          <ol className="composer-queue-list">
+            {queuedEntries.map((entry, index) => (
+              <li key={entry.id} className={`composer-queue-item ${entry.heldForNextSession ? 'is-held' : ''}`}>
+                <span className="composer-queue-item__index">{index + 1}</span>
+                <div className="composer-queue-item__body">
+                  <div className="composer-queue-item__meta">
+                    <time>{queueClock(entry.timestamp)}</time>
+                    {entry.attachments?.length ? <span>{entry.attachments.length} 个附件</span> : null}
+                    {entry.heldForNextSession ? <b>等待新会话</b> : null}
+                  </div>
+                  <p title={entry.text}>{queuePreview(entry.text)}</p>
+                </div>
+                <div className="composer-queue-item__actions">
+                  {entry.heldForNextSession && onRelease ? (
+                    <button type="button" title="解除等待：当前 Agent 下一次轮询即取走" onClick={() => onRelease(entry.id)}>放行</button>
+                  ) : null}
+                  {onWithdraw ? (
+                    <button type="button" className="is-danger" title="撤回这条尚未投递的消息" onClick={() => onWithdraw(entry.id)}>撤回</button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="composer-queue-popover__empty">
+            {depth > 0 ? `${depth} 条系统内部消息在队列中，不显示正文。` : '队列为空，下一条消息将按上面的状态投递。'}
+          </p>
+        )}
+        {queuedEntries.length && hiddenCount > 0 ? (
+          <p className="composer-queue-popover__note">另有 {hiddenCount} 条系统内部消息在队列中。</p>
+        ) : null}
+        <footer>投递方式：check_messages 长轮询，取走即最多一次；未投递前可撤回。</footer>
+      </div>
     </span>
   )
 }
@@ -202,8 +296,12 @@ export function ComposerWorkbench({
   onExport,
   exportEnabled = false,
   onHandoff,
+  handoffTitle,
   attachments = [],
-  onAttachmentsChange
+  onAttachmentsChange,
+  queuedEntries,
+  onWithdrawQueued,
+  onReleaseQueued
 }: ComposerWorkbenchProps): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -344,7 +442,7 @@ export function ComposerWorkbench({
             <span>清空</span>
           </button>
           <button className="composer-tool" disabled={!onHandoff}
-            title={onHandoff ? '把离线职责交给其他在线空闲 Agent' : '当前会话无需交接或没有有效团队角色'}
+            title={handoffTitle ?? (onHandoff ? '交接这个会话的上下文' : '当前会话无需交接或没有有效团队角色')}
             onClick={onHandoff}>
             <HandoffIcon />
             <span>交接</span>
@@ -368,7 +466,12 @@ export function ComposerWorkbench({
           />
         </div>
         <div className="composer-topbar__right">
-          <QueueStatus session={session} />
+          <QueueStatus
+            session={session}
+            queuedEntries={queuedEntries}
+            onWithdraw={onWithdrawQueued}
+            onRelease={onReleaseQueued}
+          />
           <span
             className={`composer-duration ${session.online ? 'is-running' : 'is-inactive'}`}
             data-tooltip={durationLabel}

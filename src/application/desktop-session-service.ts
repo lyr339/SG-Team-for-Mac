@@ -864,11 +864,38 @@ export class DesktopSessionService implements DesktopSessionBridge {
   }
 
   sendMessage(input: SendMessageInput): SendMessageAccepted {
+    const channelId = String(input.channelId ?? '').trim()
     // 一体化分流：内嵌通道直写拾光 SQLite 队列，插件通道维持原 WS 链路
-    if (this.embeddedRelay?.handlesChannel(String(input.channelId ?? '').trim())) {
-      return this.embeddedRelay.sendMessage(input)
+    if (this.embeddedRelay?.handlesChannel(channelId)) {
+      // 「等待新会话」保持位 = 席位现任会话令牌：持有它的会话取不到该消息，只有
+      // 之后重建出来的新会话（令牌轮换）才收到。渲染层只声明意图，令牌在此换算。
+      const { holdUntilNewSession, ...rest } = input
+      if (holdUntilNewSession) {
+        const token = this.currentSessionToken(channelId)
+        if (!token) throw new Error(`CH-${channelId} 当前席位没有会话令牌，无法区分新旧会话；请按普通排队投递`)
+        return this.embeddedRelay.sendMessage({ ...rest, holdSessionToken: token })
+      }
+      return this.embeddedRelay.sendMessage(rest)
     }
     return this.bridge.sendMessage(input)
+  }
+
+  /** 席位现任 Cursor 会话的围栏令牌（活动 run 内该通道的 RuntimeBinding）。 */
+  currentSessionToken(channelId: string): string | undefined {
+    const team = this.team.getSnapshot()
+    const runId = team.activeRun?.id
+    const binding = team.bindings.find((candidate) => (
+      candidate.channelId === channelId && (!runId || candidate.runId === runId)
+    ))
+    return binding?.sessionToken?.trim() || undefined
+  }
+
+  withdrawQueuedMessage(channelId: string, entryId: string): boolean {
+    return this.embeddedRelay?.withdrawQueuedMessage(String(channelId).trim(), String(entryId).trim()) ?? false
+  }
+
+  releaseQueuedMessage(channelId: string, entryId: string): boolean {
+    return this.embeddedRelay?.releaseQueuedMessage(String(channelId).trim(), String(entryId).trim()) ?? false
   }
 
   subscribe(listener: DesktopSessionListener): () => void {

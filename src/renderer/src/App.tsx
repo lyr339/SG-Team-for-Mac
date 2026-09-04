@@ -17,6 +17,7 @@ import { WorkspaceInspector } from './WorkspaceInspector'
 import { LobbyPage, type ConfigurationSection } from './lobby/LobbyPage'
 import { TeamSetupPage } from './team/TeamSetupPage'
 import { ManualHandoffDialog } from './team/ManualHandoffDialog'
+import { SessionHandoffDialog } from './SessionHandoffDialog'
 import type { TeamHandoffOptions } from '../../domain/team-handoff'
 import type { CursorAccountMetadata, CursorRuntimeAccountMatch } from '../../domain/cursor-account'
 import type { CursorMembershipStatus } from '../../domain/cursor-membership'
@@ -742,6 +743,24 @@ export function App(): React.JSX.Element {
     && ['running', 'attention'].includes(teamControl.activeRun.status)
     ? selectedMember.slot.id
     : undefined
+  // 独立席位的「交接」= 上下文交接：定位当前 Cursor 会话的转录文档并投递到本会话（等待新会话）
+  // 或其他会话的队列。团队席位沿用离线职责交接（AgentSlot 迁移）。
+  const soloSelected = selectedSession?.roleTemplateKey === 'solo'
+  const soloHandoffReady = Boolean(soloSelected && teamControl.activeRun && teamControl.activeRun.status !== 'completed')
+  const handoffTitle = soloSelected
+    ? (soloHandoffReady ? '交接会话上下文：投递转录文档路径到本会话（等待新会话）或其他会话' : '当前运行已结束，无法交接')
+    : (selectedHandoffSlotId ? '把离线职责交给其他在线空闲 Agent' : undefined)
+  const [contextHandoffChannel, setContextHandoffChannel] = useState<string>()
+  const loadHandoffContext = useCallback((channelId: string) => (
+    window.qingtianDesktop.getSessionHandoffContext({ channelId })
+  ), [])
+  const deliverHandoff = useCallback((input: Parameters<typeof window.qingtianDesktop.deliverSessionHandoff>[0]) => (
+    window.qingtianDesktop.deliverSessionHandoff(input)
+  ), [])
+  const revealHandoffPath = useCallback((path: string) => window.qingtianDesktop.revealPathInFolder({ path }), [])
+  const contextHandoffSession = contextHandoffChannel
+    ? visibleSnapshot.sessions.find((session) => session.channelId === contextHandoffChannel)
+    : undefined
   useEffect(() => {
     if (activeModule !== 'sessions') return
     if (selectedChannelId && visibleSnapshot.sessions.some((session) => session.channelId === selectedChannelId)) {
@@ -1243,7 +1262,22 @@ export function App(): React.JSX.Element {
           entries={snapshot.conversations[selectedSession.channelId] ?? []}
           currentProjectName={activeProjectName}
           onBack={() => { setSessionListRequested(true); setSelectedChannelId(undefined) }}
-          onHandoff={selectedHandoffSlotId ? () => void openManualHandoff(selectedHandoffSlotId) : undefined}
+          onHandoff={soloSelected
+            ? (soloHandoffReady ? () => setContextHandoffChannel(selectedSession.channelId) : undefined)
+            : (selectedHandoffSlotId ? () => void openManualHandoff(selectedHandoffSlotId) : undefined)}
+          handoffTitle={handoffTitle}
+          onWithdrawQueued={async (entryId) => {
+            const ok = await window.qingtianDesktop.withdrawQueuedMessage({ channelId: selectedSession.channelId, entryId })
+            if (!ok) throw new Error('这条消息已被 Agent 取走，无法撤回')
+            acceptSnapshot(await window.qingtianDesktop.getSnapshot())
+            return ok
+          }}
+          onReleaseQueued={async (entryId) => {
+            const ok = await window.qingtianDesktop.releaseQueuedMessage({ channelId: selectedSession.channelId, entryId })
+            if (!ok) throw new Error('这条消息已不在等待状态')
+            acceptSnapshot(await window.qingtianDesktop.getSnapshot())
+            return ok
+          }}
           draft={composerDrafts[selectedSession.channelId] ?? ''}
           onDraftChange={(value) => setComposerDrafts((current) => ({ ...current, [selectedSession.channelId]: value }))}
           attachments={composerAttachments[selectedSession.channelId] ?? []}
@@ -1274,6 +1308,22 @@ export function App(): React.JSX.Element {
         error={handoffError}
         onClose={() => { if (!handoffBusy) setHandoffOptions(undefined) }}
         onConfirm={confirmManualHandoff}
+      />
+    ) : null}
+    {contextHandoffChannel && contextHandoffSession ? (
+      <SessionHandoffDialog
+        key={contextHandoffChannel}
+        session={contextHandoffSession}
+        sessions={visibleSnapshot.sessions}
+        loadContext={loadHandoffContext}
+        deliver={async (input) => {
+          const result = await deliverHandoff(input)
+          acceptSnapshot(await window.qingtianDesktop.getSnapshot())
+          return result
+        }}
+        revealPath={revealHandoffPath}
+        onOpenSession={(channelId) => { setSelectedChannelId(channelId); setSessionListRequested(false) }}
+        onClose={() => setContextHandoffChannel(undefined)}
       />
     ) : null}
     {runtimeGuard ? (
