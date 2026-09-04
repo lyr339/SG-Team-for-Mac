@@ -655,7 +655,7 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 .usage-popover footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 9px; border-top: var(--border-width-regular) solid var(--line-faint); color: var(--color-text-tertiary); font-size: var(--fs-10); }
 .usage-popover__empty { margin: 0; color: var(--text-soft); font-size: var(--fs-12); line-height: 1.5; }
 .rail-session-card__model { min-width: 0; grid-area: model; justify-self: end; align-self: center; }
-.rail-session-card__model > b { display: block; max-width: 116px; overflow: hidden; padding: 5px 7px; color: var(--model-provider-fg, white); background: var(--model-provider-bg, var(--accent-deep)); border: 1px solid var(--model-provider-border, transparent); border-radius: 6px; font: 600 var(--fs-10)/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.rail-session-card__model > b { display: block; max-width: 150px; overflow: hidden; padding: 5px 7px; color: var(--model-provider-fg, white); background: var(--model-provider-bg, var(--accent-deep)); border: 1px solid var(--model-provider-border, transparent); border-radius: 6px; font: 600 var(--fs-10)/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .rail-session-card__model.is-muted > b { color: var(--muted); background: var(--surface-soft); }
 
 
@@ -938,7 +938,7 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 /* 顶部：功能工具条 */
 .composer-topbar { min-height: 38px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 4px 8px; color: var(--muted); border-bottom: var(--border-width-regular) solid var(--line-faint); }
 .composer-topbar__left { min-width: 0; display: flex; align-items: center; gap: 3px; overflow: hidden; }
-.composer-topbar__right { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 3px; overflow: visible; }
+.composer-topbar__right { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; overflow: visible; }
 .composer-topbar svg { width: 16px; height: 16px; flex: 0 0 auto; }
 .composer-agent-chip { min-width: 0; max-width: 250px; min-height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 10px; color: var(--text-amber); background: var(--surface-amber); border: 1px solid var(--amber-border); border-radius: 8px; font-size: var(--fs-10); font-weight: 600; }
 .composer-agent-chip.is-online { color: var(--accent-deep); background: var(--accent-wash); border-color: var(--accent-border); }
@@ -999,7 +999,6 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
   .composer-agent-chip { max-width: 160px; }
 }
 @container composer (max-width: 540px) {
-  .composer-topbar__right { gap: 2px; }
   .composer-duration { padding-inline: 8px; }
 }
 
