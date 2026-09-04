@@ -108,6 +108,13 @@ export interface CursorProcessStream {
   generatingBubbleCount: number
   /** 超长回合超过传输上限时显式披露数量，避免伪装成“全部”。 */
   truncatedItemCount?: number
+  /**
+   * 本帧是当前回合可见窗口的权威完整快照（observer 写后快照）：
+   * - true 时缺席块应撤下（截断帧只保护窗口外历史）；
+   * - false/缺省（runtime inspect 等不携带过程的来源、旧版 hook 帧）不具权威性，
+   *   服务层维持「本帧无过程载荷 → 保留旧块」的追加合并语义。
+   */
+  snapshotComplete?: boolean
 }
 
 export interface CursorComposerRuntimeEvidence {
@@ -420,6 +427,18 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
         if (item && item.composerId) summaries.set(String(item.composerId), item);
       }
     } catch (e) {}
+    const TRANSPORT_TOOLS = ['check_messages', 'record_reply', 'wait_messages', 'qingtian'];
+    function isTransportTool(name) {
+      const lower = String(name || '').toLowerCase();
+      return TRANSPORT_TOOLS.some(item => (
+        lower === item || lower.endsWith('-' + item) || lower.endsWith('_' + item)
+      ));
+    }
+    function extractToolName(later) {
+      const td = later && later.toolFormerData;
+      const modernArgs = td && td.toolCall && td.toolCall.tool && td.toolCall.tool.value && td.toolCall.tool.value.args;
+      return String(td && td.name || modernArgs && (modernArgs.toolName || modernArgs.name) || '');
+    }
     const rows = [];
     for (const composerId of ${ids}) {
       try {
@@ -451,6 +470,43 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
           dataInspected = headers.length > 0 || Object.keys(map).length > 0;
           let lastUser = -1;
           for (let i = headers.length - 1; i >= 0; i--) if (headers[i] && headers[i].type === 1) { lastUser = i; break; }
+          // 阶段 D（RC-6）：最终正文定位前先做内部协议相位分组（与 observer
+          // processSnapshot 同语义）——传输工具 + 其关联 thinking/capability/
+          // serviceStatus 不构成「后续工作」，正文之后只剩内部协议噪声时仍是
+          // 最终正文。旧实现把 keepalive thinking、capability:30 当工作，导致
+          // 真正的最终回答被误判为中间过程。
+          const toolPhase = new Array(headers.length).fill(null);
+          for (let k = lastUser + 1; k < headers.length; k++) {
+            const later = map[headers[k] && headers[k].bubbleId] || {};
+            if (!later.toolFormerData) continue;
+            const toolName = extractToolName(later);
+            toolPhase[k] = toolName ? (isTransportTool(toolName) ? 'transport' : 'business') : 'pending';
+          }
+          const transportAssociated = new Array(headers.length).fill(false);
+          let nextToolPhase = null;
+          for (let k = headers.length - 1; k > lastUser; k--) {
+            if (toolPhase[k]) { nextToolPhase = toolPhase[k]; continue; }
+            const bubble = map[headers[k] && headers[k].bubbleId] || {};
+            // 带正文的 message 重置相位（与 observer 同语义）：正文之后的
+            // record_reply/check_messages 脚手架不回溯吞掉正文之前的业务思考。
+            if (typeof bubble.text === 'string' && bubble.text.trim()) { nextToolPhase = null; continue; }
+            // pending（未水合 MCP）按传输倾向处理——与 observer 工作判定同语义：
+            // 误判传输可自愈，误判业务会让最终正文进 cursor-msg（双渲染）。
+            if (nextToolPhase === 'transport' || nextToolPhase === 'pending') transportAssociated[k] = true;
+          }
+          // 后缀预扫描（O(n)）：长回合下逐气泡内层扫描是 O(n²) 页面热点。
+          const messageAhead = new Array(headers.length).fill(false);
+          for (let k = headers.length - 2; k >= 0; k--) {
+            const later = map[headers[k + 1] && headers[k + 1].bubbleId] || {};
+            messageAhead[k] = messageAhead[k + 1]
+              || (typeof later.text === 'string' && Boolean(later.text.trim()));
+          }
+          let prevToolPhase = null;
+          for (let k = lastUser + 1; k < headers.length; k++) {
+            if (toolPhase[k]) { prevToolPhase = toolPhase[k]; continue; }
+            if (transportAssociated[k]) continue;
+            if (!messageAhead[k] && prevToolPhase === 'transport') transportAssociated[k] = true;
+          }
           for (let i = headers.length - 1; i > lastUser; i--) {
             const header = headers[i];
             const message = map[header && header.bubbleId] || {};
@@ -461,16 +517,10 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
               const later = map[headers[j] && headers[j].bubbleId] || {};
               const thinking = typeof later.thinking === 'string' ? later.thinking : later.thinking && later.thinking.text;
               const td = later.toolFormerData;
-              const modernArgs = td && td.toolCall && td.toolCall.tool && td.toolCall.tool.value && td.toolCall.tool.value.args;
-              const toolName = String(td && td.name || modernArgs && (modernArgs.toolName || modernArgs.name) || '');
-              const lowerTool = toolName.toLowerCase();
-              const transportNoise = ['check_messages', 'record_reply', 'wait_messages', 'qingtian'].some(item => (
-                lowerTool === item || lowerTool.endsWith('-' + item) || lowerTool.endsWith('_' + item)
-              ));
-              if ((td && !transportNoise) || (typeof thinking === 'string' && thinking.trim()) || (!td && later.capabilityType !== undefined) || later.serviceStatusUpdate) {
-                laterWork = true;
-                break;
-              }
+              const toolName = extractToolName(later);
+              if (td && toolName && !isTransportTool(toolName)) { laterWork = true; break; }
+              if (typeof thinking === 'string' && thinking.trim() && !transportAssociated[j]) { laterWork = true; break; }
+              if (!td && later.planUpdate) { laterWork = true; break; }
             }
             if (!laterWork) {
               responseText = text;
@@ -555,6 +605,14 @@ function isInternalStreamTool(toolName: string): boolean {
   ))
 }
 
+/**
+ * 内部协议工具判定（check_messages / record_reply / wait_messages / qingtian，
+ * 含服务器前缀形态）。供转录兜底等旁路解析与主过滤共用同一名单。
+ */
+export function isCursorInternalToolName(toolName: string): boolean {
+  return isInternalStreamTool(toolName) || toolName.trim().toLowerCase() === 'mcptoolcall'
+}
+
 /** 解析页面侧提取的过程流（宽容解析：单块坏数据不影响其余块；内部协议调用过滤）。 */
 export function parseProcessStream(value: unknown): CursorProcessStream | undefined {
   if (!isRecord(value)) return undefined
@@ -597,6 +655,9 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
       const toolName = typeof item.toolName === 'string' ? item.toolName.slice(0, 80) : ''
       if (!toolName) continue
       if (isInternalStreamTool(toolName)) continue
+      // 旧版 hook（v14 及以前）的 MCP 首帧占位名：真实工具名未水合，暂缓展示
+      // （RC-5.1）；水合后的下一帧以真实名称到达，届时按 transport/business 分类。
+      if (toolName.toLowerCase() === 'mcptoolcall') continue
       const toolKind = typeof item.toolKind === 'string' && STREAM_TOOL_KINDS.has(item.toolKind)
         ? item.toolKind as CursorStreamToolBlock['toolKind']
         : 'other'
@@ -626,7 +687,10 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
         }]
       : []).slice(0, 100)
     : undefined
-  if (!items.length && !todos?.length) return undefined
+  // 权威空快照（snapshotComplete=true）必须存活：内部协议工具全部被过滤后
+  // 「可见过程为空」是有效状态（撤下旧块的依据）；只有非权威帧（runtime
+  // inspect 兜底 / 旧版 hook）才在空集时返回 undefined。
+  if (!items.length && !todos?.length && value.snapshotComplete !== true) return undefined
   return {
     turnId: typeof value.turnId === 'string' && value.turnId ? value.turnId.slice(0, 120) : undefined,
     items: items.slice(-256),
@@ -636,7 +700,8 @@ export function parseProcessStream(value: unknown): CursorProcessStream | undefi
       : 0,
     truncatedItemCount: typeof value.truncatedItemCount === 'number' && value.truncatedItemCount > 0
       ? Math.min(Math.floor(value.truncatedItemCount), 100_000)
-      : undefined
+      : undefined,
+    snapshotComplete: value.snapshotComplete === true ? true : undefined
   }
 }
 

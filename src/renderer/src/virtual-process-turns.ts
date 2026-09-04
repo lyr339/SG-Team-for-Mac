@@ -16,7 +16,7 @@ interface TurnGroup {
   response?: LiveAgentResponseState
 }
 
-function anchorForTime(entries: ConversationEntry[], timestamp: number, immediateDelivery: boolean): string | undefined {
+function anchorForTime(entries: readonly ConversationEntry[], timestamp: number, immediateDelivery: boolean): string | undefined {
   let anchor: ConversationEntry | undefined
   for (const entry of entries) {
     if (entry.role !== 'user') continue
@@ -34,7 +34,7 @@ function anchorForTime(entries: ConversationEntry[], timestamp: number, immediat
  * 用户消息不会提前夺走正在执行的旧过程。原生 block id 用于剔除已随回复持久化的步骤。
  */
 export function projectVirtualProcessTurns(
-  entries: ConversationEntry[],
+  entries: readonly ConversationEntry[],
   process?: LiveProcessState,
   response?: LiveAgentResponseState,
   immediateDelivery = false
@@ -57,6 +57,9 @@ export function projectVirtualProcessTurns(
   for (const segment of partitionVirtualProcessBlocks(
     entries, process?.blocks ?? [], process?.startedAt ?? 0, immediateDelivery, persistedBlockIds
   )) {
+    // 回合封口后的传输空档（keepalive/内部协议噪声）不进入任何用户可见回合，
+    // 也不得折入 prelude——否则空档块会被排到时间线顶部（错位闪烁）。
+    if (segment.gap) continue
     groupFor(segment.anchorEntryId).blocks.push(...segment.blocks)
   }
   if (response) groupFor(anchorForTime(entries, response.startedAt, immediateDelivery)).response = response

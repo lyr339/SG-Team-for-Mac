@@ -1,16 +1,16 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
-import type { ConversationEntry, MessageAttachment } from '../../domain/conversation-entry'
+import { conversationTextIdentity, type ConversationEntry, type MessageAttachment, type ProcessBlock } from '../../domain/conversation-entry'
 import type { LiveAgentResponseState, LiveProcessState, NativeProcessStreamStatus } from '../../shared/desktop-api'
 import { formatClock, formatFileSize, formatRelativeTime, statusLabel } from './format'
 import { ComposerWorkbench } from './ComposerWorkbench'
 import { AgentAvatar } from './AgentAvatar'
-import { MessageContent } from './MessageContent'
+import { ClampedMessage } from './ClampedMessage'
 import { ProcessTurnCard } from './ProcessTurnCard'
-import { LiveAgentResponse } from './LiveAgentResponse'
+import { TurnResponseText } from './TurnResponseText'
 import { SessionUsageStat } from './SessionUsageStat'
 import { suggestedActionsFromText } from './process-turn-view'
-import { projectVirtualProcessTurns, type VirtualProcessTurn } from './virtual-process-turns'
+import { projectTurnTimeline, type TurnTimelineItem } from './timeline-view'
 import { useBottomFollow } from './use-bottom-follow'
 
 interface SessionWorkspaceProps {
@@ -35,41 +35,39 @@ interface SessionWorkspaceProps {
 const GROUP_WINDOW_MS = 5 * 60_000
 /** 消息间隔超过该值时插入居中的时间分隔线。 */
 const DIVIDER_WINDOW_MS = 10 * 60_000
-/** 长回复气泡限高（超出折叠为渐变遮罩 + 「展开全文」），避免单条回复撑满会话窗。 */
-const MESSAGE_CLAMP_PX = 384
 
-type TimelineItem =
-  | { type: 'entry'; key: string; entry: ConversationEntry; position: number }
-  | { type: 'live-turn'; key: string; turn: VirtualProcessTurn; position: number }
-  | { type: 'running-placeholder'; key: string; position: number }
+type TimelineItem = { type: 'turn'; key: string; item: TurnTimelineItem }
 
 /**
- * 长文本气泡内容：超过限高默认折叠，用户点击「展开全文」查看完整内容。
- * 测量在 useLayoutEffect 中按 text 重测；折叠态 scrollHeight 仍是全文高度，不受 max-height 影响。
+ * 历史脏数据兜底（2026-09-03 事故）：旧版封口曾把与回复正文相同的 cursor-msg
+ * 固化进 processBlocks，过程卡与正文气泡会渲染同一文本两次。封口防线（§8.4-4）
+ * 已阻止新数据产生；此处滤除历史残留的重复 message。
  */
-function ClampedMessage({ text }: { text: string }): React.JSX.Element {
-  const contentRef = useRef<HTMLDivElement>(null)
-  const [overflowing, setOverflowing] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-  useLayoutEffect(() => {
-    const element = contentRef.current
-    if (!element) return
-    setOverflowing(element.scrollHeight > MESSAGE_CLAMP_PX)
-  }, [text])
+function replyProcessBlocks(entry: ConversationEntry): ProcessBlock[] | undefined {
+  const finalIdentity = entry.text.trim() ? conversationTextIdentity(entry.text) : undefined
+  if (!entry.processBlocks?.length || !finalIdentity) return entry.processBlocks
+  return entry.processBlocks.filter((block) => (
+    !(block.kind === 'message' && conversationTextIdentity(block.text) === finalIdentity)
+  ))
+}
+
+function renderAttachments(entry: ConversationEntry): React.JSX.Element | null {
+  if (!entry.attachments?.length) return null
   return (
-    <div className={`clamped-message${overflowing && !expanded ? ' is-clamped' : ''}`}>
-      <div ref={contentRef}>
-        <MessageContent text={text} />
-      </div>
-      {overflowing ? (
-        <button
-          type="button"
-          className="clamped-message__toggle"
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded ? '收起 ▴' : `展开全文 ▾`}
-        </button>
-      ) : null}
+    <div className="chat-attachments">
+      {entry.attachments.map((attachment) => (
+        <div key={attachment.id} className="chat-attachment">
+          {attachment.mimeType.startsWith('image/') && attachment.previewUrl ? (
+            <img src={attachment.previewUrl} alt={attachment.name} className="chat-attachment-image" />
+          ) : (
+            <div className="chat-attachment-file">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.2"/><path d="M9 2v3h3" fill="none" stroke="currentColor" strokeWidth="1.2"/></svg>
+              <span>{attachment.name}</span>
+              <small>{formatFileSize(attachment.size)}</small>
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
@@ -172,46 +170,33 @@ export function SessionWorkspace({
   const liveResponseKey = visibleLiveResponse
     ? `${visibleLiveResponse.id}:${visibleLiveResponse.status}:${visibleLiveResponse.text.length}:${visibleLiveResponse.updatedAt}`
     : ''
-  const pendingVisibleUser = visibleEntries.at(-1)?.role === 'user' ? visibleEntries.at(-1) : undefined
-  const virtualTurns = useMemo(
-    () => projectVirtualProcessTurns(visibleEntries, liveProcess, visibleLiveResponse, !queuedTransport),
-    [liveProcess, queuedTransport, visibleEntries, visibleLiveResponse]
+  const agentRunning = session.online && session.status === 'running'
+  const turnTimeline = useMemo(
+    () => projectTurnTimeline({
+      entries: visibleEntries,
+      liveProcess,
+      liveResponse: visibleLiveResponse,
+      immediateDelivery: !queuedTransport,
+      agentRunning
+    }),
+    [visibleEntries, liveProcess, visibleLiveResponse, queuedTransport, agentRunning]
   )
-  const latestUserHasTurn = pendingVisibleUser
-    ? virtualTurns.some((turn) => turn.id === pendingVisibleUser.id)
-    : false
-  const showRunningPlaceholder = pendingVisibleUser
-    && session.online
-    && session.status === 'running'
+  // 占位判定沿用：最后一个可视条目是用户消息且没有任何回合产物（过程/回复流）
+  // 接管该消息——responding 但零产物（过程流未就绪）同样显示占位。
+  const pendingVisibleUser = visibleEntries.at(-1)?.role === 'user' ? visibleEntries.at(-1) : undefined
+  const lastTurn = pendingVisibleUser
+    ? turnTimeline.find((item) => item.key === `turn:${pendingVisibleUser.id}`)
+    : undefined
+  const lastTurnHasOutput = Boolean(lastTurn?.process?.blocks.length || lastTurn?.response)
+  const showRunningPlaceholder = Boolean(pendingVisibleUser && agentRunning
     && (pendingVisibleUser.deliveredAt !== undefined || !queuedTransport)
-    && !latestUserHasTurn
-  const timelineItems = useMemo<TimelineItem[]>(() => {
-    const items: TimelineItem[] = visibleEntries.map((entry, index) => ({
-      type: 'entry',
-      key: `entry:${entry.id}`,
-      entry,
-      position: index
-    }))
-    for (const turn of virtualTurns) {
-      items.push({
-        type: 'live-turn',
-        key: `active-turn:${session.id}:${turn.id}`,
-        turn,
-        position: turn.position
-      })
-    }
-    if (showRunningPlaceholder) {
-      items.push({
-        type: 'running-placeholder',
-        key: `active-turn:${session.id}`,
-        position: Math.max(0, visibleEntries.length - 0.5)
-      })
-    }
-    return items.sort((left, right) => (
-      left.position - right.position
-      || left.key.localeCompare(right.key)
-    ))
-  }, [visibleEntries, virtualTurns, showRunningPlaceholder, session.id])
+    && lastTurn && !lastTurn.reply && !lastTurnHasOutput)
+  // 「正在处理」占位不再是独立时间线项，而是该回合 Agent 行的空态：过程首帧
+  // 到达时同一行原地填充，不会先卸掉占位行再插入新行（两次布局跳动）。
+  const placeholderTurnKey = showRunningPlaceholder ? lastTurn?.key : undefined
+  const timelineItems = useMemo<TimelineItem[]>(() => (
+    turnTimeline.map((item) => ({ type: 'turn', key: item.key, item }))
+  ), [turnTimeline])
   const follow = useBottomFollow(
     `${session.id}:${session.composerId ?? ''}`,
     `${visibleEntries.length}:${lastEntryKey}:${liveProcessKey}:${liveResponseKey}:${timelineItems.length}`
@@ -321,121 +306,42 @@ export function SessionWorkspace({
     URL.revokeObjectURL(url)
   }
 
-  const renderEntryRow = (entry: ConversationEntry, previous: ConversationEntry | undefined): React.JSX.Element => {
-    const gap = previous ? entry.timestamp - previous.timestamp : Number.POSITIVE_INFINITY
-    const needDivider = gap > DIVIDER_WINDOW_MS
-    const grouped = !needDivider
-      && previous?.role === entry.role
-      && previous?.source === entry.source
-      && gap < GROUP_WINDOW_MS
-    const mine = entry.role === 'user'
-    const rowTone = entry.role === 'error' ? 'error' : mine ? 'mine' : 'agent'
-    const hasProcess = Boolean(entry.processBlocks?.length)
-    const suggestions = entry.role === 'assistant' && entry.status === 'complete'
-      ? suggestedActionsFromText(entry.text)
-      : []
+  /** 用户消息行：统一 turn 身份（key=turn:<outboundId>），阶段推进不卸载组件。 */
+  const renderUserRow = (
+    key: string,
+    entry: ConversationEntry,
+    grouped: boolean,
+    needDivider: boolean
+  ): React.JSX.Element => {
     return (
-      <div key={`entry-wrap:${entry.id}`}>
+      <div key={key}>
         {needDivider && (
           <div className="chat-divider"><span>{dividerLabel(entry.timestamp)}</span></div>
         )}
-        <div className={`chat-row chat-row--${rowTone} ${hasProcess ? 'chat-row--process' : ''} ${grouped ? 'is-grouped' : ''}`}>
+        <div className={`chat-row chat-row--mine ${grouped ? 'is-grouped' : ''}`}>
           <span className="chat-gutter" aria-hidden={grouped}>
-            {!grouped && (
-              mine
-                ? <i className="chat-face chat-face--mine">你</i>
-                : entry.role === 'error'
-                  ? <i className="chat-face chat-face--error">!</i>
-                  : <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
-            )}
+            {!grouped && <i className="chat-face chat-face--mine">你</i>}
           </span>
           <div className="chat-col">
             {!grouped && (
               <div className="chat-name">
-                <strong>{entryLabel(entry)}</strong>
+                <strong>{entry.source === 'desktop' ? '你' : '用户'}</strong>
                 <time>{formatClock(entry.timestamp)}</time>
               </div>
             )}
             <div className="chat-bubble">
-              {hasProcess ? (
-                <ProcessTurnCard
-                  id={entry.turn ?? `entry:${entry.id}`}
-                  blocks={entry.processBlocks}
-                  truncatedItemCount={entry.processTruncatedItemCount}
-                  startedAt={entry.processBlocks?.[0]?.startedAt}
-                  updatedAt={entry.timestamp}
-                  defaultOpen={entry.id === latestAssistantId}
-                  compact
-                />
-              ) : null}
               {entry.text
                 ? <ClampedMessage text={entry.text} />
                 : entry.status === 'streaming' ? '正在生成…' : '（空）'}
-              {entry.attachments && entry.attachments.length > 0 && (
-                <div className="chat-attachments">
-                  {entry.attachments.map((attachment) => (
-                    <div key={attachment.id} className="chat-attachment">
-                      {attachment.mimeType.startsWith('image/') && attachment.previewUrl ? (
-                        <img src={attachment.previewUrl} alt={attachment.name} className="chat-attachment-image" />
-                      ) : (
-                        <div className="chat-attachment-file">
-                          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.2"/><path d="M9 2v3h3" fill="none" stroke="currentColor" strokeWidth="1.2"/></svg>
-                          <span>{attachment.name}</span>
-                          <small>{formatFileSize(attachment.size)}</small>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
+              {renderAttachments(entry)}
               {entry.status === 'streaming' && (
                 <span className="typing-indicator"><i /><i /><i /></span>
               )}
-              {suggestions.length ? (
-                <div className="response-suggestions" aria-label="接下来可以">
-                  <span>接下来可以：</span>
-                  <div>{suggestions.map((suggestion, index) => (
-                    <button key={`${entry.id}:suggestion:${index}`} onClick={() => onDraftChange(suggestion)}>
-                      <i>{index + 1}</i><span>{suggestion}</span>
-                    </button>
-                  ))}</div>
-                </div>
-              ) : null}
             </div>
             <div className="chat-tail">
-              {entry.text && (
-                <button
-                  className="chat-action"
-                  title="复制消息全文"
-                  onClick={() => void copyEntry(entry)}
-                >
-                  <CopyIcon /><span>{copiedId === entry.id ? '已复制' : '复制'}</span>
-                </button>
-              )}
-              {entry.role === 'assistant' && entry.status === 'complete' && entry.text && (
-                <button
-                  className="chat-action"
-                  title="引用这条消息回复"
-                  onClick={() => quoteEntry(entry)}
-                >
-                  <QuoteIcon /><span>引用</span>
-                </button>
-              )}
-              {entry.role === 'assistant' && entry.status === 'complete' && entry.text ? (
-                <>
-                  <button className="chat-action" title="重新生成这条回答" onClick={() => void retryEntry(entry)}><RetryIcon /><span>重试</span></button>
-                  <button className={`chat-action ${starredIds.has(entry.id) ? 'is-active' : ''}`} title={starredIds.has(entry.id) ? '取消收藏' : '收藏回答'} onClick={() => setStarredIds((current) => {
-                    const next = new Set(current)
-                    if (next.has(entry.id)) next.delete(entry.id)
-                    else next.add(entry.id)
-                    return next
-                  })}><StarIcon filled={starredIds.has(entry.id)} /><span>收藏</span></button>
-                  <button className="chat-action" title="朗读回答" onClick={() => listenEntry(entry)}><ListenIcon /><span>朗读</span></button>
-                </>
-              ) : null}
               <span className={`chat-state ${entry.status === 'failed' ? 'is-failed' : ''}`}>
                 {entry.status === 'pending' && '发送中…'}
-                {entry.status === 'complete' && mine && `已发送 ${formatClock(entry.timestamp)}`}
+                {entry.status === 'complete' && `已发送 ${formatClock(entry.timestamp)}`}
                 {entry.status === 'streaming' && '实时生成中'}
                 {entry.status === 'failed' && `发送失败：${entry.error || '未知原因'}`}
               </span>
@@ -446,72 +352,267 @@ export function SessionWorkspace({
     )
   }
 
-  const renderLiveTurnRow = (turn: VirtualProcessTurn): React.JSX.Element => (
-    <div className="chat-row chat-row--agent live-process-row" key={`active-turn:${session.id}:${turn.id}`}>
-      <span className="chat-gutter">
-        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
-      </span>
-      <div className="chat-col">
-        <div className="chat-name">
-          <strong>Agent</strong>
-          <time>{formatClock(turn.process?.startedAt ?? turn.response?.startedAt ?? Date.now())}</time>
-        </div>
-        <div className="chat-bubble">
-          {turn.process?.blocks.length ? (
-            <ProcessTurnCard
-              id={turn.process.turn}
-              blocks={turn.process.blocks}
-              startedAt={turn.process.startedAt}
-              updatedAt={turn.process.updatedAt}
-              truncatedItemCount={turn.process.truncatedItemCount}
-              defaultOpen
-              compact
-              live={turn.live}
-            />
-          ) : null}
-          {turn.response ? <LiveAgentResponse response={turn.response} /> : null}
-        </div>
-        {/* 完成态不带任何状态文案：实时过程流已承载过程叙事，record_reply
-            落库后自然替换为持久条目——中途的「正在归档」只是噪音。 */}
-        {turn.response?.status === 'streaming' ? (
-          <div className="chat-tail"><span className="chat-state">Cursor 实时生成中</span></div>
-        ) : null}
-      </div>
-    </div>
-  )
-
-  const renderRunningPlaceholder = (): React.JSX.Element => (
-    <div className="chat-row chat-row--agent live-process-row" key={`active-turn:${session.id}`}>
-      <span className="chat-gutter">
-        <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
-      </span>
-      <div className="chat-col">
-        <div className="chat-name">
-          <strong>Agent</strong>
-          <span className="live-process-badge"><i className="process-pulse" />正在处理</span>
-        </div>
-        <div className="chat-bubble live-process-idle">
-          <span className="typing-indicator"><i /><i /><i /></span>
-          <span className={`live-process-idle__hint ${nativeProcessStream?.state !== 'connected' ? 'is-warning' : ''}`}>
-            {nativeProcessStream?.state === 'connected'
-              ? '过程流就绪后将在此实时展示'
-              : `原生过程流${nativeProcessStream?.state === 'reconnecting' ? '正在重连' : '当前不可用'}：${nativeProcessStream?.detail ?? '等待 Cursor 调试连接'}`}
-          </span>
+  /** 非 Agent 条目行（error / system）：保持 entry 身份直渲染。 */
+  const renderSystemRow = (entry: ConversationEntry): React.JSX.Element => {
+    const isError = entry.role === 'error'
+    return (
+      <div key={`reply:${entry.id}`} className={`chat-row chat-row--${isError ? 'error' : 'agent'}`}>
+        <span className="chat-gutter">
+          {isError ? <i className="chat-face chat-face--error">!</i> : null}
+        </span>
+        <div className="chat-col">
+          <div className="chat-name">
+            <strong>{isError ? '错误' : '系统'}</strong>
+            <time>{formatClock(entry.timestamp)}</time>
+          </div>
+          <div className="chat-bubble">
+            {entry.text ? <ClampedMessage text={entry.text} /> : '（空）'}
+            {renderAttachments(entry)}
+          </div>
+          <div className="chat-tail">
+            {entry.text && (
+              <button
+                className="chat-action"
+                title="复制消息全文"
+                onClick={() => void copyEntry(entry)}
+              >
+                <CopyIcon /><span>{copiedId === entry.id ? '已复制' : '复制'}</span>
+              </button>
+            )}
+            <span className={`chat-state ${entry.status === 'failed' ? 'is-failed' : ''}`}>
+              {entry.status === 'failed' && `发送失败：${entry.error || '未知原因'}`}
+            </span>
+          </div>
         </div>
       </div>
-    </div>
-  )
+    )
+  }
 
+  /**
+   * Agent 回合行（阶段 F/G，RC-8/RC-9）：responding 与 sealed 共用同一组件树与
+   * key（`${turnKey}:agent`），record_reply 落库只是 props 推进——过程卡、播放器
+   * 缓冲、展开状态、DOM 节点全部保留；正文尾部由 TurnResponseText 继续匀速播完。
+   */
+  const renderAgentTurnRow = (input: {
+    turnKey: string
+    process?: LiveProcessState
+    response?: LiveAgentResponseState
+    reply?: ConversationEntry
+    grouped: boolean
+    detached: boolean
+    /** 已投递、Agent 运行中、尚无任何产物：同一行以空态占位（打字指示 + 过程流健康提示）。 */
+    idle: boolean
+  }): React.JSX.Element => {
+    const { turnKey, process, response, reply, grouped, detached, idle } = input
+    const responding = reply === undefined
+    // 落库回复优先用持久化过程；封口帧尚未到达时用仍锚定在本回合的实时过程兜底。
+    const replyBlocks = reply ? replyProcessBlocks(reply) : undefined
+    const blocks = replyBlocks?.length ? replyBlocks : process?.blocks
+    const hasProcess = Boolean(blocks?.length)
+    // live 信号（RC-9）：服务端 generating 为权威——Cursor 常把生成中的 Thinking
+    // 块标记为 done，仅靠「某块 running」会把直播过程误判为历史而跳过打字机。
+    const liveActive = responding && (
+      process?.generating === true
+      || response?.status === 'streaming'
+      || Boolean(process?.blocks.some((block) => block.status === 'running'))
+    )
+    const suggestions = reply?.status === 'complete' ? suggestedActionsFromText(reply.text) : []
+    const at = reply?.timestamp ?? process?.startedAt ?? response?.startedAt ?? Date.now()
+    // 宽度在回合开始时就定下（responding 恒用宽列）：首个过程块到达时不再把整行
+    // 从 82% 拉宽到 94%。
+    const className = [
+      'chat-row chat-row--agent',
+      responding ? 'live-process-row' : '',
+      detached ? 'live-process-row--detached' : '',
+      responding || hasProcess ? 'chat-row--process' : '',
+      grouped ? 'is-grouped' : ''
+    ].filter(Boolean).join(' ')
+    return (
+      <div key={`${turnKey}:agent`} className={className}>
+        <span className="chat-gutter" aria-hidden={grouped}>
+          {!grouped
+            ? <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>
+            : null}
+        </span>
+        <div className="chat-col">
+          {!grouped && (
+            <div className="chat-name">
+              <strong>Agent</strong>
+              {idle
+                ? <span className="live-process-badge"><i className="process-pulse" />正在处理</span>
+                : <time>{formatClock(at)}</time>}
+            </div>
+          )}
+          <div className={`chat-bubble${idle ? ' live-process-idle' : ''}`}>
+            {idle ? (
+              <>
+                <span className="typing-indicator"><i /><i /><i /></span>
+                <span className={`live-process-idle__hint ${nativeProcessStream?.state !== 'connected' ? 'is-warning' : ''}`}>
+                  {nativeProcessStream?.state === 'connected'
+                    ? '过程流就绪后将在此实时展示'
+                    : `原生过程流${nativeProcessStream?.state === 'reconnecting' ? '正在重连' : '当前不可用'}：${nativeProcessStream?.detail ?? '等待 Cursor 调试连接'}`}
+                </span>
+              </>
+            ) : null}
+            {hasProcess ? (
+              <ProcessTurnCard
+                id={reply?.turn ?? process?.turn ?? turnKey}
+                blocks={blocks}
+                truncatedItemCount={replyBlocks?.length ? reply?.processTruncatedItemCount : process?.truncatedItemCount}
+                startedAt={replyBlocks?.length ? reply?.processBlocks?.[0]?.startedAt : process?.startedAt}
+                updatedAt={reply ? reply.timestamp : process?.updatedAt}
+                defaultOpen={responding || reply?.id === latestAssistantId}
+                compact
+                live={liveActive}
+              />
+            ) : null}
+            <TurnResponseText turnKey={turnKey} live={response} reply={reply} />
+            {reply && !reply.text ? (reply.status === 'streaming' ? '正在生成…' : '（空）') : null}
+            {reply ? renderAttachments(reply) : null}
+            {reply?.status === 'streaming' ? (
+              <span className="typing-indicator"><i /><i /><i /></span>
+            ) : null}
+            {suggestions.length && reply ? (
+              <div className="response-suggestions" aria-label="接下来可以">
+                <span>接下来可以：</span>
+                <div>{suggestions.map((suggestion, index) => (
+                  <button key={`${reply.id}:suggestion:${index}`} onClick={() => onDraftChange(suggestion)}>
+                    <i>{index + 1}</i><span>{suggestion}</span>
+                  </button>
+                ))}</div>
+              </div>
+            ) : null}
+          </div>
+          <div className="chat-tail">
+            {reply ? (
+              <>
+                {reply.text && (
+                  <button
+                    className="chat-action"
+                    title="复制消息全文"
+                    onClick={() => void copyEntry(reply)}
+                  >
+                    <CopyIcon /><span>{copiedId === reply.id ? '已复制' : '复制'}</span>
+                  </button>
+                )}
+                {reply.status === 'complete' && reply.text ? (
+                  <>
+                    <button
+                      className="chat-action"
+                      title="引用这条消息回复"
+                      onClick={() => quoteEntry(reply)}
+                    >
+                      <QuoteIcon /><span>引用</span>
+                    </button>
+                    <button className="chat-action" title="重新生成这条回答" onClick={() => void retryEntry(reply)}><RetryIcon /><span>重试</span></button>
+                    <button className={`chat-action ${starredIds.has(reply.id) ? 'is-active' : ''}`} title={starredIds.has(reply.id) ? '取消收藏' : '收藏回答'} onClick={() => setStarredIds((current) => {
+                      const next = new Set(current)
+                      if (next.has(reply.id)) next.delete(reply.id)
+                      else next.add(reply.id)
+                      return next
+                    })}><StarIcon filled={starredIds.has(reply.id)} /><span>收藏</span></button>
+                    <button className="chat-action" title="朗读回答" onClick={() => listenEntry(reply)}><ListenIcon /><span>朗读</span></button>
+                  </>
+                ) : null}
+                <span className={`chat-state ${reply.status === 'failed' ? 'is-failed' : ''}`}>
+                  {reply.status === 'streaming' && '实时生成中'}
+                  {reply.status === 'failed' && `发送失败：${reply.error || '未知原因'}`}
+                </span>
+              </>
+            ) : response?.status === 'streaming' ? (
+              <span className="chat-state">Cursor 实时生成中</span>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  /** 分组判定基于最终可视时间线的相邻项（阶段 F/H，RC-12）：Agent 回合、占位、
+   *  分隔线均打断用户消息组；附件消息本身也开启新视觉组。 */
   const renderTimelineItems = (): React.JSX.Element[] => {
-    let previousEntry: ConversationEntry | undefined
+    let previousUserEntry: ConversationEntry | undefined
+    let previousAssistantEntry: ConversationEntry | undefined
+    let previousEntryForDivider: ConversationEntry | undefined
     return timelineItems.map((item) => {
-      if (item.type === 'entry') {
-        const rendered = renderEntryRow(item.entry, previousEntry)
-        previousEntry = item.entry
-        return rendered
+      const turn = item.item
+      const renderedRows: React.JSX.Element[] = []
+      // ---- 用户气泡（全阶段渲染；分组只针对连续纯文本用户消息）----
+      if (turn.user) {
+        const previous = previousUserEntry
+        const gap = previous ? turn.user.timestamp - previous.timestamp : Number.POSITIVE_INFINITY
+        const needDivider = previousEntryForDivider
+          ? turn.user.timestamp - previousEntryForDivider.timestamp > DIVIDER_WINDOW_MS
+          : gap > DIVIDER_WINDOW_MS
+        const grouped = !needDivider
+          && previous?.role === 'user'
+          && previous?.source === turn.user.source
+          && gap < GROUP_WINDOW_MS
+          && !turn.user.attachments?.length
+          && !previous.attachments?.length
+        renderedRows.push(renderUserRow(turn.key, turn.user, grouped, needDivider))
+        previousUserEntry = turn.user
+        previousAssistantEntry = undefined
       }
-      if (item.type === 'live-turn') return renderLiveTurnRow(item.turn)
-      return renderRunningPlaceholder()
+      previousEntryForDivider = turn.user ?? previousEntryForDivider
+      // ---- Agent 回合行：idle（占位）/ responding（live 过程/回复流）/ sealed（落库回复）同一节点 ----
+      const idle = placeholderTurnKey === turn.key
+      const responding = idle || (turn.phase === 'responding' && Boolean(turn.process?.blocks.length || turn.response))
+      const assistantReply = turn.reply?.role === 'assistant' ? turn.reply : undefined
+      if (responding || assistantReply) {
+        let grouped = false
+        if (assistantReply) {
+          const previous = previousAssistantEntry
+          const gap = previous ? assistantReply.timestamp - previous.timestamp : Number.POSITIVE_INFINITY
+          // 分隔线只在回合没有自己的用户气泡（遗留 entry 身份的回复）时才按回复时间
+          // 判定：用户消息与它自己的回复属同一回合，长任务跨过 10 分钟不该在两者
+          // 之间插一条分隔线——那会在封口那一帧把 Agent 行整体下推。
+          const needDivider = !turn.user && (previousEntryForDivider
+            ? assistantReply.timestamp - previousEntryForDivider.timestamp > DIVIDER_WINDOW_MS
+            : gap > DIVIDER_WINDOW_MS)
+          grouped = !needDivider
+            && previous?.role === 'assistant'
+            && previous?.source === assistantReply.source
+            && gap < GROUP_WINDOW_MS
+          // 分隔线作为带 key 的兄弟节点插入，而不是包裹回合行——包裹会改变树形，
+          // 让刚从 responding 过渡来的 Agent 行被卸载重建（播放器缓冲丢失）。
+          if (needDivider) {
+            renderedRows.push(
+              <div key={`${turn.key}:agent-divider`} className="chat-divider"><span>{dividerLabel(assistantReply.timestamp)}</span></div>
+            )
+          }
+          previousAssistantEntry = assistantReply
+          previousEntryForDivider = assistantReply
+        } else {
+          previousAssistantEntry = undefined
+        }
+        renderedRows.push(renderAgentTurnRow({
+          turnKey: turn.key,
+          process: turn.process,
+          response: responding ? turn.response : undefined,
+          reply: assistantReply,
+          grouped,
+          detached: turn.detached !== undefined,
+          idle
+        }))
+        // Agent 活动/回复打断用户消息组（RC-12）：u1 与 u2 之间出现过过程/回复，
+        // u2 不得与 u1 合并成组（隐藏头像与名称）。
+        previousUserEntry = undefined
+      } else if (turn.reply) {
+        const needDivider = previousEntryForDivider
+          ? turn.reply.timestamp - previousEntryForDivider.timestamp > DIVIDER_WINDOW_MS
+          : false
+        if (needDivider) {
+          renderedRows.push(
+            <div key={`${turn.key}:system-divider`} className="chat-divider"><span>{dividerLabel(turn.reply.timestamp)}</span></div>
+          )
+        }
+        renderedRows.push(renderSystemRow(turn.reply))
+        previousAssistantEntry = undefined
+        previousUserEntry = undefined
+        previousEntryForDivider = turn.reply
+      }
+      return <Fragment key={turn.key}>{renderedRows}</Fragment>
     })
   }
 

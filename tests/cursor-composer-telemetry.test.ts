@@ -660,8 +660,8 @@ describe('CursorComposerTelemetryReader', () => {
         { type: 'tool_use', name: 'GetDynamicTools', input: { namespace: 'user-SG Team', toolName: 'check_messages' } }
       ] } },
       { role: 'assistant', message: { content: [
-        { type: 'text', text: '工具已确认，开始同步回复。' },
-        { type: 'tool_use', name: 'CallDynamicTool', input: { namespace: 'user-SG Team', toolName: 'record_reply', arguments: { channel_id: '3' } } }
+        { type: 'text', text: '同步本轮业务进度。' },
+        { type: 'tool_use', name: 'CallDynamicTool', input: { namespace: 'user-SG Team', toolName: 'team_report_progress', arguments: { channel_id: '3' } } }
       ] } },
       { role: 'assistant', message: { content: [{ type: 'text', text: 'CH-3 已就绪。' }] } }
     ]
@@ -669,15 +669,16 @@ describe('CursorComposerTelemetryReader', () => {
 
     const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!
     expect(composer.lastAssistantResponse?.text).toBe('CH-3 已就绪。')
+    // 内部协议工具（check_messages 发现调用）不进兜底过程；业务工具完整保留。
     expect(composer.lastAssistantProcess?.blocks.map((block) => block.kind)).toEqual([
-      'thinking', 'tool', 'thinking', 'tool'
+      'thinking', 'thinking', 'tool'
     ])
-    expect(composer.lastAssistantProcess?.blocks[1]).toMatchObject({
-      kind: 'tool', toolName: 'get_mcp_tools', toolKind: 'mcp'
+    expect(composer.lastAssistantProcess?.blocks[2]).toMatchObject({
+      kind: 'tool', toolName: 'team_report_progress', toolKind: 'mcp', input: { channel_id: '3' }
     })
-    expect(composer.lastAssistantProcess?.blocks[3]).toMatchObject({
-      kind: 'tool', toolName: 'record_reply', input: { channel_id: '3' }
-    })
+    expect(composer.lastAssistantProcess?.blocks.some((block) => (
+      block.kind === 'tool' && String(block.toolName).includes('check_messages')
+    ))).toBe(false)
   })
 
   it('does not reuse the previous answer after a newer user turn has started', () => {
@@ -710,9 +711,7 @@ describe('CursorComposerTelemetryReader', () => {
     writeTranscript(data.projectsRoot, data.workspace, composerId, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`)
     const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]!
     expect(composer.lastAssistantResponse).toBeUndefined()
-    expect(composer.lastAssistantProcess?.blocks.some((block) => (
-      block.kind === 'thinking' && block.text.includes('[REDACTED]')
-    ))).toBe(false)
+    expect(composer.lastAssistantProcess).toBeUndefined()
   })
 
   it('reads Cursor native promptTokenBreakdown for the context hover panel', () => {

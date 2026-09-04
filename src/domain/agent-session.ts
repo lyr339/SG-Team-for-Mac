@@ -87,6 +87,10 @@ export interface AgentSession {
   lastSeenAt?: number
   queueDepth: number
   connectionPhase: string
+  /** 已投递待回复的出站消息身份（回复同步守门）；Agent record_reply 后清除。 */
+  pendingOutboundId?: string
+  /** 回复同步守门开启时间（与 pendingOutboundId 同写同清）。 */
+  pendingReplySyncSince?: number
   online: boolean
   connected: boolean
   /** active=正面存活；suspected=仅租约陈旧；stopped=Cursor/运行时正面终止证据。 */

@@ -125,6 +125,11 @@ export class ChannelMessageRelay {
     return this.repository.listEmbeddedChannels()
   }
 
+  /** 读取通道当前会话时间线（只读引用；封口扫描等主进程旁路只读消费，不得改写）。 */
+  conversationsOf(channelId: string): readonly ConversationEntry[] | undefined {
+    return this.conversations.get(String(channelId).trim())
+  }
+
   /** Cursor 实时桥确认绑定 Composer 已终止；持久化到 presence，重启后仍保持离线。 */
   markCursorStopped(channelId: string, observedAt = this.now()): boolean {
     const current = this.repository.getPresence(channelId)
@@ -133,14 +138,14 @@ export class ChannelMessageRelay {
     // CDP 探测到生成（runtimeActiveAt），说明模型仍在执行——过时的死亡证据
     // 不得压过新生命证据把健康 Agent 判死。
     if (current && Math.max(current.lastSeenAt, current.runtimeActiveAt ?? 0) > observedAt) return false
+    // 只写终止相位，不清回复同步守门：Composer 终止时 Agent（MCP 循环）仍欠
+    // 已投递消息的 record_reply——守门保留，下一次 check_messages 的
+    // reply_sync_required 会推动 Agent 收口（或按 CHANNEL_REPLY_SYNC_STALE_MS
+    // 自动放行）；提前清门会让最终回复以 visible=0 落库，用户消息永远无回应。
     this.repository.touchPresence(channelId, {
       lastSeenAt: observedAt,
       waiting: false,
-      connectionPhase: 'cursor_stopped',
-      pendingReplySyncSince: null,
-      pendingOutboundId: null,
-      pendingGroupChat: false,
-      pendingGroupId: null
+      connectionPhase: 'cursor_stopped'
     }, observedAt)
     this.sessionCache.delete(channelId)
     this.emit()
@@ -286,7 +291,12 @@ export class ChannelMessageRelay {
     this.emit()
   }
 
-  /** TeamRun 结束：立即结算本轮全部未完成通道状态，幂等且保留历史审计。 */
+  /**
+   * TeamRun 结束：退役本轮未投递出站消息，幂等且保留历史审计。
+   * 已投递消息的回复同步守门不在此时清除——run 状态切换不等于回复契约关闭，
+   * Agent 随后的 record_reply 仍须以 visible=1 + 精确 outboundId 落库收尾
+   * （守门由 record_reply 关闭，或新 run 的 beginScope 硬隔离清空）。
+   */
   completeScope(completedAt = this.now()): void {
     this.repository.retireScopeBefore(completedAt + 1, completedAt)
     this.commandReceipts.clear()
@@ -618,6 +628,8 @@ export class ChannelMessageRelay {
       lastSeenAt: presence?.lastSeenAt,
       queueDepth,
       connectionPhase: presence?.connectionPhase ?? '',
+      pendingOutboundId: presence?.pendingOutboundId,
+      pendingReplySyncSince: presence?.pendingReplySyncSince,
       online,
       connected: online,
       runtimeEvidence: runtimeStopped

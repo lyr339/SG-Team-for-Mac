@@ -31,9 +31,16 @@ function stoppedSession(
     status: 'offline',
     online: false,
     connected: false,
-    runtimeEvidence: evidence,
+    // 证据只单调收紧：会话已携带 stopped（presence cursor_stopped 经 relay
+    // 投影）时，后续证据缺失分支不得把它降级回 suspected——降级会让
+    // hasConfirmedRuntimeStop 失去 durable 终止证据。
+    runtimeEvidence: session.runtimeEvidence === 'stopped' ? 'stopped' : evidence,
     waiting: false,
-    connectionPhase: '',
+    // connectionPhase 是传输层事实（MCP 协议相位机 / markCursorStopped 写入
+    // presence），投影层只改判定字段、无权抹除：processing/need_reply_sync 是
+    // 已投递消息的执行租约，清空它会让 failover 的 in-flight 判定失去事实源
+    // （2026-09-01 事故：Agent 取走消息 0.6s 后 run 即被误收尾）。
+    connectionPhase: session.connectionPhase,
     healthEvidence: [...session.healthEvidence, detail]
   }
 }
@@ -110,7 +117,24 @@ export function verifyAgentRuntime(
         : stoppedSession(session, 'TeamRun 已开始，但当前通道尚未绑定可验证的 Cursor 会话', 'suspected')
     }
     const composer = composerById.get(binding.composerId)
-    if (!composer) return stoppedSession(session, '已绑定的 Cursor 会话已不存在')
+    if (!composer) {
+      // 遥测帧未列出绑定 Composer ≠ 会话已不存在：Cursor 水合、转录索引延迟、
+      // 目标窗口错拍都会造成「该帧暂缺」，属证据待确认。明确终止证据由
+      // CDP inspect 的 !found/错误终止承载（markCursorStopped → cursor_stopped
+      // 相位持久化），本投影不得把证据缺失升级成 stopped（会把长任务中段的
+      // Agent 判死并触发错误换席/整轮收尾）。
+      const channelEvidence = telemetry.channelActivities?.[session.channelId]
+      if (channelEvidence?.state === 'stopped' && transportAlive(session)) {
+        return unverifiedSession(
+          session,
+          'Cursor 转录活性滞后，但内嵌 MCP 心跳仍新鲜，按实时通道活性保持在线'
+        )
+      }
+      if (!requiresCursorEvidence) return session
+      return transportAlive(session)
+        ? unverifiedSession(session, '已绑定 Cursor 会话暂未出现在本机遥测（传输层活性正常，按通道活性保持在线）')
+        : stoppedSession(session, '已绑定 Cursor 会话暂未出现在本机遥测，且传输层活性缺失', 'suspected')
+    }
     const activity = composer?.activity
     if (!activity || activity.state === 'unknown') {
       if (!requiresCursorEvidence) return session

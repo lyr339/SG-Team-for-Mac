@@ -17,7 +17,45 @@ import { SqliteTeamCollaborationRepository } from '../src/infrastructure/team-co
 import { SqliteTeamContinuityRepository } from '../src/infrastructure/team-continuity/sqlite-team-continuity-repository'
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 import { SqliteTeamMemoryRepository } from '../src/infrastructure/team-memory/sqlite-team-memory-repository'
+import type { CursorComposerTelemetrySource } from '../src/infrastructure/cursor/cursor-composer-telemetry'
+import type { RuntimeBinding } from '../src/domain/team-control'
 import type { DesktopSnapshot, SendMessageInput } from '../src/shared/desktop-api'
+
+/** 按生产路径（recordComposerBinding）给指定通道补齐 composer 绑定。 */
+function bindComposer(control: TeamControlService, runId: string, channelId: string, composerId: string): void {
+  const binding = control.getSnapshot().bindings.find((candidate) => candidate.channelId === channelId)
+  if (!binding) throw new Error(`CH-${channelId} 没有运行时绑定`)
+  const changed = control.recordComposerBinding({
+    runId,
+    slotId: binding.slotId,
+    generation: binding.generation,
+    bindingKey: binding.composerBindingKey,
+    composerId,
+    method: 'channel_marker'
+  })
+  if (!changed) throw new Error(`CH-${channelId} composer 绑定被拒绝`)
+}
+
+/** 遥测帧按绑定生成 composers，可指定“该帧暂缺”的通道（模拟 Cursor 水合/索引延迟）。 */
+function telemetryOmitting(omittedChannelIds: string[]): CursorComposerTelemetrySource {
+  return {
+    readWorkspace(_workspacePath: string, bindings: RuntimeBinding[]) {
+      return {
+        availability: 'available' as const,
+        workspacePath: '/workspace/alpha',
+        composers: bindings
+          .filter((binding) => binding.composerId && !omittedChannelIds.includes(binding.channelId))
+          .map((binding) => ({
+            composerId: binding.composerId!,
+            title: `CH-${binding.channelId} 会话`,
+            activity: { state: 'active' as const, channelId: binding.channelId, detail: '转录活动新鲜' }
+          })),
+        bindingCandidates: [],
+        updatedAt: 100
+      }
+    }
+  }
+}
 
 class MutableBridge implements TeamControlBridge {
   private readonly listeners = new Set<(snapshot: DesktopSnapshot) => void>()
@@ -97,6 +135,30 @@ class MutableBridge implements TeamControlBridge {
     }
     for (const listener of this.listeners) listener(this.getSnapshot())
   }
+
+  /** Cursor 明确终止 + 已投递待回复（守门开放）：presence 事实的组合形态。 */
+  setChannelOwedReply(channelId: string, pendingSince: number): void {
+    this.snapshot = {
+      ...this.snapshot,
+      sessions: this.snapshot.sessions.map((session) => session.channelId === channelId
+        ? {
+            ...session,
+            status: 'offline',
+            online: false,
+            connected: false,
+            runtimeEvidence: 'stopped',
+            waiting: false,
+            connectionPhase: 'cursor_stopped',
+            pendingOutboundId: `outbound-${channelId}`,
+            pendingReplySyncSince: pendingSince,
+            lastSeenAt: 1,
+            healthEvidence: ['Cursor Agent 已停止监听，回复仍在途']
+          }
+        : session),
+      updatedAt: this.snapshot.updatedAt + 1
+    }
+    for (const listener of this.listeners) listener(this.getSnapshot())
+  }
 }
 
 function desktopSnapshot(channelIds: string[]): DesktopSnapshot {
@@ -125,7 +187,11 @@ function desktopSnapshot(channelIds: string[]): DesktopSnapshot {
   }
 }
 
-function fixture(withStandby: boolean, withSolo = false) {
+function fixture(
+  withStandby: boolean,
+  withSolo = false,
+  telemetrySource?: CursorComposerTelemetrySource
+) {
   const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-failover-')), 'team.sqlite3')
   const controlRepository = new SqliteTeamControlRepository(path)
   const taskRepository = new SqliteTaskPoolRepository(path)
@@ -135,7 +201,7 @@ function fixture(withStandby: boolean, withSolo = false) {
   const standbyChannelId = withSolo ? '4' : '3'
   const memberChannelIds = withSolo ? ['1', '2', '3'] : ['1', '2']
   const bridge = new MutableBridge(desktopSnapshot(withStandby ? [...memberChannelIds, standbyChannelId] : memberChannelIds))
-  const control = new TeamControlService(controlRepository, bridge)
+  const control = new TeamControlService(controlRepository, bridge, undefined, telemetrySource)
   const selected = withSolo
     ? control.configureWorkspace({
         workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
@@ -772,6 +838,112 @@ describe('TeamFailoverService', () => {
         data.runId
       )
       expect(restoredBuilderIdentity.capabilities).not.toContain('coordination')
+    } finally {
+      data.close()
+    }
+  })
+
+  it('keeps the run alive while agents hold in-flight replies the telemetry frame omits (2026-09-01 incident)', () => {
+    // 事故形态：两个通道刚取走消息（processing + 心跳新鲜），遥测帧因 Cursor
+    // 水合/索引延迟未列出绑定 Composer——旧投影把证据缺失当成明确停止并抹掉
+    // processing 相位，run 在取走消息 0.6s 后即被 all-offline 收尾。
+    const data = fixture(false, false, telemetryOmitting(['1', '2']))
+    try {
+      bindComposer(data.control, data.runId, '1', 'composer-ch-1-alpha')
+      bindComposer(data.control, data.runId, '2', 'composer-ch-2-beta')
+      data.bridge.setChannelProcessing('1', true)
+      data.bridge.setChannelProcessing('2', true)
+
+      data.failover.reconcile()
+      data.advance(60_000)
+      data.failover.reconcile()
+
+      const team = data.control.getSnapshot()
+      expect(team.activeRun?.status).toBe('running')
+      expect(data.controlRepository.listAgentRegistrations(data.runId)).toHaveLength(2)
+      // processing 执行租约证据穿透投影保留（failover 的事实源未被删除）
+      for (const member of team.members) {
+        expect(member.runtime).toMatchObject({ online: true, connectionPhase: 'processing' })
+      }
+    } finally {
+      data.close()
+    }
+  })
+
+  it('treats a telemetry frame omitting the bound composer as unverified, never as confirmed death', () => {
+    // 长任务中段：心跳过期（online=false）+ 遥测帧缺 Composer。旧代码将其判为
+    // stopped（confirmed），15s 后把席位错误交给 standby；正确语义是证据待确认，
+    // processing 租约继续保护席位不被接管。
+    const data = fixture(true, false, telemetryOmitting(['1']))
+    try {
+      bindComposer(data.control, data.runId, '1', 'composer-ch-1-alpha')
+      bindComposer(data.control, data.runId, '2', 'composer-ch-2-beta')
+      data.bridge.setChannelProcessing('1', false)
+
+      data.failover.reconcile()
+      data.advance(60_000)
+      data.failover.reconcile()
+
+      const team = data.control.getSnapshot()
+      expect(team.activeRun?.actingLeadSlotId).toBeUndefined()
+      expect(data.controlRepository.listFailovers(data.runId)).toEqual([])
+      expect(team.activeRun?.status).toBe('running')
+      const lead = team.members.find((member) => member.role.templateKey === 'lead')!
+      expect(lead.runtime).toMatchObject({
+        online: false,
+        runtimeEvidence: 'suspected',
+        connectionPhase: 'processing'
+      })
+    } finally {
+      data.close()
+    }
+  })
+
+  it('does not mark a single telemetry-missing seat offline while its MCP heartbeat stays fresh', () => {
+    // 多通道中仅一席暂缺遥测：该席保持在线（未验证），不得触发全团队收尾。
+    const data = fixture(false, false, telemetryOmitting(['1']))
+    try {
+      bindComposer(data.control, data.runId, '1', 'composer-ch-1-alpha')
+      bindComposer(data.control, data.runId, '2', 'composer-ch-2-beta')
+
+      data.failover.reconcile()
+      data.advance(60_000)
+      data.failover.reconcile()
+
+      const team = data.control.getSnapshot()
+      expect(team.activeRun?.status).toBe('running')
+      const lead = team.members.find((member) => member.role.templateKey === 'lead')!
+      expect(lead.runtime).toMatchObject({ online: true })
+      expect(lead.runtime?.runtimeEvidence).not.toBe('stopped')
+      expect(lead.runtime?.status).not.toBe('offline')
+    } finally {
+      data.close()
+    }
+  })
+
+  it('blocks all-offline completion while a delivered message still awaits its reply, then releases after the sync window', () => {
+    // 全员明确停止（cursor_stopped）但 CH-1 欠一条已投递消息的 record_reply：
+    // 回复契约开放期内不进入 all-offline 完成计时；超过回复同步宽限
+    // （CHANNEL_REPLY_SYNC_STALE_MS）仍未回复则放行收尾，防止僵尸 run。
+    const data = fixture(false)
+    try {
+      data.bridge.setChannelOwedReply('1', 1_000)
+      data.bridge.setChannelOnline('2', false)
+
+      data.failover.reconcile()
+      data.advance(60_000)
+      data.failover.reconcile()
+      expect(data.control.getSnapshot().activeRun?.status).toBe('running')
+
+      // 宽限窗口内：契约仍受保护
+      data.advance(229_000)
+      data.failover.reconcile()
+      expect(data.control.getSnapshot().activeRun?.status).toBe('running')
+
+      // 超过 CHANNEL_REPLY_SYNC_STALE_MS：守门视为已放弃，允许收尾
+      data.advance(2_000)
+      data.failover.reconcile()
+      expect(data.control.getSnapshot().activeRun?.status).toBe('completed')
     } finally {
       data.close()
     }

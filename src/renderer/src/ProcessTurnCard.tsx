@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ProcessBlock } from '../../domain/conversation-entry'
 import { MessageContent } from './MessageContent'
 import { buildProcessTurnView, type ProcessStepKind, type ProcessTurnStep } from './process-turn-view'
+import { useStreamingText } from './use-streaming-text'
 
 interface ProcessTurnCardProps {
   id: string
@@ -79,6 +80,32 @@ function TodoIndicator({ tone }: { tone: ReturnType<typeof todoTone> }): React.J
   )
 }
 
+/**
+ * 思考/过程消息正文（阶段 G）：直播卡（live）经共享播放器逐字追赶——稳定
+ * step id 保留缓冲，新到即 done 的块同样播放；历史/封口卡直接完整显示。
+ * 工具行不套播放器：按生命周期出现，不模拟逐字工具名。
+ *
+ * 播放模式在挂载时锁定：直播中挂载的正文在回合结束（live 翻 false）后继续把
+ * 尾部匀速播完，而不是随 immediate 翻转瞬间跳全文；历史卡挂载即全文。
+ */
+function StreamingTextBody({
+  step,
+  live,
+  className
+}: {
+  step: ProcessTurnStep
+  live: boolean
+  className?: string
+}): React.JSX.Element | null {
+  const immediate = useRef(!live)
+  const visible = useStreamingText(
+    { id: step.id, text: step.body ?? '', done: step.status !== 'running' },
+    { immediate: immediate.current }
+  )
+  if (!step.body) return null
+  return <MessageContent text={visible} className={className} />
+}
+
 function StepDetails({ step }: { step: ProcessTurnStep }): React.JSX.Element {
   const todos = step.todos ?? []
   const completedCount = todos.filter((todo) => todo.status === 'completed').length
@@ -136,10 +163,18 @@ export function ProcessTurnCard({
       .filter((step) => step.id === lastThinking?.id)
       .map((step) => step.id))
   })
+  /** 已自动展开过的最新步骤：内容继续增长时不与用户的手动收起对抗。 */
+  const lastAutoExpanded = useRef<string | null>(null)
   useEffect(() => {
     if (!live) return
+    // 直播时展开「最新可见的文本内容」：优先运行中的块；Cursor 常把生成中的
+    // Thinking 标记为 done（RC-9），因此最新文本块即使 done 也展开——否则
+    // 新内容折叠不可见，用户只能看到整段瞬现的最终结果。
+    const last = model.steps.at(-1)
     const active = [...model.steps].reverse().find((step) => step.status === 'running')
-    if (!active) return
+      ?? (last && (last.kind === 'thinking' || last.kind === 'message') && last.body ? last : undefined)
+    if (!active || lastAutoExpanded.current === active.id) return
+    lastAutoExpanded.current = active.id
     setExpanded((current) => current.has(active.id) ? current : new Set([...current, active.id]))
   }, [live, model.steps])
   if (!model.steps.length) return null
@@ -186,14 +221,14 @@ export function ProcessTurnCard({
                     {duration ? <time>for {duration}</time> : step.status === 'running' ? <span><i />thinking</span> : null}
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d={stepOpen ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'} fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg>
                   </button>
-                  {stepOpen && step.body ? <MessageContent text={step.body} className="cursor-native-thought__body" /> : null}
+                  {stepOpen && step.body ? <StreamingTextBody step={step} live={live} className="cursor-native-thought__body" /> : null}
                 </article>
               )
             }
             if (step.kind === 'message') {
               return step.body ? (
                 <article key={step.id} className={`cursor-native-message is-${step.status}`}>
-                  <MessageContent text={step.body} />
+                  <StreamingTextBody step={step} live={live} />
                 </article>
               ) : null
             }

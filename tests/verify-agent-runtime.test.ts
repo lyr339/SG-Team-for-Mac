@@ -374,3 +374,105 @@ describe('unbound channel zombie detection via channel-level transcript evidence
     }
   })
 })
+
+describe('绑定 Composer 暂缺于遥测帧：证据待确认，不得升级为明确停止（RC-1.2）', () => {
+  function processingSession(overrides: Partial<DesktopSnapshot['sessions'][number]> = {}): DesktopSnapshot {
+    const snapshot = bridgeSnapshot()
+    snapshot.sessions[0] = {
+      ...snapshot.sessions[0]!,
+      status: 'running',
+      waiting: false,
+      connectionPhase: 'processing',
+      pendingOutboundId: 'outbound-1',
+      pendingReplySyncSince: 90,
+      ...overrides
+    }
+    return snapshot
+  }
+
+  function telemetryWithoutBoundComposer(
+    channelActivities?: CursorTelemetrySnapshot['channelActivities']
+  ): CursorTelemetrySnapshot {
+    return {
+      availability: 'available',
+      workspacePath: '/workspace/alpha',
+      composers: [],
+      bindingCandidates: [],
+      channelActivities,
+      updatedAt: 100
+    }
+  }
+
+  it('已投递消息执行中（processing + 传输层活性正常）→ 保持在线并保留执行租约相位', () => {
+    // 2026-09-01 事故形态：Agent 取走消息 0.6s 后 run 即被误收尾——
+    // 遥测帧未列出绑定 Composer 被当成明确停止，且投影抹掉了 processing 相位。
+    const result = verifyAgentRuntime(
+      processingSession(),
+      team('running'),
+      telemetryWithoutBoundComposer()
+    )
+
+    expect(result.sessions[0]).toMatchObject({
+      online: true,
+      connected: true,
+      status: 'running',
+      connectionPhase: 'processing',
+      pendingOutboundId: 'outbound-1'
+    })
+    expect(result.sessions[0]?.healthEvidence.join('\n')).toContain('暂未出现在本机遥测')
+  })
+
+  it('传输层活性缺失 → 判离线但证据为 suspected，且 processing 相位不被抹除', () => {
+    const result = verifyAgentRuntime(
+      processingSession({ online: false, connected: false, status: 'offline' }),
+      team('running'),
+      telemetryWithoutBoundComposer()
+    )
+
+    expect(result.sessions[0]).toMatchObject({
+      status: 'offline',
+      online: false,
+      runtimeEvidence: 'suspected',
+      connectionPhase: 'processing'
+    })
+  })
+
+  it('已持久化的 cursor_stopped 证据不因遥测缺 Composer 降级为 suspected', () => {
+    // CDP !found 已写入 presence（markCursorStopped → cursor_stopped），随后
+    // Composer 从遥测列表消失属预期——durable 终止证据必须保持 stopped，
+    // 否则 hasConfirmedRuntimeStop 失去接管判据。
+    const result = verifyAgentRuntime(
+      processingSession({
+        online: false,
+        connected: false,
+        status: 'offline',
+        runtimeEvidence: 'stopped',
+        connectionPhase: 'cursor_stopped',
+        pendingOutboundId: undefined,
+        pendingReplySyncSince: undefined
+      }),
+      team('running'),
+      telemetryWithoutBoundComposer()
+    )
+
+    expect(result.sessions[0]).toMatchObject({
+      status: 'offline',
+      online: false,
+      runtimeEvidence: 'stopped',
+      connectionPhase: 'cursor_stopped'
+    })
+  })
+
+  it('通道级转录 stopped 证据与新鲜 MCP 心跳矛盾 → 按实时通道活性保持在线', () => {
+    const result = verifyAgentRuntime(
+      processingSession(),
+      team('running'),
+      telemetryWithoutBoundComposer({
+        '1': { channelId: '1', state: 'stopped', detail: '通道会话已同步最后回复并停止监听' }
+      })
+    )
+
+    expect(result.sessions[0]).toMatchObject({ online: true, status: 'running' })
+    expect(result.sessions[0]?.healthEvidence.join('\n')).toContain('按实时通道活性保持在线')
+  })
+})

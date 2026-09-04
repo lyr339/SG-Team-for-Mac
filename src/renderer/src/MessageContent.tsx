@@ -1,4 +1,4 @@
-import { Fragment, useMemo, type ReactNode } from 'react'
+import { Fragment, memo, useMemo, type ReactNode } from 'react'
 import { normalizeEscapedNewlines } from '../../domain/conversation-entry'
 import { stripDanglingBoldMarkers } from '../../domain/model-output-sanitizer'
 
@@ -173,7 +173,8 @@ export function messagePlainText(text: string): string {
     .trim()
 }
 
-export function MessageContent({
+/** 打字机每帧只改 text；memo 让同文本的父级重渲染（快照推送）不重解析 Markdown。 */
+export const MessageContent = memo(function MessageContent({
   text,
   className = ''
 }: {
@@ -219,4 +220,4 @@ export function MessageContent({
       })}
     </div>
   )
-}
+})

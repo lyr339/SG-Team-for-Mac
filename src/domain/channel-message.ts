@@ -172,6 +172,27 @@ export function hasConfirmedRuntimeStop(
 }
 
 /**
+ * 回复同步守门（已投递待回复）是否仍然开放：
+ * - Agent 存活时由 check_messages 在 CHANNEL_REPLY_SYNC_STALE_MS 后自动放行；
+ * - record_reply 正常关闭；
+ * - 超过放行窗口仍开放的守门视为已被放弃——不再阻塞 TeamRun 的离线收尾，
+ *   防止死亡 Agent 把一次性会话变成僵尸 run（守门本身不删除，等下一次
+ *   check_messages / 新 run 的 beginScope 收口）。
+ */
+export function hasOpenReplySync(
+  session: { pendingOutboundId?: string; pendingReplySyncSince?: number } | undefined,
+  now: number
+): boolean {
+  if (!session?.pendingOutboundId) return false
+  const since = session.pendingReplySyncSince
+  // since 与 outboundId 由所有写入方成对写入；缺失属数据异常。fail-safe 判
+  // 「未开放」：无法计龄的守门若永久阻塞收尾，死亡 Agent 会把一次性会话
+  // 变成僵尸 run（回复契约本身不受影响——守门仍在 presence 上）。
+  if (since === undefined) return false
+  return now - since <= CHANNEL_REPLY_SYNC_STALE_MS
+}
+
+/**
  * 连接阶段是否属于「协议内在岗」：长轮询待命 / 保活间隙 / 处理中 / 等待回复同步。
  * 大厅与 launcher 的「未待命」判定必须以此为据，不能只认裸 waiting——
  * waiting 仅在 check_messages 调用栈内为 true，Agent 处理消息、keepalive 推理

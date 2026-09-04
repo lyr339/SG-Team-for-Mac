@@ -95,7 +95,7 @@ describe('CursorStreamObserver', () => {
       }
     }
     runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
-    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(14)
+    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(19)
     expect(manager.markDirty({ composerId: 'composer-1' })).toBe(1)
     expect(observed).toEqual([1])
     await manager.updateWithoutMarkingDirty({ composerId: 'composer-1' })
@@ -327,6 +327,68 @@ describe('CursorStreamObserver', () => {
     observer.dispose()
   })
 
+  it('dispatches the streaming final answer carried by write-after snapshots (阶段 G 数据层)', async () => {
+    const events: CursorNativeProcessEvent[] = []
+    const { socket, observer } = buildObserver({ onProcessEvent: (event) => events.push(event) })
+    await observer.attach()
+    socket.emit('message', JSON.stringify({
+      method: 'Runtime.bindingCalled',
+      params: {
+        name: 'sgTeamProcess',
+        payload: JSON.stringify({
+          composerId: 'composer-native', observedAt: 1300, isGenerating: true,
+          response: { id: 'bubble-final', text: '正在逐字生成的正文', generating: true },
+          process: { turnId: 'user-turn-1', items: [], generatingBubbleCount: 1, snapshotComplete: true }
+        })
+      }
+    }))
+    // 非法正文载荷（缺 id / 缺 text）静默忽略，不影响过程帧本身。
+    socket.emit('message', JSON.stringify({
+      method: 'Runtime.bindingCalled',
+      params: {
+        name: 'sgTeamProcess',
+        payload: JSON.stringify({
+          composerId: 'composer-native', observedAt: 1400, isGenerating: false,
+          response: { text: '没有 id' },
+          process: { turnId: 'user-turn-1', items: [], generatingBubbleCount: 0, snapshotComplete: true }
+        })
+      }
+    }))
+    expect(events).toHaveLength(2)
+    expect(events[0]?.response).toEqual({ id: 'bubble-final', text: '正在逐字生成的正文' })
+    expect(events[1]?.response).toBeUndefined()
+    expect(events[1]?.process).toMatchObject({ turnId: 'user-turn-1', snapshotComplete: true })
+    observer.dispose()
+  })
+
+  it('keeps an authoritative empty snapshot as an explicit process event (RC-3)', async () => {
+    // 页面侧快照过滤掉全部内部协议工具后仍是完整帧：snapshotComplete 标记
+    // 权威空集，服务层据此撤下旧占位块；不得坍缩成 process: undefined。
+    const events: CursorNativeProcessEvent[] = []
+    const { socket, observer } = buildObserver({ onProcessEvent: (event) => events.push(event) })
+    await observer.attach()
+    socket.emit('message', JSON.stringify({
+      method: 'Runtime.bindingCalled',
+      params: {
+        name: 'sgTeamProcess',
+        payload: JSON.stringify({
+          composerId: 'composer-empty', observedAt: 2345, isGenerating: true,
+          process: {
+            turnId: 'user-turn-quiet',
+            items: [
+              { kind: 'tool', id: 'cursor:poll', toolName: 'mcp-SG Team-check_messages', toolKind: 'mcp', summary: '', status: 'done' }
+            ],
+            generatingBubbleCount: 1,
+            snapshotComplete: true
+          }
+        })
+      }
+    }))
+    expect(events).toHaveLength(1)
+    expect(events[0]?.process).toMatchObject({ turnId: 'user-turn-quiet', items: [], snapshotComplete: true })
+    observer.dispose()
+  })
+
   it('ignores unknown pages, garbage messages and empty payloads', async () => {
     const signals: string[] = []
     const { socket, observer } = buildObserver({
@@ -469,5 +531,306 @@ describe('CursorStreamObserver', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('阶段 D：Bubble 级内部协议相位分组（RC-5 / RC-5.1 / RC-6）', () => {
+  function hookContext(data: () => Record<string, unknown>) {
+    class Manager {
+      loadedComposers = { ids: ['composer-d'] }
+      markDirty(): void {}
+    }
+    const frames: Array<Record<string, any>> = []
+    const context = {
+      Promise,
+      queueMicrotask,
+      setTimeout,
+      globalThis: {
+        __qtComposerService: {
+          composerDataService: {
+            composerDataHandleManager: new Manager(),
+            getComposerDataIfLoaded: () => data()
+          }
+        },
+        sgTeamStream: () => {},
+        sgTeamProcess: (payload: string) => frames.push(JSON.parse(payload) as Record<string, unknown>)
+      }
+    }
+    return { context, frames }
+  }
+
+  async function collect(context: ReturnType<typeof hookContext>['context'], frames: Array<Record<string, any>>): Promise<Array<Record<string, any>>> {
+    const schedule = (context.globalThis as Record<string, any>).__sgTeamProcessSchedule as (id: string) => void
+    frames.length = 0
+    schedule('composer-d')
+    await Promise.resolve()
+    return (frames[0]?.process as { items?: Array<Record<string, any>> })?.items ?? []
+  }
+
+  it('defers MCP tool placeholders until the real tool name hydrates (RC-5.1: 从未出现 mcp--)', async () => {
+    let bubble: Record<string, any>
+    const { context, frames } = hookContext(() => ({
+      fullConversationHeadersOnly: [{ type: 1, bubbleId: 'user-1' }, { type: 2, bubbleId: 'b-1' }],
+      conversationMap: { 'b-1': bubble },
+      generatingBubbleIds: []
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+
+    // 首帧：toolCase 已到、真实工具名未水合 → 暂缓展示，不产生占位块
+    bubble = { toolFormerData: { toolCall: { tool: { case: 'mcpToolCall', value: {} } } } }
+    let items = await collect(context, frames)
+    expect(items).toEqual([])
+
+    // 水合为内部协议工具（check_messages）→ 隐藏
+    bubble = { toolFormerData: { toolCall: { tool: { case: 'mcpToolCall', value: { args: { server: 'SG Team', toolName: 'check_messages' } } } } } }
+    items = await collect(context, frames)
+    expect(items).toEqual([])
+
+    // 水合为业务 MCP 工具 → 以真实名称展示
+    bubble = { toolFormerData: { toolCall: { tool: { case: 'mcpToolCall', value: { args: { server: 'SG Team', toolName: 'team_claim_task' }, result: { result: { case: 'success' } } } } } } }
+    items = await collect(context, frames)
+    expect(items.map((item) => `${item.kind}:${item.toolName}`)).toEqual(['tool:mcp-SG Team-team_claim_task'])
+  })
+
+  it('hides transport bubbles as a group and keeps the final answer out of process messages (RC-5/RC-6)', async () => {
+    const { context, frames } = hookContext(() => ({
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'msg-interim' },
+        { type: 2, bubbleId: 'tool-read' },
+        { type: 2, bubbleId: 'msg-final' },
+        { type: 2, bubbleId: 'cap-1' },
+        { type: 2, bubbleId: 'th-keep' },
+        { type: 2, bubbleId: 'tool-check' }
+      ],
+      conversationMap: {
+        'msg-interim': { text: '我先读取文件。' },
+        'tool-read': { toolFormerData: { name: 'read_file', status: 'completed' } },
+        'msg-final': { text: '这是最终回答。' },
+        'cap-1': { capabilityType: 30, simulatedMessageMetadata: { title: '正在调用 check_messages' } },
+        'th-keep': { thinking: '没有新消息，继续等待。' },
+        'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed' } }
+      },
+      generatingBubbleIds: []
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    const items = await collect(context, frames)
+
+    // 传输相位整组隐藏：capability:30、keepalive thinking、check_messages 工具。
+    expect(items.map((item) => item.id)).toEqual(['cursor-msg:msg-interim', 'cursor:tool-read'])
+    // 最终正文之后只剩传输噪声 → 不作为 cursor-msg（不与 record_reply 正文重复）
+    expect(items.some((item) => item.id === 'cursor-msg:msg-final')).toBe(false)
+  })
+
+  it('keeps business MCP bubbles, their thinking and interim messages fully visible', async () => {
+    const { context, frames } = hookContext(() => ({
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'msg-interim' },
+        { type: 2, bubbleId: 'th-biz' },
+        { type: 2, bubbleId: 'tool-team' },
+        { type: 2, bubbleId: 'msg-final' }
+      ],
+      conversationMap: {
+        'msg-interim': { text: '先梳理任务。' },
+        'th-biz': { thinking: '领取任务前先确认看板状态。' },
+        'tool-team': { toolFormerData: { name: 'mcp-SG Team-team_claim_task', status: 'completed' } },
+        'msg-final': { text: '任务已领取。' }
+      },
+      generatingBubbleIds: []
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    const items = await collect(context, frames)
+
+    expect(items.map((item) => item.id)).toEqual([
+      'cursor-msg:msg-interim',
+      'cursor-th:th-biz',
+      'cursor:tool-team'
+    ])
+    expect(items.find((item) => item.id === 'cursor:tool-team')).toMatchObject({
+      toolName: 'mcp-SG Team-team_claim_task', toolKind: 'mcp'
+    })
+  })
+
+  it('carries the final answer as a write-cadence response payload, never as a process message (阶段 G 数据层)', async () => {
+    const { context, frames } = hookContext(() => ({
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'msg-interim' },
+        { type: 2, bubbleId: 'tool-read' },
+        { type: 2, bubbleId: 'msg-final' },
+        { type: 2, bubbleId: 'cap-1' },
+        { type: 2, bubbleId: 'tool-check' }
+      ],
+      conversationMap: {
+        'msg-interim': { text: '我先读取文件。' },
+        'tool-read': { toolFormerData: { name: 'read_file', status: 'completed' } },
+        'msg-final': { text: '这是最终回答。' },
+        'cap-1': { capabilityType: 30 },
+        'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed' } }
+      },
+      generatingBubbleIds: ['msg-final']
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    const items = await collect(context, frames)
+    // 中间消息仍是过程；最终正文改由 response 载荷承载（与 inspect 的 responseId 同一 bubbleId）。
+    expect(items.map((item) => item.id)).toEqual(['cursor-msg:msg-interim', 'cursor:tool-read'])
+    expect(frames[0]?.response).toEqual({ id: 'msg-final', text: '这是最终回答。', generating: true })
+
+    // 正文之后仍有业务工具：尚无最终正文，不携带 response。
+    const working = hookContext(() => ({
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'msg-1' },
+        { type: 2, bubbleId: 'tool-read' }
+      ],
+      conversationMap: {
+        'msg-1': { text: '我先读取文件。' },
+        'tool-read': { toolFormerData: { name: 'read_file', status: 'completed' } }
+      },
+      generatingBubbleIds: []
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, working.context)
+    await collect(working.context, working.frames)
+    expect(working.frames[0]?.response).toBeUndefined()
+  })
+
+  it('hides trailing polling scaffolding but keeps thinking that leads to a final answer', async () => {
+    // 回合尾部余波：check_messages 之后只剩 capability/thinking、无消息跟随 → 隐藏
+    const { context, frames } = hookContext(() => ({
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'tool-check' },
+        { type: 2, bubbleId: 'cap-trail' },
+        { type: 2, bubbleId: 'th-trail' }
+      ],
+      conversationMap: {
+        'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed' } },
+        'cap-trail': { capabilityType: 30 },
+        'th-trail': { thinking: '暂无新消息。' }
+      },
+      generatingBubbleIds: []
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    expect(await collect(context, frames)).toEqual([])
+
+    // 轮询后取到新消息：thinking 之后跟着最终正文（消息跟随）→ 业务思考保留
+    const second = hookContext(() => ({
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'tool-check' },
+        { type: 2, bubbleId: 'th-biz' },
+        { type: 2, bubbleId: 'msg-final' }
+      ],
+      conversationMap: {
+        'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed' } },
+        'th-biz': { thinking: '收到新任务，先整理思路再作答。' },
+        'msg-final': { text: '这是针对新任务的回答。' }
+      },
+      generatingBubbleIds: []
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, second.context)
+    const items = await collect(second.context, second.frames)
+    expect(items.map((item) => item.id)).toEqual(['cursor-th:th-biz'])
+  })
+})
+
+describe('阶段 X：MCP pending 首帧不得把最终正文误判为中间过程（2026-09-03 双渲染事故）', () => {
+  it('keeps the final answer out of cursor-msg when a pending MCP bubble follows it', async () => {
+    // 事故形态：正文 → keepalive thinking → MCP 工具首帧（toolCase 已到、真实名
+    // 未水合 = pending）。旧前向规则只认 transport，thinking 被当业务思考构成
+    // 「后续工作」→ 最终正文进 cursor-msg → 封口固化 → 与回复正文双渲染。
+    class Manager {
+      loadedComposers = { ids: ['composer-x'] }
+      markDirty(): void {}
+    }
+    let mcpBubble: Record<string, unknown> = { toolFormerData: { toolCall: { tool: { case: 'mcpToolCall', value: {} } } } }
+    const frames: Array<Record<string, any>> = []
+    const context = {
+      Promise, queueMicrotask, setTimeout,
+      globalThis: {
+        __qtComposerService: { composerDataService: {
+          composerDataHandleManager: new Manager(),
+          getComposerDataIfLoaded: () => ({
+            fullConversationHeadersOnly: [
+              { type: 1, bubbleId: 'user-1' },
+              { type: 2, bubbleId: 'final-1' },
+              { type: 2, bubbleId: 'th-keep' },
+              { type: 2, bubbleId: 'mcp-pending' }
+            ],
+            conversationMap: {
+              'final-1': { text: '这是微信（WeChat）的应用图标：绿色圆角方块，中间两个白色对话气泡叠在一起。' },
+              'th-keep': { thinking: '暂无新消息，继续等待。' },
+              'mcp-pending': mcpBubble
+            },
+            generatingBubbleIds: ['mcp-pending']
+          })
+        } },
+        sgTeamStream: () => {},
+        sgTeamProcess: (payload: string) => frames.push(JSON.parse(payload) as Record<string, unknown>)
+      }
+    }
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    await Promise.resolve()
+    let items = (frames[0]?.process as { items?: Array<Record<string, any>> })?.items ?? []
+    // 最终正文不进 cursor-msg（由 response 载荷 / record_reply 承载）：工作判定对
+    // pending 按传输倾向，th-keep 不构成「后续工作」。
+    expect(items.some((item) => item.id === 'cursor-msg:final-1')).toBe(false)
+    expect(frames[0]?.response).toMatchObject({ id: 'final-1' })
+    // 显示层对 pending 不预判：th-keep 在真实工具名水合前保持可见——否则每个业务
+    // MCP 调用开始时其前置思考都会消失一帧再重播（打字机从头再来）。
+    expect(items.map((item) => item.id)).toEqual(['cursor-th:th-keep'])
+
+    // 水合为 check_messages：整组传输相位隐藏，最终正文依旧不是过程消息。
+    mcpBubble = { toolFormerData: { toolCall: { tool: { case: 'mcpToolCall', value: { args: { server: 'SG Team', toolName: 'check_messages' } } } } } }
+    frames.length = 0
+    ;(context.globalThis as Record<string, any>).__sgTeamProcessSchedule('composer-x')
+    await Promise.resolve()
+    items = (frames[0]?.process as { items?: Array<Record<string, any>> })?.items ?? []
+    expect(items).toEqual([])
+    expect(frames[0]?.response).toMatchObject({ id: 'final-1' })
+  })
+
+  it('keeps the business thinking that produced the final answer visible when record_reply follows (message resets the transport phase)', async () => {
+    class Manager {
+      loadedComposers = { ids: ['composer-y'] }
+      markDirty(): void {}
+    }
+    const frames: Array<Record<string, any>> = []
+    const context = {
+      Promise, queueMicrotask, setTimeout,
+      globalThis: {
+        __qtComposerService: { composerDataService: {
+          composerDataHandleManager: new Manager(),
+          getComposerDataIfLoaded: () => ({
+            fullConversationHeadersOnly: [
+              { type: 1, bubbleId: 'user-1' },
+              { type: 2, bubbleId: 'th-answer' },
+              { type: 2, bubbleId: 'final-1' },
+              { type: 2, bubbleId: 'tool-record' },
+              { type: 2, bubbleId: 'th-keep' },
+              { type: 2, bubbleId: 'tool-check' }
+            ],
+            conversationMap: {
+              'th-answer': { thinking: '用户问的是图标含义，直接描述即可。' },
+              'final-1': { text: '这是微信的应用图标。' },
+              'tool-record': { toolFormerData: { name: 'mcp-SG Team-record_reply', status: 'completed' } },
+              'th-keep': { thinking: '暂无新消息，继续等待。' },
+              'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed' } }
+            },
+            generatingBubbleIds: []
+          })
+        } },
+        sgTeamStream: () => {},
+        sgTeamProcess: (payload: string) => frames.push(JSON.parse(payload) as Record<string, unknown>)
+      }
+    }
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    await Promise.resolve()
+    const items = (frames[0]?.process as { items?: Array<Record<string, any>> })?.items ?? []
+    // 产出答案的 Thought 不被其后的 record_reply/check_messages 回溯吞掉；
+    // 正文之后的 keepalive thinking 仍是传输相位；正文本身由 response 载荷承载。
+    expect(items.map((item) => item.id)).toEqual(['cursor-th:th-answer'])
+    expect(frames[0]?.response).toMatchObject({ id: 'final-1', text: '这是微信的应用图标。' })
   })
 })

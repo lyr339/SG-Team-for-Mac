@@ -164,6 +164,63 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('markCursorStopped keeps the open reply-sync gate so the owed record_reply stays visible', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      const outbound = repository.enqueueOutbound('1', '你是谁', 10_000)
+      repository.markOutboundDelivered([outbound.id], 10_500)
+      repository.touchPresence('1', {
+        waiting: false, connectionPhase: 'processing', lastSeenAt: 10_500,
+        pendingReplySyncSince: 10_500, pendingOutboundId: outbound.id
+      }, 10_500)
+
+      // Composer 终止不是回复契约的关闭条件：Agent（MCP 循环）仍欠 record_reply。
+      setNow(11_000)
+      expect(relay.markCursorStopped('1', 11_000)).toBe(true)
+      expect(repository.getPresence('1')).toMatchObject({
+        connectionPhase: 'cursor_stopped',
+        pendingOutboundId: outbound.id,
+        pendingReplySyncSince: 10_500
+      })
+
+      const service = new ChannelMessageService(repository)
+      const reply = service.recordReply({ channelId: '1', content: '这是最终回复。' })
+      expect(reply.visible).toBeUndefined()
+      expect(reply.outboundId).toBe(outbound.id)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('completeScope keeps the open reply-sync gate so a record_reply after run completion stays visible', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      relay.resetScope('run-a', 10_000)
+      const outbound = repository.enqueueOutbound('1', '你是谁', 11_000)
+      repository.markOutboundDelivered([outbound.id], 11_500)
+      repository.touchPresence('1', {
+        waiting: false, connectionPhase: 'processing', lastSeenAt: 11_500,
+        pendingReplySyncSince: 11_500, pendingOutboundId: outbound.id
+      }, 11_500)
+
+      // run 状态切换（2026-09-01 事故：completeScope 清门让回复以 visible=0 落库）
+      setNow(12_000)
+      relay.completeScope(12_000)
+      const presence = repository.getPresence('1')
+      expect(presence?.pendingOutboundId).toBe(outbound.id)
+      expect(presence?.pendingReplySyncSince).toBe(11_500)
+
+      const service = new ChannelMessageService(repository)
+      const reply = service.recordReply({ channelId: '1', content: '我是拾光团队的构建工程师。' })
+      expect(reply.visible).toBeUndefined()
+      expect(reply.outboundId).toBe(outbound.id)
+    } finally {
+      repository.close()
+    }
+  })
+
   it('clears residual cursor_stopped phases when a new TeamRun scope begins (2026-09-01 incident)', () => {
     const { repository, relay, setNow } = fixture(10_000)
     try {

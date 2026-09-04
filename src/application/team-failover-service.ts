@@ -5,7 +5,7 @@ import type { TeamContinuityService } from './team-continuity-service'
 import type { TaskPoolService } from './task-pool-service'
 import { TeamHandoffService } from './team-handoff-service'
 import type { ManualTeamHandoffInput, ManualTeamHandoffResult, TeamHandoffOptions } from '../domain/team-handoff'
-import { hasConfirmedRuntimeStop, hasInFlightExecution } from '../domain/channel-message'
+import { hasConfirmedRuntimeStop, hasInFlightExecution, hasOpenReplySync } from '../domain/channel-message'
 
 const DEFAULT_OFFLINE_GRACE_MS = 15_000
 const DEFAULT_ALL_OFFLINE_GRACE_MS = 20_000
@@ -134,6 +134,14 @@ export class TeamFailoverService {
         // 尚未有任何 Agent 签到时属于首次启动/创建失败，不是“一次性会话已用完”。
         // 保留 launching/attention 让用户修复或重试，避免 20s 内误收尾新团队。
         if (!hadActivatedSession) {
+          this.allOfflineSince = undefined
+          return
+        }
+        // 已投递待回复（回复契约开放）期间不进入 all-offline 完成计时：Agent 可能
+        // 正在生成最终回复，此刻收尾即使守门保留也会让会话过早失去执行上下文。
+        // 超过回复同步宽限（CHANNEL_REPLY_SYNC_STALE_MS）仍未 record_reply 的
+        // 守门视为已放弃，放行收尾——死亡 Agent 不得把一次性会话变成僵尸 run。
+        if (teamMembers.some((member) => hasOpenReplySync(member.runtime, this.now()))) {
           this.allOfflineSince = undefined
           return
         }

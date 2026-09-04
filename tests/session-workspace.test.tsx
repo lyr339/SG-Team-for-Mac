@@ -38,7 +38,7 @@ function renderWorkspace(overrides: {
   session?: Partial<AgentSession>
   entries?: ConversationEntry[]
   currentProjectName?: string
-  liveProcess?: { turn: string; startedAt: number; updatedAt: number; truncatedItemCount?: number; blocks: import('../src/domain/conversation-entry').ProcessBlock[] }
+  liveProcess?: { turn: string; startedAt: number; updatedAt: number; truncatedItemCount?: number; generating?: boolean; blocks: import('../src/domain/conversation-entry').ProcessBlock[] }
   liveAgentResponse?: import('../src/shared/desktop-api').LiveAgentResponseState
   nativeProcessStream?: import('../src/shared/desktop-api').NativeProcessStreamStatus
 } = {}): string {
@@ -97,7 +97,7 @@ describe('SessionWorkspace', () => {
         startedAt: 1_050, updatedAt: 1_200
       }
     })
-    expect(html.match(/live-process-row/g)).toHaveLength(1)
+    expect(html.match(/chat-row chat-row--agent live-process-row[" ]/g)).toHaveLength(1)
     expect(html).toContain('cursor-native-process__flow')
     expect(html).toContain('live-agent-response')
     expect(html).not.toContain('live-response-row')
@@ -116,9 +116,8 @@ describe('SessionWorkspace', () => {
     })
     expect(html).toContain('长任务完整过程')
     expect(html).toContain('长任务最终回答')
-    expect(html.match(/live-process-row/g)).toHaveLength(1)
+    expect(html.match(/chat-row chat-row--agent live-process-row[" ]/g)).toHaveLength(1)
   })
-
   it('queues offline solo seats without framing them as team collaboration', () => {
     const solo = renderWorkspace({
       session: {
@@ -247,6 +246,49 @@ describe('SessionWorkspace', () => {
     })
 
     expect(html.indexOf('请继续实现')).toBeLessThan(html.indexOf('过程记录'))
+  })
+
+  it('用户新消息排队时，进行中的过程流留在上一回合原地（不消失、不迁移）', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing', deliveryMode: 'queued' },
+      entries: [
+        entry({ id: 'u1', role: 'user', source: 'desktop', text: '第一条', timestamp: 1_000, deliveredAt: 1_050 }),
+        entry({ id: 'u2', role: 'user', source: 'desktop', text: '第二条（排队中）', timestamp: 5_000 })
+      ],
+      liveProcess: {
+        turn: 'cursor:native-turn', startedAt: 1_100, updatedAt: 5_200, generating: true,
+        blocks: [
+          { kind: 'thinking', id: 'th-1', text: '正在处理第一条', status: 'done', startedAt: 1_100 },
+          { kind: 'tool', id: 'tool-1', toolName: 'read_file', toolKind: 'read', summary: 'a.ts', status: 'running', startedAt: 5_100 }
+        ]
+      }
+    })
+    // 过程卡仍在，且位于第一条与第二条之间（锚定第一条回合）；第二条尚未投递，无占位。
+    expect(html).toContain('cursor-native-process')
+    expect(html.indexOf('第一条')).toBeLessThan(html.indexOf('cursor-native-process'))
+    expect(html.indexOf('cursor-native-process')).toBeLessThan(html.indexOf('第二条（排队中）'))
+    expect(html).not.toContain('live-process-idle')
+  })
+
+  it('occupies the same Agent row for the idle placeholder and the first process frame', () => {
+    const base = {
+      session: { status: 'running' as const, waiting: false, connectionPhase: 'processing' },
+      entries: [entry({ id: 'u1', role: 'user', source: 'desktop', text: '开始', timestamp: 1_000, deliveredAt: 1_050 })]
+    }
+    const idle = renderWorkspace(base)
+    expect(idle).toContain('live-process-idle')
+    expect(idle).toContain('正在处理')
+    // 占位与首帧过程共用同一 Agent 行（同一 chat-row 结构与宽列），不是独立的占位行。
+    expect(idle.match(/chat-row chat-row--agent live-process-row chat-row--process/g)).toHaveLength(1)
+    const streaming = renderWorkspace({
+      ...base,
+      liveProcess: {
+        turn: 'cursor:t1', startedAt: 1_100, updatedAt: 1_200, generating: true,
+        blocks: [{ kind: 'thinking', id: 'th-1', text: '思考中', status: 'running', startedAt: 1_100 }]
+      }
+    })
+    expect(streaming).not.toContain('live-process-idle')
+    expect(streaming.match(/chat-row chat-row--agent live-process-row chat-row--process/g)).toHaveLength(1)
   })
 
   it('旧过程存在时仍为已投递的新消息显示独立处理占位', () => {
@@ -469,5 +511,206 @@ describe('SessionWorkspace', () => {
     expect(html).toContain('复制')
     expect(html).toContain('引用')
     expect(html).toContain('chat-action')
+  })
+})
+
+describe('统一回合时间线（阶段 F：RC-8 turn identity）', () => {
+  it('renders one turn container across queued → delivered → responding → sealed (§8.5-1)', () => {
+    const userEntry = entry({
+      id: 'u1', role: 'user', source: 'desktop', text: '统一身份验证',
+      timestamp: 1_000, deliveredAt: undefined
+    })
+    // queued（队列传输、未投递）：仅用户气泡，无占位（尚未到达 Agent）
+    const queued = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing', deliveryMode: 'queued' },
+      entries: [userEntry]
+    })
+    expect(queued).toContain('统一身份验证')
+    expect(queued).not.toContain('live-process-idle')
+
+    // delivered：占位出现（running + 已投递 + 无产物）
+    const delivered = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({ ...userEntry, deliveredAt: 1_100 })]
+    })
+    expect(delivered).toContain('统一身份验证')
+    expect(delivered).toContain('live-process-idle')
+
+    // responding：live 过程接管（占位消失）
+    const responding = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({ ...userEntry, deliveredAt: 1_100 })],
+      liveProcess: {
+        turn: 'cursor:user-turn-1', startedAt: 1_200, updatedAt: 1_300,
+        blocks: [{ kind: 'thinking', id: 'thought-1', text: '思考中', status: 'running', startedAt: 1_200 }]
+      }
+    })
+    expect(responding).toContain('统一身份验证')
+    // 思考正文经共享播放器呈现（阶段 G）：静态渲染首帧为空容器，
+    // 打字机行为由 use-streaming-text.test.tsx 锁定；此处断言思考卡挂载。
+    expect(responding).toContain('cursor-native-thought')
+    expect(responding).not.toContain('live-process-idle')
+
+    // sealed：回复落库，过程随回复持久化（live 已被 committed 过滤）
+    const sealed = renderWorkspace({
+      session: { status: 'waiting', waiting: true, connectionPhase: 'waiting' },
+      entries: [
+        entry({ ...userEntry, deliveredAt: 1_100 }),
+        entry({
+          id: 'a1', role: 'assistant', source: 'cursor', text: '最终回答',
+          timestamp: 2_000, replyToEntryId: 'u1',
+          processBlocks: [{ kind: 'thinking', id: 'thought-1', text: '思考完成', status: 'done', startedAt: 1_200 }]
+        })
+      ]
+    })
+    expect(sealed).toContain('统一身份验证')
+    expect(sealed).toContain('最终回答')
+    expect(sealed).toContain('思考完成')
+    expect(sealed.match(/chat-row chat-row--agent live-process-row[" ]/g)).toBe(null)
+  })
+
+  it('user text → agent live turn → user image keeps the image row un-grouped (RC-12/§8.5-7)', () => {
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [
+        entry({ id: 'u1', role: 'user', source: 'desktop', text: '你是谁', timestamp: 1_000_000, deliveredAt: 1_000_050 }),
+        entry({ id: 'u2', role: 'user', source: 'desktop', text: '', timestamp: 1_093_000, deliveredAt: 1_093_050,
+          attachments: [{ id: 'img1', name: 'screen.png', mimeType: 'image/png', size: 2_048, previewUrl: 'blob:img' }] })
+      ],
+      liveProcess: {
+        turn: 'cursor:turn-1', startedAt: 1_000_100, updatedAt: 1_092_000,
+        blocks: [{ kind: 'thinking', id: 'th1', text: '回答生成中', status: 'done', startedAt: 1_000_200 }]
+      }
+    })
+    // 图片消息不被误分组：身份头（你 + 头像）必须显示；live 过程行夹在
+    // 两条用户消息之间，不参与用户分组链。
+    expect(html).toContain('<strong>你</strong>')
+    expect(html).toContain('chat-attachment-image')
+    expect(html.match(/is-grouped/g) ?? []).toHaveLength(0)
+  })
+
+  it('groups consecutive queued user messages but breaks the group on agent activity (RC-12)', () => {
+    const session = {
+      status: 'running' as const,
+      waiting: false,
+      connectionPhase: 'processing',
+      deliveryMode: 'queued' as const
+    }
+    const first = entry({
+      id: 'u1', role: 'user', source: 'desktop', text: '第一条',
+      timestamp: 1_000_000, deliveredAt: 1_000_050
+    })
+    const second = entry({
+      id: 'u2', role: 'user', source: 'desktop', text: '第二条',
+      timestamp: 1_060_000
+    })
+
+    // 连续排队（u1 之后无任何 Agent 产物）：u2 与 u1 合并分组。
+    const grouped = renderWorkspace({ session, entries: [first, second] })
+    expect(grouped.match(/is-grouped/g)).toHaveLength(1)
+
+    // u1 回合内出现 Agent 实时过程：分组被打断，u2 独立显示身份头。
+    const broken = renderWorkspace({
+      session,
+      entries: [first, second],
+      liveProcess: {
+        turn: 'cursor:t1', startedAt: 1_000_100, updatedAt: 1_000_200,
+        blocks: [{ kind: 'thinking', id: 'th1', text: '处理第一条', status: 'running', startedAt: 1_000_100 }]
+      }
+    })
+    expect(broken.match(/is-grouped/g)).toBe(null)
+    expect(broken.match(/<strong>你<\/strong>/g)).toHaveLength(2)
+  })
+
+  it('breaks the user group when a persisted agent reply sits between two user messages', () => {
+    const html = renderWorkspace({
+      entries: [
+        entry({ id: 'u1', role: 'user', source: 'desktop', text: '第一问', timestamp: 1_000_000, deliveredAt: 1_000_050 }),
+        entry({ id: 'a1', role: 'assistant', source: 'cursor', text: '第一答', timestamp: 1_030_000, replyToEntryId: 'u1' }),
+        entry({ id: 'u2', role: 'user', source: 'desktop', text: '第二问', timestamp: 1_060_000, deliveredAt: 1_060_050 })
+      ]
+    })
+    // Agent 回复打断用户组：两条用户消息各自显示身份头。
+    expect(html.match(/<strong>你<\/strong>/g)).toHaveLength(2)
+    expect(html.match(/is-grouped/g)).toBe(null)
+  })
+
+  it('treats a generating process with all-done blocks as live so the typewriter engages (RC-9)', () => {
+    // Cursor 常见形态：回合仍在生成，但 Thinking 块已被标记 done。服务端
+    // generating=true 是权威直播信号——直播徽标必须出现（打字机播放的前提；
+    // 旧实现靠「某块 running」猜测，此处会误判为历史而整段瞬现）。
+    const html = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({
+        id: 'u1', role: 'user', source: 'desktop', text: '继续',
+        timestamp: 1_000_000, deliveredAt: 1_000_050
+      })],
+      liveProcess: {
+        turn: 'cursor:user-t1', startedAt: 1_000_100, updatedAt: 1_000_200,
+        generating: true,
+        blocks: [{ kind: 'thinking', id: 'cursor:th-1', text: '生成中的思考内容', status: 'done', startedAt: 1_000_120 }]
+      }
+    })
+    expect(html).toContain('Cursor 实时过程')
+    expect(html).toContain('cursor-native-thought')
+    expect(html).toContain('is-live')
+
+    // generating=false（历史快照）：无直播徽标，整段直接显示。
+    const history = renderWorkspace({
+      session: { status: 'running', waiting: false, connectionPhase: 'processing' },
+      entries: [entry({
+        id: 'u1', role: 'user', source: 'desktop', text: '继续',
+        timestamp: 1_000_000, deliveredAt: 1_000_050
+      })],
+      liveProcess: {
+        turn: 'cursor:user-t1', startedAt: 1_000_100, updatedAt: 1_000_200,
+        generating: false,
+        blocks: [{ kind: 'thinking', id: 'cursor:th-1', text: '历史思考内容', status: 'done', startedAt: 1_000_120 }]
+      }
+    })
+    expect(history).not.toContain('Cursor 实时过程')
+    // 历史上下文（immediate）：正文完整直接渲染（静态渲染可见全文）。
+    expect(history).toContain('历史思考内容')
+  })
+})
+
+describe('历史脏数据兜底：回复正文不得随过程卡重复渲染（2026-09-03 事故）', () => {
+  const finalText = '这是微信（WeChat）的应用图标：绿色圆角方块，中间两个白色对话气泡叠在一起。'
+
+  it('renders the reply body exactly once even if a legacy process block duplicates it', () => {
+    // 正式库 r2 行的原始形状：processBlocks 只含一个与 content 一字不差的
+    // cursor-msg——旧版封口固化的污染。渲染层滤除后正文只出现一次。
+    const html = renderWorkspace({
+      entries: [
+        entry({ id: 'u1', role: 'user', source: 'desktop', text: '如图这是什么', timestamp: 1_000_000, deliveredAt: 1_000_050 }),
+        entry({
+          id: 'a1', role: 'assistant', source: 'cursor', text: finalText,
+          timestamp: 1_012_000, replyToEntryId: 'u1',
+          processBlocks: [
+            { kind: 'message', id: 'cursor-msg:142abf84', text: finalText, status: 'done' }
+          ]
+        })
+      ]
+    })
+    expect(html.match(/这是微信（WeChat）的应用图标/g)).toHaveLength(1)
+  })
+
+  it('keeps legitimate interim messages whose text differs from the final reply', () => {
+    const html = renderWorkspace({
+      entries: [
+        entry({ id: 'u1', role: 'user', source: 'desktop', text: '请继续', timestamp: 1_000_000, deliveredAt: 1_000_050 }),
+        entry({
+          id: 'a1', role: 'assistant', source: 'cursor', text: finalText,
+          timestamp: 1_012_000, replyToEntryId: 'u1',
+          processBlocks: [
+            { kind: 'tool', id: 'cursor:tool-1', toolName: 'read_file', toolKind: 'read', summary: 'a.ts', status: 'done' },
+            { kind: 'message', id: 'cursor-msg:interim', text: '我先读取目标文件。', status: 'done' }
+          ]
+        })
+      ]
+    })
+    // 中间过程消息（文本 ≠ 最终回复）保留；最终正文只出现一次。
+    expect(html).toContain('我先读取目标文件。')
+    expect(html.match(/这是微信（WeChat）的应用图标/g)).toHaveLength(1)
   })
 })

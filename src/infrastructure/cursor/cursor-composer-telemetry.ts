@@ -38,6 +38,7 @@ import {
   type CursorTelemetrySnapshot
 } from '../../domain/cursor-telemetry'
 import type { ProcessBlock } from '../../domain/conversation-entry'
+import { isCursorInternalToolName } from './cursor-cdp-session-creator'
 
 const COMPOSER_HEADERS_KEY = 'composer.composerHeaders'
 const APPLICATION_USER_KEY = 'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser'
@@ -820,6 +821,10 @@ function lastTranscriptAssistantProcess(text: string): ProcessBlock[] | undefine
       const input = recordOf(item.input)
       const dynamicToolName = boundedString(input?.toolName, 160)
       const nativeName = boundedString(item.name, 160) ?? 'tool'
+      // 内部协议工具（check_messages/record_reply 等，含服务器前缀形态与旧版
+      // MCP 占位名）不进过程——与 observer 主路径同一名单。判定用动态工具名
+      // （GetDynamicTools(check_messages) 这类传输工具发现调用同样属内部协议）。
+      if (isCursorInternalToolName(dynamicToolName ?? nativeName)) continue
       const toolName = nativeName === 'GetDynamicTools'
         ? 'get_mcp_tools'
         : dynamicToolName ?? nativeName

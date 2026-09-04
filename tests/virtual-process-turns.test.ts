@@ -69,4 +69,75 @@ describe('projectVirtualProcessTurns', () => {
     )
     expect(turns[0]).toMatchObject({ id: 'plugin-message', position: 0.5 })
   })
+
+  it('seals the turn at its precisely linked reply and drops post-seal transport noise', () => {
+    // 8.2-3：回复以 replyToEntryId 精确关联（outboundId 链路），封口之后的
+    // keepalive/内部协议块属传输空档，不得进入已封口回合（周期闪动根因）。
+    const reply: ConversationEntry = {
+      ...assistant('reply-1', 1_500), replyToEntryId: 'm1'
+    }
+    const turns = projectVirtualProcessTurns(
+      [user('m1', 1_000, 1_020), reply],
+      process([block('work', 1_100), block('keepalive', 1_600)])
+    )
+    expect(turns.map((turn) => ({ id: turn.id, blocks: turn.process?.blocks.map((item) => item.id) })))
+      .toEqual([{ id: 'm1', blocks: ['work'] }])
+  })
+
+  it('keeps the legacy time-window fallback for replies without precise outbound links', () => {
+    // 旧数据缺少 outboundId：无关闭边界，封口语义退化为时间窗（不回归旧库）。
+    const turns = projectVirtualProcessTurns(
+      [user('m1', 1_000, 1_020), assistant('reply-legacy', 1_500)],
+      process([block('work', 1_100), block('after-reply', 1_600)])
+    )
+    expect(turns.map((turn) => ({ id: turn.id, blocks: turn.process?.blocks.map((item) => item.id) })))
+      .toEqual([{ id: 'm1', blocks: ['work', 'after-reply'] }])
+  })
+
+  it('assigns gap blocks to no turn when a later message has been delivered', () => {
+    // 8.2-5：下一条消息 delivered 后创建新回合；两回合之间的空档块不归属任何回合。
+    const firstReply: ConversationEntry = { ...assistant('reply-1', 1_500), replyToEntryId: 'm1' }
+    const secondReply: ConversationEntry = { ...assistant('reply-2', 2_600), replyToEntryId: 'm2' }
+    const turns = projectVirtualProcessTurns(
+      [
+        user('m1', 1_000, 1_020), firstReply,
+        user('m2', 2_000, 2_100), secondReply
+      ],
+      process([
+        block('work-1', 1_100),      // m1 回合内
+        block('keepalive', 1_800),   // m1 封口后、m2 投递前 → 空档
+        block('work-2', 2_200)       // m2 回合内
+      ])
+    )
+    expect(turns.map((turn) => ({ id: turn.id, blocks: turn.process?.blocks.map((item) => item.id) }))).toEqual([
+      { id: 'm1', blocks: ['work-1'] },
+      { id: 'm2', blocks: ['work-2'] }
+    ])
+  })
+
+  it('keeps a sealed turn closed even while the next message is still queued', () => {
+    // 8.2-4：下一消息仅入队未投递时不夺走上一轮；已封口回合同样不再吸收空档块。
+    const reply: ConversationEntry = { ...assistant('reply-1', 1_500), replyToEntryId: 'm1' }
+    const turns = projectVirtualProcessTurns(
+      [user('m1', 1_000, 1_020), reply, user('queued-2', 1_700)],
+      process([block('work-1', 1_100), block('keepalive', 1_600)])
+    )
+    expect(turns.map((turn) => ({ id: turn.id, blocks: turn.process?.blocks.map((item) => item.id) })))
+      .toEqual([{ id: 'm1', blocks: ['work-1'] }])
+  })
+
+  it('anchors blocks by their stable first-observation time, not by rehydration time', () => {
+    // 8.2-6：无原生 startedAt 的块使用 process.startedAt（首次观测时间）。
+    // m2 在观测之后才投递，旧块不得挪入 m2 的新回合。
+    const firstReply: ConversationEntry = { ...assistant('reply-1', 1_500), replyToEntryId: 'm1' }
+    const observed: ProcessBlock = { kind: 'thinking', id: 'hydrated', text: '转录块', status: 'done' }
+    const turns = projectVirtualProcessTurns(
+      [user('m1', 1_000, 1_020), firstReply, user('m2', 2_000, 2_100)],
+      { turn: 'rehydrated', blocks: [observed, block('fresh', 2_200)], startedAt: 1_100, updatedAt: 2_200 }
+    )
+    expect(turns.map((turn) => ({ id: turn.id, blocks: turn.process?.blocks.map((item) => item.id) }))).toEqual([
+      { id: 'm1', blocks: ['hydrated'] },
+      { id: 'm2', blocks: ['fresh'] }
+    ])
+  })
 })

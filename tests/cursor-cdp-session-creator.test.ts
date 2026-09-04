@@ -259,6 +259,47 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
     expect(process?.items[0]).toMatchObject({ id: 'thought-1', startedAt: 1_234 })
   })
 
+  it('keeps an authoritative empty snapshot alive and parses snapshotComplete (RC-3)', () => {
+    // 全部工具被过滤后 + snapshotComplete：空集是有效状态，返回流而非 undefined。
+    const authoritativeEmpty = parseProcessStream({
+      turnId: 'quiet-turn', generatingBubbleCount: 1, snapshotComplete: true,
+      items: [{ kind: 'tool', id: 'cursor:poll', toolName: 'mcp-SG Team-check_messages', toolKind: 'mcp', status: 'done' }]
+    })
+    expect(authoritativeEmpty).toMatchObject({
+      turnId: 'quiet-turn',
+      items: [],
+      snapshotComplete: true
+    })
+
+    // 旧版帧（无标记）空集仍坍缩为 undefined：不具权威性，语义不变。
+    const legacyEmpty = parseProcessStream({
+      turnId: 'legacy-turn', generatingBubbleCount: 1,
+      items: [{ kind: 'tool', id: 'cursor:poll', toolName: 'mcp-SG Team-check_messages', toolKind: 'mcp', status: 'done' }]
+    })
+    expect(legacyEmpty).toBeUndefined()
+
+    // 标记透传：非空帧同样携带权威语义。
+    const populated = parseProcessStream({
+      turnId: 'turn', generatingBubbleCount: 0, snapshotComplete: true,
+      items: [{ kind: 'thinking', id: 'th', text: '结论', status: 'done' }]
+    })
+    expect(populated?.snapshotComplete).toBe(true)
+  })
+
+  it('strips legacy MCP placeholder tool names from older hook frames (RC-5.1)', () => {
+    // 旧版 hook（v14 及以前）的 MCP 首帧占位：真实名称未水合，不得展示；
+    // 真名业务工具与内部协议工具照常分类处理。
+    const parsed = parseProcessStream({
+      turnId: 'legacy-turn', generatingBubbleCount: 1, snapshotComplete: true,
+      items: [
+        { kind: 'tool', id: 'cursor:p1', toolName: 'mcpToolCall', toolKind: 'mcp', status: 'running' },
+        { kind: 'tool', id: 'cursor:p2', toolName: 'MCPToolCall', toolKind: 'mcp', status: 'running' },
+        { kind: 'tool', id: 'cursor:biz', toolName: 'mcp-SG Team-team_claim_task', toolKind: 'mcp', status: 'done' }
+      ]
+    })
+    expect(parsed?.items.map((item) => item.id)).toEqual(['cursor:biz'])
+  })
+
   it('reads final assistant text from Cursor data and excludes interim text followed by work', async () => {
     const data = {
       fullConversationHeadersOnly: [
@@ -291,6 +332,62 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
     })
     const withFinal = await runInNewContext(buildRuntimeInspectionExpression(['composer-1']), { window, Map, Date })
     expect(withFinal.rows[0]).toMatchObject({ responseText: '这是最终回答。', responseId: 'final-1' })
+  })
+
+  it('still finds the final answer when only internal-protocol noise follows it (RC-6)', async () => {
+    // 回复完成后 Agent 轮询：最终正文之后只剩 capability:30、keepalive thinking
+    // 与 check_messages 调用。旧实现把 thinking/capability 当工作 → 最终正文被
+    // 误判为中间过程（responseText 为空），正文重复进入过程与回复。
+    const window = {
+      __qtComposerBridge: {
+        ready: true,
+        listComposers: () => [{ composerId: 'composer-1', status: 'idle' }],
+        getStatus: () => ({ found: true, status: 'idle' }),
+        getComposerData: () => ({
+          fullConversationHeadersOnly: [
+            { type: 1, bubbleId: 'user-1' },
+            { type: 2, bubbleId: 'final-1' },
+            { type: 2, bubbleId: 'cap-1' },
+            { type: 2, bubbleId: 'th-keep' },
+            { type: 2, bubbleId: 'tool-check' }
+          ],
+          conversationMap: {
+            'final-1': { text: '这是最终回答。' },
+            'cap-1': { capabilityType: 30 },
+            'th-keep': { thinking: '没有新消息，继续等待。' },
+            'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages' } }
+          }
+        })
+      }
+    }
+    const inspected = await runInNewContext(buildRuntimeInspectionExpression(['composer-1']), { window, Map, Date })
+    expect(inspected.rows[0]).toMatchObject({ responseText: '这是最终回答。', responseId: 'final-1' })
+  })
+
+  it('still treats business work after the message as interim text', async () => {
+    // 业务工作（team_task）跟在正文之后 → 正文是中间过程，不是最终回答。
+    const window = {
+      __qtComposerBridge: {
+        ready: true,
+        listComposers: () => [{ composerId: 'composer-1', status: 'idle' }],
+        getStatus: () => ({ found: true, status: 'idle' }),
+        getComposerData: () => ({
+          fullConversationHeadersOnly: [
+            { type: 1, bubbleId: 'user-1' },
+            { type: 2, bubbleId: 'interim-1' },
+            { type: 2, bubbleId: 'tool-team' },
+            { type: 2, bubbleId: 'final-1' }
+          ],
+          conversationMap: {
+            'interim-1': { text: '我先领取任务。' },
+            'tool-team': { toolFormerData: { name: 'mcp-SG Team-team_claim_task' } },
+            'final-1': { text: '任务已领取，开始执行。' }
+          }
+        })
+      }
+    }
+    const inspected = await runInNewContext(buildRuntimeInspectionExpression(['composer-1']), { window, Map, Date })
+    expect(inspected.rows[0]).toMatchObject({ responseText: '任务已领取，开始执行。', responseId: 'final-1' })
   })
 
   it('uses live status fallback while Composer data is only an empty hydration shell', async () => {

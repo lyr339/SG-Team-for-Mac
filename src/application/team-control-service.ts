@@ -676,6 +676,8 @@ export class TeamControlService {
           runtimeEvidence: runtime.runtimeEvidence,
           waiting: runtime.waiting,
           connectionPhase: runtime.connectionPhase,
+          pendingOutboundId: runtime.pendingOutboundId,
+          pendingReplySyncSince: runtime.pendingReplySyncSince,
           queueDepth: runtime.queueDepth,
           lastSeenAt: runtime.lastSeenAt,
           lastAgentActivityAt: runtime.lastAgentActivityAt,

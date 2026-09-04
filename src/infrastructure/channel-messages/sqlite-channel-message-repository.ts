@@ -348,14 +348,15 @@ export class SqliteChannelMessageRepository {
   }
 
   /**
-   * 进入新 TeamRun 时原子结算旧作用域：
+   * TeamRun 结束（completeScope 路径）时结算旧作用域：
    * - 旧未投递消息标记 retired（保留审计，但不再计数/投递）；
-   * - 清除旧轮 reply-sync 守门，避免新轮 check_messages 被上一轮回复阻塞；
+   * - 已投递消息的 reply-sync 守门必须保留——run 状态切换不等于回复契约
+   *   关闭，Agent 随后的 record_reply 仍按守门获得 visible=1 + 精确
+   *   outboundId（2026-09-01 事故：completeScope 清门让「你是谁」的回复
+   *   以 visible=0 落库）。守门的关闭权在 record_reply；新 run 的
+   *   beginScope 负责硬隔离清空。
    */
-  retireScopeBefore(startedAt: number, now = Date.now()): {
-    outbound: number
-    presence: number
-  } {
+  retireScopeBefore(startedAt: number, now = Date.now()): number {
     const boundary = Math.max(0, Math.floor(startedAt))
     this.database.exec('BEGIN IMMEDIATE')
     try {
@@ -364,20 +365,8 @@ export class SqliteChannelMessageRepository {
         SET retired_at = ?
         WHERE delivered_at IS NULL AND retired_at IS NULL AND created_at < ?
       `).run(now, boundary)
-      const presence = this.database.prepare(`
-        UPDATE channel_presence
-        SET pending_reply_sync_since = NULL, pending_outbound_id = NULL,
-            pending_group_chat = 0,
-            pending_group_id = NULL,
-            updated_at = ?
-        WHERE (pending_reply_sync_since IS NOT NULL AND pending_reply_sync_since < ?)
-           OR pending_outbound_id IS NOT NULL
-      `).run(now, boundary)
       this.database.exec('COMMIT')
-      return {
-        outbound: numberOf(outbound.changes),
-        presence: numberOf(presence.changes)
-      }
+      return numberOf(outbound.changes)
     } catch (error) {
       if (this.database.isTransaction) this.database.exec('ROLLBACK')
       throw error
@@ -385,7 +374,7 @@ export class SqliteChannelMessageRepository {
   }
 
   /** 原子切换当前 TeamRun；非当前轮消息一律退役，MCP 进程只读取该 run。 */
-  beginScope(runId: string, startedAt: number, now = Date.now()): ReturnType<SqliteChannelMessageRepository['retireScopeBefore']> {
+  beginScope(runId: string, startedAt: number, now = Date.now()): { outbound: number; presence: number } {
     const normalizedRunId = runId.trim()
     if (!normalizedRunId) throw new Error('TeamRun 作用域无效')
     const boundary = Math.max(0, Math.floor(startedAt))

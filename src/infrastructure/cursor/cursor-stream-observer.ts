@@ -39,7 +39,7 @@ const ATTACH_TIMEOUT_MS = 8_000
  * 自轮询重试（2s 间隔，上限 60 次），保证重载后 hook 自动恢复，不依赖重连。
  */
 export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
-  const HOOK_VERSION = 14
+  const HOOK_VERSION = 19
   let attempts = 0
   const pendingSnapshots = new Set()
   let snapshotQueued = false
@@ -67,10 +67,14 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       try { return JSON.parse(String(td?.rawArgs || '{}')) } catch (e) { return {} }
     })()
     const result = value?.result || td?.result
+    let mcpPending = false
     if (toolCase.toLowerCase() === 'mcptoolcall') {
       const server = args?.server || args?.serverName || value?.serverName || ''
       const called = args?.toolName || args?.name || value?.toolName || ''
       if (called) name = 'mcp-' + String(server || 'server') + '-' + String(called)
+      // MCP ToolCall 首帧可能只有 toolCase、真实工具名下一帧才水合（RC-5.1）：
+      // 占位名（mcpToolCall/mcp--）暂缓展示，水合后按真实名称分类展示或隐藏。
+      else mcpPending = true
     }
     const rawStatus = String(td?.status || value?.status || '').toLowerCase()
     let status = rawStatus === 'completed' || rawStatus === 'success' || rawStatus === 'done'
@@ -79,7 +83,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     const resultCase = String(result?.result?.case || result?.case || '').toLowerCase()
     if (status === 'running' && result !== undefined) status = resultCase === 'error' || resultCase === 'failure' ? 'failed' : 'done'
     const error = td?.error || result?.error || (resultCase === 'error' || resultCase === 'failure' ? result : undefined)
-    return { name, args, result, status, error }
+    return { name, args, result, status, error, mcpPending }
   }
   function isTransportNoise(name) {
     const lower = String(name || '').toLowerCase()
@@ -208,46 +212,98 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       const parsed = typeof raw === 'number' ? raw : Date.parse(String(raw || ''))
       return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
     }
-    const hasWork = turnBubbles.map(h => {
-      const message = map[h && h.bubbleId] || {}
-      const info = toolInfo(message.toolFormerData)
-      const thought = thinkingInfo(message)
-      return (!!info.name && !isTransportNoise(info.name)) || !!thought
-        || (!info.name && !thought && (message.capabilityType !== undefined || !!message.serviceStatusUpdate || !!message.planUpdate))
+    // ---- 阶段 D：以 Bubble 为单位的内部协议相位分组（RC-5 / RC-6）----
+    // pass 1：每个气泡的事实——工具分类（transport/business/pending）、思考、
+    // capability/serviceStatus、消息文本。pending = MCP ToolCall 未水合真实名。
+    const facts = turnBubbles.map(h => {
+      const m = map[h && h.bubbleId] || {}
+      const td = m.toolFormerData
+      const tool = toolInfo(td)
+      let toolClass = null
+      if (td && tool.mcpPending) toolClass = 'pending'
+      else if (td && tool.name) toolClass = isTransportNoise(tool.name) ? 'transport' : 'business'
+      const thought = thinkingInfo(m)
+      return { m, td, tool, toolClass, thought, startedAt: bubbleStartedAt(h, m) }
     })
+    // pass 2：传输相位归属（两套标记，用途不同）。
+    // 前向规则：非工具气泡之后最近的工具是内部协议 → 该气泡属协议相位
+    // （模型思考完直接轮询 check_messages → keepalive 思考、调用通告 capability）。
+    // 带正文的 message 气泡重置相位：模型输出了用户可见文字，之后再来的
+    // record_reply/check_messages 脚手架不得回溯吞掉正文之前的业务思考——
+    // 否则每次落库回复时，产出答案的 Thought 会在过程卡上凭空消失。
+    // - transportStrict：只认已水合的内部协议工具。用于 thinking 显示：pending
+    //   （MCP ToolCall 首帧尚无真实名）不隐藏其前置思考，避免每个业务 MCP 调用
+    //   开始时思考块消失一帧再重播（打字机从头再来）。
+    // - transportBiased：pending 按传输倾向处理。用于工作判定与 capability/
+    //   serviceStatus 显示：持续会话里 MCP 首帧几乎都是 check_messages 轮询，
+    //   若按未知归组，其前的 thinking 会构成「后续工作」，最终正文被误判为
+    //   中间过程（cursor-msg 与回复正文双渲染，2026-09-03 事故）；水合后自愈。
+    // 后向兜底：其后再无任何工具与消息、且前一工具是内部协议（回合尾部的
+    // 轮询余波），两套标记同时生效。
+    function hasText(f) { return typeof f.m.text === 'string' && Boolean(f.m.text.trim()) }
+    const transportStrict = new Array(facts.length).fill(false)
+    const transportBiased = new Array(facts.length).fill(false)
+    let nextToolClass = null
+    for (let i = facts.length - 1; i >= 0; i--) {
+      if (facts[i].toolClass) { nextToolClass = facts[i].toolClass; continue }
+      if (hasText(facts[i])) { nextToolClass = null; continue }
+      if (nextToolClass === 'transport') transportStrict[i] = true
+      if (nextToolClass === 'transport' || nextToolClass === 'pending') transportBiased[i] = true
+    }
+    // 后缀预扫描（O(n)）：messageAhead[i] = 其后是否还有带正文的气泡。
+    // 长持续回合的 turnBubbles 可达数千，逐气泡内层扫描会是 O(n²) 页面热点。
+    const messageAhead = new Array(facts.length).fill(false)
+    for (let i = facts.length - 2; i >= 0; i--) {
+      messageAhead[i] = messageAhead[i + 1] || hasText(facts[i + 1])
+    }
+    let prevToolClass = null
+    for (let i = 0; i < facts.length; i++) {
+      if (facts[i].toolClass) { prevToolClass = facts[i].toolClass; continue }
+      if (transportBiased[i]) continue
+      if (!messageAhead[i] && prevToolClass === 'transport') {
+        transportStrict[i] = true
+        transportBiased[i] = true
+      }
+    }
+    // pass 3：工作判定（RC-6）。内部协议工具、待水合 MCP、传输相位思考与
+    // capability/serviceStatus 都不算工作——最终正文之后只剩内部协议噪声时，
+    // 正文仍被识别为最终回答，不再误入 cursor-msg 与回复正文重复。业务工具、
+    // 业务思考、plan 更新算工作。
+    const hasWork = facts.map((f, i) => (
+      f.toolClass === 'business'
+      || (!!f.thought?.text && !transportBiased[i])
+      || (!f.toolClass && !f.thought?.text && !!f.m.planUpdate)
+    ))
     const hasLaterWork = new Array(hasWork.length).fill(false)
     let workSeen = false
     for (let i = hasWork.length - 1; i >= 0; i--) {
       hasLaterWork[i] = workSeen
       workSeen = workSeen || hasWork[i]
     }
-    for (let i = 0; i < turnBubbles.length; i++) {
+    for (let i = 0; i < facts.length; i++) {
       const h = turnBubbles[i]
-      const m = map[h && h.bubbleId] || {}
-      const startedAt = bubbleStartedAt(h, m)
-      const td = m.toolFormerData
+      const { m, td, tool, toolClass, thought, startedAt } = facts[i]
       const bubbleGenerating = generatingBubbleSet.has(String(h?.bubbleId || ''))
-      const thinking = thinkingInfo(m)
-      if (thinking?.text) {
+      if (thought?.text && !transportStrict[i]) {
         items.push({
-          kind: 'thinking', id: 'cursor-th:' + h.bubbleId, text: clipText(thinking.text, 24000),
-          status: bubbleGenerating && !toolInfo(td).name ? 'running' : 'done',
-          durationMs: typeof thinking.durationMs === 'number' ? thinking.durationMs : undefined,
+          kind: 'thinking', id: 'cursor-th:' + h.bubbleId, text: clipText(thought.text, 24000),
+          status: bubbleGenerating && !tool.name ? 'running' : 'done',
+          durationMs: typeof thought.durationMs === 'number' ? thought.durationMs : undefined,
           startedAt
         })
       }
-      // Cursor 原生 assistant-message 只在其后仍有 thinking/tool 时属于过程；
-      // 回合最后一段正文由 liveAgentResponse / record_reply 展示，避免重复。
+      // Cursor 原生 assistant-message 只在其后仍有工作时属于过程；回合最后一段
+      // 正文由 liveAgentResponse / record_reply 展示，避免重复。
       const messageText = typeof m.text === 'string' ? m.text.trim() : ''
-      const tool = toolInfo(td)
-      const laterWork = hasLaterWork[i] || (!!tool.name && !isTransportNoise(tool.name))
+      const laterWork = hasLaterWork[i] || toolClass === 'business'
       if (messageText && laterWork) {
         items.push({
           kind: 'message', id: 'cursor-msg:' + h.bubbleId,
           text: clipText(messageText, 12000), status: 'done', startedAt
         })
       }
-      if (td && tool.name) {
+      // 待水合 MCP（pending）暂缓展示；内部协议工具隐藏；业务工具完整保留。
+      if (toolClass === 'business') {
         items.push({
           kind: 'tool', id: 'cursor:' + h.bubbleId,
           toolName: String(tool.name).slice(0, 120), toolKind: classifyTool(tool.name),
@@ -258,7 +314,10 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
           startedAt
         })
       }
-      if (!tool.name && !thinking?.text && (m.capabilityType !== undefined || m.serviceStatusUpdate || m.planUpdate)) {
+      // capability/serviceStatus 属协议脚手架：传输相位内整组隐藏（含 pending 倾向，
+      // 它们不是打字机内容，晚一帧出现无感）；业务侧保留。planUpdate 始终保留（业务）。
+      if (!toolClass && !thought?.text && (!transportBiased[i] || m.planUpdate)
+        && (m.capabilityType !== undefined || m.serviceStatusUpdate || m.planUpdate)) {
         const capabilityName = m.planUpdate ? 'planUpdate'
           : m.capabilityType !== undefined ? 'capability:' + String(m.capabilityType) : 'serviceStatus'
         items.push({
@@ -289,14 +348,33 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
         input: safePlain(data.plan, 0), output: ''
       })
     }
+    // 流式正文（阶段 G 数据层）：与 Cursor 自身 UI 同一写信号、同一微任务读取
+    // 当前回合的最终正文候选——最后一个「其后没有业务工作」的正文气泡（与
+    // runtime inspect 的定位规则一致）。此前正文只经 inspect 轮询到达
+    //（120ms 节流 + CDP 往返 + 150ms 快循环），打字机输入是 150–250ms 的粗粒度
+    // chunk；写后直推把输入粒度对齐到 Cursor 原生 token 批次，是匀速播放的前提。
+    let response
+    for (let i = facts.length - 1; i >= 0; i--) {
+      const text = typeof facts[i].m.text === 'string' ? facts[i].m.text : ''
+      if (!text.trim()) continue
+      if (!hasLaterWork[i] && facts[i].toolClass !== 'business') {
+        const bubbleId = String(turnBubbles[i]?.bubbleId || '')
+        response = { id: bubbleId, text: clipText(text, 100000), generating: generatingBubbleSet.has(bubbleId) }
+      }
+      break
+    }
     const totalItemCount = items.length
     const keptItems = items.slice(-256)
     return {
       isGenerating,
-      process: items.length || todos?.length ? {
-        turnId, items: keptItems, todos, generatingBubbleCount,
+      response,
+      // 写后快照始终是当前回合可见窗口的完整集合（含空集）：snapshotComplete
+      // 标记本帧权威，服务层据此撤下缺席块。空集不坍缩成 undefined——否则
+      // 「过滤后无可见过程」与「本帧无过程载荷」不可区分，旧块永远无法撤回。
+      process: {
+        turnId, items: keptItems, todos, generatingBubbleCount, snapshotComplete: true,
         truncatedItemCount: Math.max(0, totalItemCount - keptItems.length) || undefined
-      } : undefined
+      }
     }
   }
   function scheduleProcessSnapshot(composerId) {
@@ -457,11 +535,29 @@ export interface CursorStreamObserverOptions {
   onStatus?: (status: { state: 'connected' | 'reconnecting' | 'unavailable'; detail: string; updatedAt: number }) => void
 }
 
+/** 写后快照携带的当前回合流式正文（最后一个其后无业务工作的正文气泡）。 */
+export interface CursorNativeResponse {
+  /** Cursor 原生 bubbleId；与 runtime inspect 的 responseId 同源，可跨来源合并。 */
+  id: string
+  text: string
+}
+
 export interface CursorNativeProcessEvent {
   composerId: string
   observedAt: number
   isGenerating: boolean
   process?: CursorProcessStream
+  response?: CursorNativeResponse
+}
+
+/** 宽容解析写后快照里的正文载荷；缺失/非法时返回 undefined（不影响过程帧）。 */
+export function parseNativeResponse(value: unknown): CursorNativeResponse | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  const id = typeof raw.id === 'string' ? raw.id.trim().slice(0, 200) : ''
+  const text = typeof raw.text === 'string' ? raw.text.slice(0, 100_000) : ''
+  if (!id || !text) return undefined
+  return { id, text }
 }
 
 interface PendingCall {
@@ -624,7 +720,8 @@ export class CursorStreamObserver {
               composerId,
               observedAt: typeof raw.observedAt === 'number' ? raw.observedAt : Date.now(),
               isGenerating: raw.isGenerating === true,
-              process: parseProcessStream(raw.process)
+              process: parseProcessStream(raw.process),
+              response: parseNativeResponse(raw.response)
             })
           }
         } catch {

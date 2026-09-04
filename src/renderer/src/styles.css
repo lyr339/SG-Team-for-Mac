@@ -1436,8 +1436,8 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 .v2-step.is-current i { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .v2-step + .v2-step::before { content: '—'; margin-right: 8px; color: var(--line); }
 
-/* Cursor 原生实时过程流：时间线底部的进行中回合 */
-.live-process-row .chat-bubble,
+/* Cursor 原生实时过程流：进行中回合与落库回复共用同一气泡外观——封口那一帧
+   不再从透明块切换成带边框气泡（padding/边框/阴影同时出现即高度跳变）。 */
 .cursor-work-row .chat-bubble { padding: 0; background: transparent; border: 0; box-shadow: none; }
 .live-process-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); font-size: var(--fs-10); font-weight: 600; }
 .live-process-badge .process-pulse { display: inline-block; width: 6px; height: 6px; margin-right: 0; }

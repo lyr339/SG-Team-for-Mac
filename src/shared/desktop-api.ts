@@ -34,6 +34,12 @@ export interface LiveProcessState {
   truncatedItemCount?: number
   startedAt: number
   updatedAt: number
+  /**
+   * 服务端确认的回合生成状态（RC-9）：Cursor 常把生成中的 Thinking 块标记为
+   * done，靠「某块 running」猜测会把仍在生成的直播过程误判为历史——
+   * 误判会跳过打字机播放器直接整段显示。渲染层以本字段为权威直播信号。
+   */
+  generating?: boolean
 }
 
 /** Cursor Composer 正在生成的原生回复；只存在于实时层，不写历史消息。 */

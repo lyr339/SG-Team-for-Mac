@@ -40,4 +40,38 @@ describe('ProcessTurnViewModel', () => {
       '补齐回归测试', '提交本轮改动', '观察实时日志', '更新实现文档'
     ])
   })
+
+  it('does not fabricate suggestions from plain numbered content lists (RC-11, §8.5-8)', () => {
+    // 图片内容说明被误判为建议操作的事故形态：无明确建议标题的编号列表
+    // 只是正文描述，不得生成任何建议按钮。
+    const imageDescription = [
+      '图中包含以下内容：',
+      '',
+      '1. **顶部文字**',
+      '2. **中间多组工具调用块**：交替出现 `mcp--` 调用与结果',
+      '3. 底部工具栏显示 capability:30'
+    ].join('\n')
+    expect(suggestedActionsFromText(imageDescription)).toEqual([])
+  })
+
+  it('normalizes suggestion candidates to plain text before rendering (RC-11, §8.5-9)', () => {
+    const text = [
+      '实现完成。',
+      '',
+      '**接下来可以**：',
+      '1. 运行 `npm test` 验证',
+      '2. 查看 **实现文档**',
+      '3. [发布说明](https://example.com) 存档'
+    ].join('\n')
+    expect(suggestedActionsFromText(text)).toEqual([
+      '运行 npm test 验证',
+      '查看 实现文档',
+      '发布说明 存档'
+    ])
+  })
+
+  it('treats bold lines as emphasis, not unordered list items', () => {
+    const text = '下一步建议：\n**最重要的操作**：先跑测试'
+    expect(suggestedActionsFromText(text)).toEqual([])
+  })
 })

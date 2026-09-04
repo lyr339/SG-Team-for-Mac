@@ -142,6 +142,10 @@ export interface TeamMemberRuntime {
   waiting: boolean
   /** 连接相位（waiting/processing/keepalive/need_reply_sync），在岗判定见 isAgentOnDuty。 */
   connectionPhase?: string
+  /** 已投递待回复的出站消息身份（回复同步守门，事实源 channel_presence）。 */
+  pendingOutboundId?: string
+  /** 回复同步守门开启时间；开放判定见 hasOpenReplySync。 */
+  pendingReplySyncSince?: number
   queueDepth: number
   lastSeenAt?: number
   /** Cursor/转录最近一次正面活动证据；与 MCP lastSeenAt 分离。 */
