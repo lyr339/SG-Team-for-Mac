@@ -25,6 +25,7 @@ import '../team-v2.css'
 import '../team-setup.css'
 import '../lobby/lobby.css'
 import '../controls.css'
+import '../workspace-inspector.css'
 
 type Listener<T> = (snapshot: T) => void
 
@@ -765,6 +766,29 @@ const api: QingtianDesktopApi = {
       lastTurnAt: previewNow
     }]] : []
   ))),
+  getWorkspaceReview: async () => ({
+    state: 'ready',
+    workspaceName: 'wedge-demo',
+    additions: 21,
+    deletions: 8,
+    revision: 'preview-review-1',
+    updatedAt: Date.now(),
+    files: [
+      { path: 'src/renderer/src/SessionWorkspace.tsx', status: 'modified', staged: false, unstaged: true, additions: 14, deletions: 5 },
+      { path: 'src/renderer/src/styles.css', status: 'modified', staged: false, unstaged: true, additions: 7, deletions: 3 }
+    ]
+  }),
+  getWorkspaceReviewFile: async ({ path, previousPath }) => ({
+    state: 'ready', path, previousPath, truncated: false,
+    hunks: [{
+      header: '@@ -628 +628 @@', skippedBefore: 627,
+      lines: [
+        { kind: 'context', text: '.session-usage { display: inline-flex; }', oldLine: 628, newLine: 628 },
+        { kind: 'deletion', text: '.session-usage__label { font-size: 9px; }', oldLine: 629 },
+        { kind: 'addition', text: '.session-usage__label { font-size: 11px; }', newLine: 629 }
+      ]
+    }]
+  }),
   onCursorUsageSnapshot: () => () => {},
   onTaskPoolSnapshot: () => () => {},
   onTeamControlSnapshot: (listener) => {

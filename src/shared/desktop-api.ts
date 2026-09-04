@@ -18,6 +18,7 @@ import type { CdpAutoHealEvent, CursorCdpSettings } from '../domain/cursor-cdp'
 import type { AccountAutomationRun, AccountAutomationSettings } from '../domain/account-automation'
 import type { CursorUpdatePreferences, CursorUpdateWriteResult } from '../domain/cursor-update'
 import type { CursorUsageSnapshot } from '../domain/cursor-usage'
+import type { WorkspaceReviewFileDiff, WorkspaceReviewSummary } from '../domain/workspace-review'
 
 export type BridgeConnectionState =
   | 'disconnected'
@@ -301,6 +302,10 @@ export interface QingtianDesktopApi {
   /** 当前 TeamRun 的 Cursor 会话用量快照；结束冻结，下轮启动清零。 */
   getCursorUsageSnapshot(): Promise<CursorUsageSnapshot>
   onCursorUsageSnapshot(listener: (snapshot: CursorUsageSnapshot) => void): () => void
+  /** 当前活动工作区的真实 Git 工作树审查摘要；右栏打开时按需读取。 */
+  getWorkspaceReview(): Promise<WorkspaceReviewSummary>
+  /** 按仓库相对路径读取单文件 unified diff；路径由主进程再次做工作区边界校验。 */
+  getWorkspaceReviewFile(input: { path: string; previousPath?: string }): Promise<WorkspaceReviewFileDiff>
   onTaskPoolSnapshot(listener: (snapshot: TaskPoolSnapshot) => void): () => void
   onTeamControlSnapshot(listener: (state: TeamControlSnapshot) => void): () => void
   onTeamCollaborationSnapshot(listener: (state: TeamCollaborationSnapshot) => void): () => void
@@ -339,6 +344,8 @@ export const IPC = {
   cursorCdpAutoHealEvent: 'cursor-cdp:auto-heal-event',
   cursorUsageGet: 'cursor-usage:get',
   cursorUsageSnapshot: 'cursor-usage:snapshot',
+  workspaceReviewGet: 'workspace-review:get',
+  workspaceReviewFile: 'workspace-review:file',
   accountAutomationGetSettings: 'account-automation:get-settings',
   accountAutomationSaveSettings: 'account-automation:save-settings',
   accountAutomationGetRun: 'account-automation:get-run',

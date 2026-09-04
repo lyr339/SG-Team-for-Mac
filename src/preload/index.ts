@@ -91,6 +91,8 @@ const api: QingtianDesktopApi = {
     return () => ipcRenderer.removeListener(IPC.snapshot, handler)
   },
   getCursorUsageSnapshot: () => ipcRenderer.invoke(IPC.cursorUsageGet),
+  getWorkspaceReview: () => ipcRenderer.invoke(IPC.workspaceReviewGet),
+  getWorkspaceReviewFile: (input) => ipcRenderer.invoke(IPC.workspaceReviewFile, input),
   onCursorUsageSnapshot: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]): void => listener(snapshot)
     ipcRenderer.on(IPC.cursorUsageSnapshot, handler)

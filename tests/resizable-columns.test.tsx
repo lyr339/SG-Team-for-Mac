@@ -52,4 +52,47 @@ describe('ResizableColumns collapsible first pane', () => {
     expect(localStorage.getItem('qingtian-team.layout:v1:collapse-test:collapsed')).toBe('0')
     await act(async () => root.unmount())
   })
+
+  it('supports a fixed right pane without changing the existing left-pane contract', async () => {
+    const root = createRoot(container)
+    await act(async () => root.render(
+      <ResizableColumns
+        finalPaneMinSize={400}
+        fixedPaneSide="end"
+        paneSpecs={[{ defaultSize: 420, minSize: 300, maxSize: 720 }]}
+        storageKey="right-pane-test"
+      >
+        <main>conversation</main><aside>review</aside>
+      </ResizableColumns>
+    ))
+    const layout = container.querySelector('.resizable-columns')
+    expect(layout?.classList.contains('is-fixed-end')).toBe(true)
+    expect(layout?.children[0]?.textContent).toBe('conversation')
+    expect(layout?.children[1]?.getAttribute('role')).toBe('separator')
+    expect(layout?.children[2]?.textContent).toBe('review')
+    await act(async () => root.unmount())
+  })
+
+  it('temporarily collapses the first pane without persisting over the user preference', async () => {
+    let forcedExpand = 0
+    const root = createRoot(container)
+    await act(async () => root.render(
+      <ResizableColumns
+        finalPaneMinSize={420}
+        forceFirstPaneCollapsed
+        onForcedFirstPaneExpand={() => { forcedExpand += 1 }}
+        paneSpecs={[{ defaultSize: 326, minSize: 286, maxSize: 420 }]}
+        storageKey="forced-collapse-test"
+        firstPaneCollapsible={{ collapseLabel: '收起会话列表', expandLabel: '展开会话列表' }}
+      >
+        <aside>sessions</aside><main>content</main>
+      </ResizableColumns>
+    ))
+    expect(container.textContent).not.toContain('sessions')
+    expect(localStorage.getItem('qingtian-team.layout:v1:forced-collapse-test:collapsed')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
+    expect(forcedExpand).toBe(1)
+    expect(localStorage.getItem('qingtian-team.layout:v1:forced-collapse-test:collapsed')).toBeNull()
+    await act(async () => root.unmount())
+  })
 })

@@ -3,6 +3,7 @@ import type { DesktopSnapshot } from '../../shared/desktop-api'
 import type { CursorWorkspaceDetection } from '../../domain/cursor-workspace'
 import {
   GridIcon,
+  InspectorIcon,
   SettingsIcon,
   SessionsIcon,
   WorkspaceIcon
@@ -17,6 +18,8 @@ interface DesktopShellProps {
   snapshot: DesktopSnapshot
   activeModule: AppModule
   sidebar: ReactNode
+  /** 会话页的按需右侧工作区；传入时顶栏出现停靠开关。 */
+  rightPanel?: (close: () => void) => ReactNode
   cursorWorkspace?: CursorWorkspaceDetection
   displayedWorkspaceId?: string
   wideContent?: boolean
@@ -66,6 +69,8 @@ const MODULE_LABELS: Record<AppModule, string> = {
 const MODULE_ORDER: AppModule[] = ['sessions', 'lobby']
 const CONTEXT_SIDEBAR_SPECS = [{ defaultSize: 270, minSize: 220, maxSize: 500 }] as const
 const SESSION_SIDEBAR_SPECS = [{ defaultSize: 326, minSize: 286, maxSize: 420 }] as const
+const INSPECTOR_SPECS = [{ defaultSize: 420, minSize: 300, maxSize: 720 }] as const
+const INSPECTOR_OPEN_KEY = 'qingtian-team.layout:v1:workspace-inspector:open'
 // 快捷键提示平台化：mac 显示 ⌘，其余平台（Windows）显示 Ctrl+；事件侧已兼容两键。
 const MODULE_SWITCH_MODIFIER = typeof document !== 'undefined'
   && document.documentElement.dataset.platform === 'darwin'
@@ -76,6 +81,7 @@ export function DesktopShell({
   snapshot,
   activeModule,
   sidebar,
+  rightPanel,
   cursorWorkspace,
   displayedWorkspaceId,
   wideContent = false,
@@ -90,6 +96,12 @@ export function DesktopShell({
 }: DesktopShellProps): React.JSX.Element {
   const [showConnection, setShowConnection] = useState(false)
   const [showAppearance, setShowAppearance] = useState(false)
+  const [showInspector, setShowInspector] = useState(() => {
+    try { return localStorage.getItem(INSPECTOR_OPEN_KEY) === '1' } catch { return false }
+  })
+  const [compactInspectorLayout, setCompactInspectorLayout] = useState(() => (
+    typeof window !== 'undefined' && window.matchMedia?.('(max-width: 1320px)').matches === true
+  ))
   const popoverRef = useRef<HTMLElement>(null)
   const appearanceRef = useRef<HTMLDivElement>(null)
   // 顶栏在线统计只按团队成员口径（备用/未编入通道不计入，避免 1/4 式困惑）
@@ -105,6 +117,21 @@ export function DesktopShell({
   const workspaceLabel = cursorWorkspace?.state === 'ambiguous'
     ? `${cursorWorkspace.candidates.length || '多'} 个 Cursor 工程`
     : detectedWorkspace ? `Cursor · ${detectedWorkspace.name}` : ''
+  const inspectorVisible = activeModule === 'sessions' && Boolean(rightPanel) && showInspector
+
+  const setInspectorVisible = (value: boolean): void => {
+    setShowInspector(value)
+    try { localStorage.setItem(INSPECTOR_OPEN_KEY, value ? '1' : '0') } catch { /* 当前窗口仍然生效。 */ }
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const query = window.matchMedia('(max-width: 1320px)')
+    const update = (): void => setCompactInspectorLayout(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
 
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
@@ -181,6 +208,17 @@ export function DesktopShell({
         </nav>
 
         <div className="topbar__actions">
+          {activeModule === 'sessions' && rightPanel ? (
+            <button
+              className={`inspector-button ${inspectorVisible ? 'is-active' : ''}`}
+              onClick={() => setInspectorVisible(!inspectorVisible)}
+              title={inspectorVisible ? '收起右侧工作区' : '展开右侧工作区'}
+              aria-label={inspectorVisible ? '收起右侧工作区' : '展开右侧工作区'}
+              aria-expanded={inspectorVisible}
+            >
+              <InspectorIcon />
+            </button>
+          ) : null}
           <div className="appearance-control" ref={appearanceRef}>
             <button
               className={`appearance-button ${showAppearance ? 'is-active' : ''}`}
@@ -257,13 +295,27 @@ export function DesktopShell({
             key={activeModule === 'sessions' ? 'shell.sessions' : 'shell.context'}
             paneSpecs={activeModule === 'sessions' ? SESSION_SIDEBAR_SPECS : CONTEXT_SIDEBAR_SPECS}
             storageKey={activeModule === 'sessions' ? 'shell.sessions.v2' : 'shell.context'}
+            forceFirstPaneCollapsed={inspectorVisible && compactInspectorLayout}
+            onForcedFirstPaneExpand={() => setInspectorVisible(false)}
             firstPaneCollapsible={activeModule === 'sessions' ? {
               collapseLabel: '收起会话列表',
               expandLabel: '展开会话列表'
             } : undefined}
           >
             {sidebar}
-            <main className="content-stage">{children}</main>
+            {inspectorVisible ? (
+              <ResizableColumns
+                className="workspace-dock"
+                dividerLabels={['调整右侧工作区宽度']}
+                finalPaneMinSize={400}
+                fixedPaneSide="end"
+                paneSpecs={INSPECTOR_SPECS}
+                storageKey="shell.workspace-inspector"
+              >
+                <main className="content-stage">{children}</main>
+                <div className="workspace-inspector-pane">{rightPanel?.(() => setInspectorVisible(false))}</div>
+              </ResizableColumns>
+            ) : <main className="content-stage">{children}</main>}
           </ResizableColumns>
         )}
       </div>

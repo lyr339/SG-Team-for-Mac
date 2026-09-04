@@ -69,6 +69,8 @@ import { CursorWorkspaceDetector } from '../infrastructure/cursor/cursor-workspa
 import { LocalSessionBridge } from '../application/local-session-bridge'
 import { IPC } from '../shared/desktop-api'
 import { createTeamAgentLaunchPromptPort } from '../application/team-agent-launch-prompts'
+import { WorkspaceReviewReader } from '../infrastructure/git/workspace-review-reader'
+import { registerWorkspaceReviewIpc } from './register-workspace-review-ipc'
 
 let mainWindow: BrowserWindow | undefined
 let disposeIpc: (() => void) | undefined
@@ -86,6 +88,7 @@ let disposeCdpKeeperIpc: (() => void) | undefined
 let disposeCursorUsageIpc: (() => void) | undefined
 let disposeCursorUpdateIpc: (() => void) | undefined
 let disposeWindowChromeIpc: (() => void) | undefined
+let disposeWorkspaceReviewIpc: (() => void) | undefined
 let cursorCdpKeeperRef: CursorCdpKeeper | undefined
 /** 退出前清理账号自动化浏览器宿主（按当前设置解析：指纹=关窗断连；外部=noop）。 */
 let accountBrowserHostDisposeRef: (() => Promise<void>) | undefined
@@ -335,6 +338,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     const snapshot = teamControlSnapshotForObserver.getSnapshot()
     return snapshot.workspaces.find((workspace) => workspace.id === snapshot.activeWorkspaceId)?.path
   }
+  const workspaceReviewReader = new WorkspaceReviewReader(activeTeamWorkspacePath)
   const cursorUsageStore = new CursorUsageStore(join(app.getPath('userData'), 'cursor-usage.json'))
   const initialUsageTeam = teamControlService.getSnapshot()
   let usageRunId = initialUsageTeam.activeRun?.id
@@ -628,6 +632,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   )
   disposeCdpKeeperIpc = registerCdpKeeperIpc(cursorCdpKeeper, cursorCdpSettingsStore, () => mainWindow)
   disposeCursorUsageIpc = registerCursorUsageIpc(cursorUsageTracker, () => mainWindow)
+  disposeWorkspaceReviewIpc = registerWorkspaceReviewIpc(workspaceReviewReader, () => mainWindow)
   disposeCursorUpdateIpc = registerCursorUpdateIpc(cursorUpdatePreferencesStore, () => mainWindow)
   disposeWindowChromeIpc = registerWindowChromeIpc(() => mainWindow)
   disposeAccountAutomationIpc = registerAccountAutomationIpc(accountAutomationService, () => mainWindow, {
@@ -703,6 +708,7 @@ app.on('before-quit', () => {
   disposeCursorUsageIpc?.()
   disposeCursorUpdateIpc?.()
   disposeWindowChromeIpc?.()
+  disposeWorkspaceReviewIpc?.()
   cursorCdpKeeperRef?.stop()
   teamControlService?.dispose()
   teamControlRepository?.close()

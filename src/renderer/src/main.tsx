@@ -8,6 +8,7 @@ import './team-v2.css'
 import './team-setup.css'
 import './lobby/lobby.css'
 import './controls.css'
+import './workspace-inspector.css'
 
 applyAppearancePreferences(readAppearancePreferences())
 

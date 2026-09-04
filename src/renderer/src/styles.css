@@ -375,7 +375,7 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 
 .topbar__actions { min-width: 0; justify-self: end; display: flex; align-items: center; gap: 8px; overflow: visible; }
 .appearance-control { position: relative; flex: 0 0 auto; display: grid; place-items: center; }
-.appearance-button {
+.appearance-button, .inspector-button {
   width: 36px; height: 36px;
   display: grid; place-items: center;
   padding: 0;
@@ -385,8 +385,8 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
   border-radius: 10px;
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
 }
-.appearance-button:hover, .appearance-button.is-active { color: var(--accent-deep); background: var(--surface-solid); border-color: var(--accent-border); }
-.appearance-button svg { width: 17px; height: 17px; }
+.appearance-button:hover, .appearance-button.is-active, .inspector-button:hover, .inspector-button.is-active { color: var(--accent-deep); background: var(--surface-solid); border-color: var(--accent-border); }
+.appearance-button svg, .inspector-button svg { width: 17px; height: 17px; }
 .appearance-popover {
   position: absolute;
   top: calc(100% + 8px); right: 0;
@@ -484,6 +484,7 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 .resizable-columns { --resize-handle-size: 10px; position: relative; min-width: 0; min-height: 0; display: grid; }
 .resizable-columns--1 { grid-template-columns: minmax(0, 1fr); }
 .resizable-columns--2 { grid-template-columns: minmax(0, var(--resizable-pane-0)) var(--resize-handle-size) minmax(var(--resizable-final-min), 1fr); }
+.resizable-columns--2.is-fixed-end { grid-template-columns: minmax(var(--resizable-final-min), 1fr) var(--resize-handle-size) minmax(0, var(--resizable-pane-0)); }
 .resizable-columns--3 { grid-template-columns: minmax(0, var(--resizable-pane-0)) var(--resize-handle-size) minmax(0, var(--resizable-pane-1)) var(--resize-handle-size) minmax(var(--resizable-final-min), 1fr); }
 .resizable-columns--2.is-first-pane-collapsed { grid-template-columns: minmax(var(--resizable-final-min), 1fr); }
 .resizable-pane-toggle { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; color: var(--muted); background: color-mix(in srgb, var(--surface-solid) 54%, transparent); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow-hairline); backdrop-filter: blur(8px); transition: color 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease; }
@@ -522,6 +523,7 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 
 .content-stage { min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); border-radius: var(--r-xl); box-shadow: var(--shadow-1); }
 .context-sidebar { min-width: 0; min-height: 0; overflow: hidden; background: var(--surface); border-radius: var(--r-xl); box-shadow: var(--shadow-1); }
+.workspace-dock, .workspace-inspector-pane { min-width: 0; min-height: 0; overflow: hidden; }
 
 /* ============================================================
    会话侧栏（session pane）

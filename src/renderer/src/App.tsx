@@ -13,6 +13,7 @@ import { DesktopShell, type AppModule } from './DesktopShell'
 import { SessionOverview } from './SessionOverview'
 import { SessionWorkspace } from './SessionWorkspace'
 import { SessionSidebar } from './SessionSidebar'
+import { WorkspaceInspector } from './WorkspaceInspector'
 import { LobbyPage, type ConfigurationSection } from './lobby/LobbyPage'
 import { TeamSetupPage } from './team/TeamSetupPage'
 import { ManualHandoffDialog } from './team/ManualHandoffDialog'
@@ -879,6 +880,16 @@ export function App(): React.JSX.Element {
           onSelectSession={selectSession}
         />
       ) : null}
+      rightPanel={selectedSession ? (close) => (
+        <WorkspaceInspector
+          session={selectedSession}
+          entries={snapshot.conversations[selectedSession.channelId] ?? []}
+          liveProcess={snapshot.liveProcess?.[selectedSession.channelId]}
+          workspaceId={activeWorkspace?.id}
+          workspaceName={activeProjectName}
+          onClose={close}
+        />
+      ) : undefined}
       cursorWorkspace={cursorWorkspace}
       displayedWorkspaceId={teamSetup?.workspaceId ?? teamControl.activeWorkspaceId}
       wideContent={activeModule === 'lobby'}

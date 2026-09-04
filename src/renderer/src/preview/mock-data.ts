@@ -311,7 +311,15 @@ export const desktopSnapshot: DesktopSnapshot = {
         { kind: 'message', id: 'live-message', text: '先检查过程卡的实时渲染，再运行浏览器验证。', status: 'done' },
         { kind: 'tool', id: 'live-2', toolName: 'Search', toolKind: 'search', summary: 'process 展示', status: 'done', output: '命中 3 个文件' },
         { kind: 'tool', id: 'live-3', toolName: 'browser_navigate', toolKind: 'browser', summary: 'http://127.0.0.1:5173', status: 'done', output: '页面已加载' },
-        { kind: 'tool', id: 'live-4', toolName: 'run_terminal_cmd', toolKind: 'command', summary: 'npx vitest run tests/relay', status: 'running', input: { command: 'npx vitest run tests/relay' } }
+        { kind: 'tool', id: 'live-4', toolName: 'run_terminal_cmd', toolKind: 'command', summary: 'npx vitest run tests/relay', status: 'running', input: { command: 'npx vitest run tests/relay' } },
+        {
+          kind: 'tool', id: 'live-todos', toolName: 'todos', toolKind: 'todo', summary: '任务清单 1/3', status: 'running',
+          todos: [
+            { content: '核对右侧工作区信息架构', status: 'completed' },
+            { content: '实现 Review 与 Cursor Todos 标签', status: 'in_progress' },
+            { content: '完成响应式和透明模式走查', status: 'pending' }
+          ]
+        }
       ]
     }
   },
