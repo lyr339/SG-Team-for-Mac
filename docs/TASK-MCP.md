@@ -64,6 +64,25 @@ The legacy QingTian bridge does not expose Cursor `composerId`, so the current c
 
 Bridge v1 will upgrade this to `workspaceId + composerId + runtime generation` without changing the task protocol.
 
+## Communication tools and the session fence
+
+`check_messages` and `record_reply` are the only user-facing communication tools. Both take `channel_id` and an optional `session`:
+
+```text
+check_messages({ channel_id: '2', session?: '<seat token>', reply?: string })
+record_reply({ channel_id: '2', session?: '<seat token>', content, title?, groupId?, taskId?, files? })
+```
+
+- `session` is the per-seat token (`^[a-zA-Z0-9_-]{8,128}$`) that the launch hint / role briefing hands to the Cursor session. It is issued when the seat is installed, rotated when the seat is rebuilt, cleared on standby takeover, and moved with the donor on manual handoff. The Agent never invents it; if the launch instruction did not include one, the call is made without it.
+- Without `session` the call is `legacy` and follows the previous contract unchanged (sessions created before the upgrade, standby takeovers).
+- With `session` the server checks the channel's owner in the active run before any presence write. Mismatch, an unbound channel, a completed run or no active run returns a **retired** result:
+  - `check_messages` → plain text starting with `[system] 会话围栏：…`, telling the Agent this is a server-side stop equivalent to the user asking it to stop: no further `check_messages` / `record_reply`, no visible reply, no retry.
+  - `record_reply` → `isError` with `{ ok: false, code: 'session_retired', message }`; nothing is stored.
+  - A retired caller never refreshes `channel_presence`, so the new seat on the same channel is not lit up by the old session.
+- Ownership lookups that fail (for example a locked database) fail open: the fence only rejects on positive evidence.
+
+Presence phases seen by the desktop: `waiting` / `keepalive` / `processing` / `need_reply_sync` (protocol), `cursor_stopped` / `tool_aborted` (explicit termination), `retired` (scope moved to another run; explicit stop until new life evidence), `reviving` (transition after a heartbeat or CDP activity revives a stopped phase).
+
 ## Workflow contract
 
 ```text
