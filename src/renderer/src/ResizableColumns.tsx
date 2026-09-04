@@ -27,8 +27,6 @@ interface ResizableColumnsProps {
   fixedPaneSide?: 'start' | 'end'
   /** 首栏收起态由外层导航控制；组件只负责布局。 */
   firstPaneCollapsed?: boolean
-  /** 窄窗口的临时收起态；不会覆盖用户保存的偏好。 */
-  forceFirstPaneCollapsed?: boolean
 }
 
 const STORAGE_PREFIX = 'qingtian-team.layout:v1:'
@@ -67,7 +65,6 @@ export function ResizableColumns({
   storageKey,
   fixedPaneSide = 'start',
   firstPaneCollapsed = false,
-  forceFirstPaneCollapsed = false,
 }: ResizableColumnsProps): React.JSX.Element {
   const items = Children.toArray(children)
   const [committedSizes, setCommittedSizes] = useState(() => readStoredSizes(storageKey, paneSpecs))
@@ -212,7 +209,7 @@ export function ResizableColumns({
     '--resizable-final-min': `${finalPaneMinSize}px`,
     ...Object.fromEntries(sizesRef.current.map((size, index) => [`--resizable-pane-${index}`, `${size}px`]))
   } as CSSProperties
-  const collapsed = items.length === 2 && (firstPaneCollapsed || forceFirstPaneCollapsed) && !compactLayout
+  const collapsed = items.length === 2 && firstPaneCollapsed && !compactLayout
 
   return (
     <div

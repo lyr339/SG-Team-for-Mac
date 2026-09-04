@@ -103,9 +103,6 @@ export function DesktopShell({
   const [sessionSidebarCollapsed, setSessionSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem(SESSION_SIDEBAR_COLLAPSED_KEY) === '1' } catch { return false }
   })
-  const [compactInspectorLayout, setCompactInspectorLayout] = useState(() => (
-    typeof window !== 'undefined' && window.matchMedia?.('(max-width: 1320px)').matches === true
-  ))
   const popoverRef = useRef<HTMLElement>(null)
   const appearanceRef = useRef<HTMLDivElement>(null)
   // 顶栏在线统计只按团队成员口径（备用/未编入通道不计入，避免 1/4 式困惑）
@@ -122,8 +119,7 @@ export function DesktopShell({
     ? `${cursorWorkspace.candidates.length || '多'} 个 Cursor 工程`
     : detectedWorkspace ? `Cursor · ${detectedWorkspace.name}` : ''
   const inspectorVisible = activeModule === 'sessions' && Boolean(rightPanel) && showInspector
-  const sidebarForcedCollapsed = inspectorVisible && compactInspectorLayout
-  const sidebarVisible = activeModule === 'sessions' && !sessionSidebarCollapsed && !sidebarForcedCollapsed
+  const sidebarVisible = activeModule === 'sessions' && !sessionSidebarCollapsed
 
   const setInspectorVisible = (value: boolean): void => {
     setShowInspector(value)
@@ -131,19 +127,9 @@ export function DesktopShell({
   }
 
   const setSidebarVisible = (value: boolean): void => {
-    if (value && sidebarForcedCollapsed) setInspectorVisible(false)
     setSessionSidebarCollapsed(!value)
     try { localStorage.setItem(SESSION_SIDEBAR_COLLAPSED_KEY, value ? '0' : '1') } catch { /* 当前窗口仍然生效。 */ }
   }
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return
-    const query = window.matchMedia('(max-width: 1320px)')
-    const update = (): void => setCompactInspectorLayout(query.matches)
-    update()
-    query.addEventListener('change', update)
-    return () => query.removeEventListener('change', update)
-  }, [])
 
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
@@ -319,7 +305,6 @@ export function DesktopShell({
             paneSpecs={activeModule === 'sessions' ? SESSION_SIDEBAR_SPECS : CONTEXT_SIDEBAR_SPECS}
             storageKey={activeModule === 'sessions' ? 'shell.sessions.v2' : 'shell.context'}
             firstPaneCollapsed={activeModule === 'sessions' && sessionSidebarCollapsed}
-            forceFirstPaneCollapsed={sidebarForcedCollapsed}
           >
             {sidebar}
             {inspectorVisible ? (

@@ -64,20 +64,4 @@ describe('ResizableColumns collapsible first pane', () => {
     await act(async () => root.unmount())
   })
 
-  it('lets the shell force a temporary collapse without adding local state or controls', async () => {
-    const root = createRoot(container)
-    await act(async () => root.render(
-      <ResizableColumns
-        finalPaneMinSize={420}
-        forceFirstPaneCollapsed
-        paneSpecs={[{ defaultSize: 326, minSize: 286, maxSize: 420 }]}
-        storageKey="forced-collapse-test"
-      >
-        <aside>sessions</aside><main>content</main>
-      </ResizableColumns>
-    ))
-    expect(container.textContent).not.toContain('sessions')
-    expect(container.querySelector('.resizable-pane-toggle')).toBeNull()
-    await act(async () => root.unmount())
-  })
 })
