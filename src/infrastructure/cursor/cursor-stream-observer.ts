@@ -1,5 +1,6 @@
 import WebSocket from 'ws'
 import type { CursorUsageEvent } from '../../domain/cursor-usage'
+import { CHANNEL_USER_DELIVERY_MARKER } from '../../domain/channel-delivery-policy'
 import { parseProcessStream, type CursorProcessStream } from './cursor-cdp-session-creator'
 
 /**
@@ -39,7 +40,7 @@ const ATTACH_TIMEOUT_MS = 8_000
  * 自轮询重试（2s 间隔，上限 60 次），保证重载后 hook 自动恢复，不依赖重连。
  */
 export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
-  const HOOK_VERSION = 19
+  const HOOK_VERSION = 20
   let attempts = 0
   const pendingSnapshots = new Set()
   let snapshotQueued = false
@@ -90,6 +91,49 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     return ['check_messages', 'record_reply', 'wait_messages', 'qingtian'].some(item => (
       lower === item || lower.endsWith('-' + item) || lower.endsWith('_' + item)
     ))
+  }
+  // 传输工具结果里的文本片段（不裁剪、不展开 image/base64）：MCP 结果在 Cursor 内存与
+  // 落盘态都是双层 JSON 字符串 {"result":"{\\"content\\":[{\\"type\\":\\"text\\",\\"text\\":…}]}"}。
+  function collectResultTexts(value, depth, out) {
+    if (value === null || value === undefined || depth > 6 || out.length > 30) return
+    if (typeof value === 'string') {
+      const text = value.trim()
+      if ((text.startsWith('{') || text.startsWith('[')) && text.length < 2000000) {
+        try { collectResultTexts(JSON.parse(text), depth + 1, out); return } catch (e) {}
+      }
+      out.push(value)
+      return
+    }
+    if (Array.isArray(value)) { for (const item of value.slice(0, 30)) collectResultTexts(item, depth + 1, out); return }
+    if (typeof value === 'object') {
+      if (typeof value.text === 'string') out.push(value.text)
+      for (const key of ['result', 'output', 'content', 'contents']) {
+        if (value[key] !== undefined) collectResultTexts(value[key], depth + 1, out)
+      }
+    }
+  }
+  // 「本次 check_messages 投递了真实用户消息」：结果文本含投递协议标题（正面证据）。
+  // keepalive 返回体、内部协作通知、need_reply_sync、会话围栏文本都不含它。结果一旦到齐
+  // 不再变化——按 bubbleId 记忆，长会话里不重复解析同一结果。
+  const USER_DELIVERY_MARKER = ${JSON.stringify(CHANNEL_USER_DELIVERY_MARKER)}
+  const deliveryByBubble = new Map()
+  function isUserDelivery(bubbleId, tool) {
+    if (!tool || !tool.name || tool.result === undefined || tool.result === null) return false
+    const lower = String(tool.name).toLowerCase()
+    if (!(lower === 'check_messages' || lower.endsWith('-check_messages') || lower.endsWith('_check_messages'))) return false
+    const key = String(bubbleId || '')
+    if (key && deliveryByBubble.has(key)) return deliveryByBubble.get(key)
+    let delivered = false
+    try {
+      const texts = []
+      collectResultTexts(tool.result, 0, texts)
+      delivered = texts.some(text => text.includes(USER_DELIVERY_MARKER))
+    } catch (e) { delivered = false }
+    if (key && tool.status !== 'running') {
+      if (deliveryByBubble.size > 2000) deliveryByBubble.clear()
+      deliveryByBubble.set(key, delivered)
+    }
+    return delivered
   }
   function thinkingInfo(message) {
     const direct = typeof message?.thinking === 'string'
@@ -238,8 +282,12 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     //   serviceStatus 显示：持续会话里 MCP 首帧几乎都是 check_messages 轮询，
     //   若按未知归组，其前的 thinking 会构成「后续工作」，最终正文被误判为
     //   中间过程（cursor-msg 与回复正文双渲染，2026-09-03 事故）；水合后自愈。
-    // 后向兜底：其后再无任何工具与消息、且前一工具是内部协议（回合尾部的
-    // 轮询余波），两套标记同时生效。
+    // 后向兜底：其后再无正文、且前一工具是内部协议（回合尾部的轮询余波），两套
+    // 标记同时生效。例外——前一工具是「投递了真实用户消息」的 check_messages：
+    // 其后的 thinking 是新回合的业务思考，不是余波。结构上两者完全相同（前一
+    // 工具都是 check_messages、其后都暂无正文），只能靠工具结果区分；不区分就会把
+    // 投递后的首段（往往最长的）思考整段隐藏到正文出现才蹦出（2026-09-04 事故：
+    // 38s Thought 全程只显示占位，随后无打字机整段出现）。
     function hasText(f) { return typeof f.m.text === 'string' && Boolean(f.m.text.trim()) }
     const transportStrict = new Array(facts.length).fill(false)
     const transportBiased = new Array(facts.length).fill(false)
@@ -257,10 +305,12 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       messageAhead[i] = messageAhead[i + 1] || hasText(facts[i + 1])
     }
     let prevToolClass = null
+    let prevToolIndex = -1
     for (let i = 0; i < facts.length; i++) {
-      if (facts[i].toolClass) { prevToolClass = facts[i].toolClass; continue }
+      if (facts[i].toolClass) { prevToolClass = facts[i].toolClass; prevToolIndex = i; continue }
       if (transportBiased[i]) continue
-      if (!messageAhead[i] && prevToolClass === 'transport') {
+      if (!messageAhead[i] && prevToolClass === 'transport'
+        && !isUserDelivery(turnBubbles[prevToolIndex] && turnBubbles[prevToolIndex].bubbleId, facts[prevToolIndex].tool)) {
         transportStrict[i] = true
         transportBiased[i] = true
       }

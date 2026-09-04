@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import WebSocket from 'ws'
 import { sanitizeModelDisplayText } from '../../domain/model-output-sanitizer'
+import { CHANNEL_USER_DELIVERY_MARKER } from '../../domain/channel-delivery-policy'
 import type { CursorModelSelection } from '../../domain/cursor-model'
 
 /**
@@ -439,6 +440,55 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
       const modernArgs = td && td.toolCall && td.toolCall.tool && td.toolCall.tool.value && td.toolCall.tool.value.args;
       return String(td && td.name || modernArgs && (modernArgs.toolName || modernArgs.name) || '');
     }
+    // 与 observer processSnapshot 同语义：check_messages 结果含真实用户消息投递标题 →
+    // 其后的 thinking 是新回合业务工作，不按尾部轮询余波归组。
+    const USER_DELIVERY_MARKER = ${JSON.stringify(CHANNEL_USER_DELIVERY_MARKER)};
+    function collectResultTexts(value, depth, out) {
+      if (value === null || value === undefined || depth > 6 || out.length > 30) return;
+      if (typeof value === 'string') {
+        const text = value.trim();
+        if ((text.startsWith('{') || text.startsWith('[')) && text.length < 2000000) {
+          try { collectResultTexts(JSON.parse(text), depth + 1, out); return; } catch (e) {}
+        }
+        out.push(value);
+        return;
+      }
+      if (Array.isArray(value)) { for (const item of value.slice(0, 30)) collectResultTexts(item, depth + 1, out); return; }
+      if (typeof value === 'object') {
+        if (typeof value.text === 'string') out.push(value.text);
+        for (const key of ['result', 'output', 'content', 'contents']) {
+          if (value[key] !== undefined) collectResultTexts(value[key], depth + 1, out);
+        }
+      }
+    }
+    // 结果到齐后不再变化：按 bubbleId 记忆在 window 上，150ms 一次的 inspect 不重复解析
+    // 带图片投递的大结果串（数百 KB）。
+    const deliveryMemo = window.__sgTeamDeliveryByBubble instanceof Map
+      ? window.__sgTeamDeliveryByBubble
+      : (window.__sgTeamDeliveryByBubble = new Map());
+    function isUserDelivery(bubbleId, later) {
+      const td = later && later.toolFormerData;
+      if (!td) return false;
+      const lower = extractToolName(later).toLowerCase();
+      if (!(lower === 'check_messages' || lower.endsWith('-check_messages') || lower.endsWith('_check_messages'))) return false;
+      const key = String(bubbleId || '');
+      if (key && deliveryMemo.has(key)) return deliveryMemo.get(key);
+      const modern = td.toolCall && td.toolCall.tool && td.toolCall.tool.value;
+      const result = modern && modern.result !== undefined ? modern.result : td.result;
+      if (result === undefined || result === null) return false;
+      let delivered = false;
+      try {
+        const texts = [];
+        collectResultTexts(result, 0, texts);
+        delivered = texts.some(text => text.includes(USER_DELIVERY_MARKER));
+      } catch (e) { delivered = false; }
+      const status = String(td.status || '').toLowerCase();
+      if (key && status && status !== 'running' && status !== 'pending') {
+        if (deliveryMemo.size > 2000) deliveryMemo.clear();
+        deliveryMemo.set(key, delivered);
+      }
+      return delivered;
+    }
     const rows = [];
     for (const composerId of ${ids}) {
       try {
@@ -502,10 +552,16 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
               || (typeof later.text === 'string' && Boolean(later.text.trim()));
           }
           let prevToolPhase = null;
+          let prevToolIndex = -1;
           for (let k = lastUser + 1; k < headers.length; k++) {
-            if (toolPhase[k]) { prevToolPhase = toolPhase[k]; continue; }
+            if (toolPhase[k]) { prevToolPhase = toolPhase[k]; prevToolIndex = k; continue; }
             if (transportAssociated[k]) continue;
-            if (!messageAhead[k] && prevToolPhase === 'transport') transportAssociated[k] = true;
+            // 尾部兜底的例外：前一工具是投递了真实用户消息的 check_messages（与 observer 同语义）。
+            const prevBubbleId = headers[prevToolIndex] && headers[prevToolIndex].bubbleId;
+            if (!messageAhead[k] && prevToolPhase === 'transport'
+              && !isUserDelivery(prevBubbleId, map[prevBubbleId])) {
+              transportAssociated[k] = true;
+            }
           }
           for (let i = headers.length - 1; i > lastUser; i--) {
             const header = headers[i];

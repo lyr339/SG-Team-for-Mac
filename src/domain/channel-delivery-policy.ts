@@ -18,10 +18,17 @@ export interface ChannelDeliveryContext {
   channelId: string
 }
 
+/**
+ * 真实用户消息投递后缀的标题行。除了给 Agent 的协议提醒，它还是 Cursor 过程观察器
+ * 判定「这次 check_messages 投递了用户可见消息」的正面证据：其后的 thinking 是
+ * 业务思考而非轮询余波（keepalive 返回体、内部协作通知、need_reply_sync 都不含它）。
+ */
+export const CHANNEL_USER_DELIVERY_MARKER = '【真实用户消息处理完后进入 check_messages 待命】'
+
 const CALL_REMINDER = [
   '',
   '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-  '【真实用户消息处理完后进入 check_messages 待命】',
+  CHANNEL_USER_DELIVERY_MARKER,
   '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
   '- 思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件；不要额外复述或上报过程',
   '- 处理真实用户消息并输出可见回复后，先 record_reply 同步完整可见回复，再调用 check_messages 待命',

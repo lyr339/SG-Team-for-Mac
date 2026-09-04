@@ -6,6 +6,7 @@ import {
   type CursorNativeProcessEvent,
   type StreamObserverSocket
 } from '../src/infrastructure/cursor/cursor-stream-observer'
+import { CHANNEL_USER_DELIVERY_MARKER } from '../src/domain/channel-delivery-policy'
 
 interface SentCall {
   id: number
@@ -95,7 +96,7 @@ describe('CursorStreamObserver', () => {
       }
     }
     runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
-    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(19)
+    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(20)
     expect(manager.markDirty({ composerId: 'composer-1' })).toBe(1)
     expect(observed).toEqual([1])
     await manager.updateWithoutMarkingDirty({ composerId: 'composer-1' })
@@ -732,6 +733,89 @@ describe('阶段 D：Bubble 级内部协议相位分组（RC-5 / RC-5.1 / RC-6�
     runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, second.context)
     const items = await collect(second.context, second.frames)
     expect(items.map((item) => item.id)).toEqual(['cursor-th:th-biz'])
+  })
+
+  // Cursor 落盘的 MCP 工具结果形态（2026-09-04 从 state.vscdb 实取）：
+  // toolFormerData.result 是双层 JSON 字符串：{"result":"{\"content\":[{\"type\":\"text\",\"text\":…}]}"}
+  function mcpResult(text: string): string {
+    return JSON.stringify({ result: JSON.stringify({ content: [{ type: 'text', text }] }) })
+  }
+  const deliveredUserMessage = [
+    '如图这里流式过程呈现的有点问题，请你来深度分析根因',
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    CHANNEL_USER_DELIVERY_MARKER,
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '- 思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件',
+    '',
+    '[轮次 #321 · 队列剩余 0 条]'
+  ].join('\n')
+
+  it('keeps the business thinking that follows a delivered user message visible while it is still running (2026-09-04：38s Thought 被隐藏到正文出现)', async () => {
+    // 实机形态：record_reply → check_messages（投递了真实用户消息）→ 模型开始长思考。
+    // 旧的尾部兜底把「前一工具是内部协议、其后暂无正文」的 thinking 一律判成轮询余波
+    // 隐藏，直到后面出现正文才整段蹦出——投递后的首段业务思考因此整段不可见。
+    const headers: Array<Record<string, unknown>> = [
+      { type: 1, bubbleId: 'user-1' },
+      { type: 2, bubbleId: 'tool-record' },
+      { type: 2, bubbleId: 'tool-check' },
+      { type: 2, bubbleId: 'th-biz' }
+    ]
+    const map: Record<string, Record<string, unknown>> = {
+      'tool-record': { toolFormerData: { name: 'mcp-SG Team-record_reply', status: 'completed', result: mcpResult('{"ok":true}') } },
+      'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed', result: mcpResult(deliveredUserMessage) } },
+      'th-biz': { thinking: { text: 'Looking at the screenshots, I notice the same message text appears duplicated…' } }
+    }
+    let generating = ['th-biz']
+    const { context, frames } = hookContext(() => ({
+      fullConversationHeadersOnly: headers, conversationMap: map, generatingBubbleIds: generating
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+
+    // 思考进行中、其后还没有任何工具或正文：必须实时可见（running）。
+    let items = await collect(context, frames)
+    expect(items.map((item) => `${item.id}:${item.status}`)).toEqual(['cursor-th:th-biz:running'])
+
+    // 思考结束 → 业务工具（Shell），仍无正文：思考继续可见，不因「其后无正文」被回收。
+    headers.push({ type: 2, bubbleId: 'tool-shell' })
+    map['th-biz'] = { thinking: { text: 'Looking at the screenshots, I notice the same message text appears duplicated…', thinkingDurationMs: 38429 } }
+    map['tool-shell'] = { toolFormerData: { name: 'run_terminal_command_v2', status: 'completed', params: { command: 'git status --short' } } }
+    generating = []
+    items = await collect(context, frames)
+    expect(items.map((item) => item.id)).toEqual(['cursor-th:th-biz', 'cursor:tool-shell'])
+    expect(items[0]).toMatchObject({ status: 'done', durationMs: 38429 })
+  })
+
+  it('still hides the polling aftermath after a keepalive result or a silent collaboration notification', async () => {
+    const keepalive = hookContext(() => ({
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'tool-check' },
+        { type: 2, bubbleId: 'th-keep' }
+      ],
+      conversationMap: {
+        'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed', result: mcpResult('<sg_team_keepalive n="4"/>') } },
+        'th-keep': { thinking: { text: '没有新消息，继续静默等待。' } }
+      },
+      generatingBubbleIds: ['th-keep']
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, keepalive.context)
+    expect(await collect(keepalive.context, keepalive.frames)).toEqual([])
+
+    const silent = hookContext(() => ({
+      fullConversationHeadersOnly: [
+        { type: 1, bubbleId: 'user-1' },
+        { type: 2, bubbleId: 'tool-check' },
+        { type: 2, bubbleId: 'th-internal' }
+      ],
+      conversationMap: {
+        'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed', result: mcpResult('【拾光内部协作通知】有新的团队消息\n\n---\n【内部协作通知协议】\n- 不要向用户输出可见文字') } },
+        'th-internal': { thinking: { text: '先读一下收件箱。' } }
+      },
+      generatingBubbleIds: ['th-internal']
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, silent.context)
+    expect(await collect(silent.context, silent.frames)).toEqual([])
   })
 })
 

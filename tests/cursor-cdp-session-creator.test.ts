@@ -8,6 +8,7 @@ import {
   parseProcessStream,
   type CursorCdpTarget
 } from '../src/infrastructure/cursor/cursor-cdp-session-creator'
+import { CHANNEL_USER_DELIVERY_MARKER } from '../src/domain/channel-delivery-policy'
 
 function target(id: string, title = ''): CursorCdpTarget {
   return {
@@ -362,6 +363,41 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
     }
     const inspected = await runInNewContext(buildRuntimeInspectionExpression(['composer-1']), { window, Map, Date })
     expect(inspected.rows[0]).toMatchObject({ responseText: '这是最终回答。', responseId: 'final-1' })
+  })
+
+  it('treats the thinking after a delivered check_messages as business work, but keepalive aftermath as noise (与 observer 同语义)', async () => {
+    // 上一轮回复 final-prev 已 record_reply；check_messages 投递了新的用户消息，模型开始
+    // 长思考。该思考是新回合的业务工作 → final-prev 之后有工作，不再是直播最终正文。
+    const mcpResult = (text: string): string => JSON.stringify({ result: JSON.stringify({ content: [{ type: 'text', text }] }) })
+    const delivered = `新任务来了\n\n━━━━\n${CHANNEL_USER_DELIVERY_MARKER}\n━━━━\n\n[轮次 #7 · 队列剩余 0 条]`
+    const inspect = async (checkResult: string) => {
+      const window = {
+        __qtComposerBridge: {
+          ready: true,
+          listComposers: () => [{ composerId: 'composer-1', status: 'generating', isGenerating: true }],
+          getStatus: () => ({ found: true, status: 'generating' }),
+          getComposerData: () => ({
+            fullConversationHeadersOnly: [
+              { type: 1, bubbleId: 'user-1' },
+              { type: 2, bubbleId: 'final-prev' },
+              { type: 2, bubbleId: 'tool-record' },
+              { type: 2, bubbleId: 'tool-check' },
+              { type: 2, bubbleId: 'th-next' }
+            ],
+            conversationMap: {
+              'final-prev': { text: '上一轮的回答。' },
+              'tool-record': { toolFormerData: { name: 'mcp-SG Team-record_reply', status: 'completed', result: mcpResult('{"ok":true}') } },
+              'tool-check': { toolFormerData: { name: 'mcp-SG Team-check_messages', status: 'completed', result: mcpResult(checkResult) } },
+              'th-next': { thinking: { text: '开始分析新任务。' } }
+            }
+          })
+        }
+      }
+      return (await runInNewContext(buildRuntimeInspectionExpression(['composer-1']), { window, Map, Date })).rows[0]
+    }
+    expect(await inspect(delivered)).toMatchObject({ responseText: '', responseId: '' })
+    // keepalive 之后的 thinking 仍是轮询余波：上一轮正文保持最终候选（既有语义）。
+    expect(await inspect('<sg_team_keepalive n="2"/>')).toMatchObject({ responseText: '上一轮的回答。', responseId: 'final-prev' })
   })
 
   it('still treats business work after the message as interim text', async () => {
