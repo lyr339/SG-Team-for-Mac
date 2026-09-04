@@ -255,6 +255,82 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('retires every channel presence when the scope moves to a different run (session fence)', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      for (const channelId of ['1', '2']) repository.markChannelEmbedded(channelId, 'workspace-a', '/workspace/a')
+      relay.resetScope('run-independent', 10_000)
+      // 独立批次的两个会话都在岗（心跳新鲜）。
+      repository.touchPresence('1', { waiting: true, connectionPhase: 'waiting', lastSeenAt: 19_000 }, 19_000)
+      repository.touchPresence('2', { waiting: false, connectionPhase: 'processing', lastSeenAt: 19_500 }, 19_500)
+      setNow(20_000)
+      expect(relay.applyTo(baseSnapshot()).sessions.map((session) => session.online)).toEqual([true, true])
+
+      // 切到团队 run：旧心跳全部来自上一轮会话，不能再点亮新席位。
+      relay.resetScope('run-team', 20_000)
+      for (const channelId of ['1', '2']) {
+        expect(repository.getPresence(channelId)).toMatchObject({ connectionPhase: 'retired', waiting: false })
+      }
+      setNow(20_001)
+      const sessions = relay.applyTo(baseSnapshot()).sessions
+      expect(sessions.map((session) => session.online)).toEqual([false, false])
+      // retired 是明确的作用域终止证据，不是「心跳暂时没刷新」。
+      expect(sessions.every((session) => session.runtimeEvidence === 'stopped')).toBe(true)
+      // lastSeenAt 是真实证据，不伪造：只改相位。
+      expect(repository.getPresence('1')?.lastSeenAt).toBe(19_000)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('keeps retired presence retired on a same-run scope replay (restart brings no life evidence)', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      relay.resetScope('run-a', 10_000)
+      repository.touchPresence('1', { waiting: true, connectionPhase: 'waiting', lastSeenAt: 19_000 }, 19_000)
+      setNow(20_000)
+      relay.resetScope('run-b', 20_000)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('retired')
+
+      // 应用重启：同 run 重放 beginScope，不得把 retired 洗成 reviving（那会让 120s
+      // 窗口内的旧心跳短暂点亮新席位）。cursor_stopped 的跨轮复活语义不受影响。
+      setNow(30_000)
+      relay.resetScope('run-b', 20_000)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('retired')
+      expect(relay.applyTo(baseSnapshot()).sessions[0]?.online).toBe(false)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('lets only new life evidence revive a retired seat: MCP heartbeat or CDP runtime activity', () => {
+    const { repository, relay, setNow } = fixture(10_000)
+    try {
+      for (const channelId of ['1', '2']) repository.markChannelEmbedded(channelId, 'workspace-a', '/workspace/a')
+      relay.resetScope('run-a', 10_000)
+      repository.touchPresence('1', { waiting: true, connectionPhase: 'waiting', lastSeenAt: 19_000 }, 19_000)
+      repository.touchPresence('2', { waiting: true, connectionPhase: 'waiting', lastSeenAt: 19_000 }, 19_000)
+      setNow(20_000)
+      relay.resetScope('run-b', 20_000)
+
+      // 新会话的首次工具调用（纯心跳写入）→ reviving → 协议相位接管。
+      repository.touchPresence('1', { lastSeenAt: 21_000 }, 21_000)
+      expect(repository.getPresence('1')?.connectionPhase).toBe('reviving')
+      setNow(21_001)
+      expect(relay.applyTo(baseSnapshot()).sessions.find((session) => session.channelId === '1'))
+        .toMatchObject({ online: true, connectionPhase: 'reviving' })
+
+      // CDP 观测到新 Composer 正在生成（runtimeActiveAt 新于旧心跳）同样复活。
+      relay.noteRuntimeActivity('2', 22_000)
+      expect(repository.getPresence('2')).toMatchObject({ connectionPhase: 'reviving', runtimeActiveAt: 22_000 })
+      setNow(22_001)
+      expect(relay.applyTo(baseSnapshot()).sessions.find((session) => session.channelId === '2')?.online).toBe(true)
+    } finally {
+      repository.close()
+    }
+  })
+
   it('revives a terminal phase on heartbeat-only presence writes (MCP tool call is life evidence)', () => {
     const { repository, relay, setNow } = fixture(10_000)
     try {

@@ -74,6 +74,10 @@ interface DeliveryResult {
 
 type TeamControlListener = (snapshot: TeamControlSnapshot) => void
 
+/** completeRun 收尾原因（写入绑定 launch_detail，供大厅/审计区分自动收尾与显式操作）。 */
+const RUN_ENDED_BY_USER_DETAIL = '用户已结束本轮运行'
+const RUN_REPLACED_DETAIL = '已被新的运行替换；旧会话将在下一次轮询收到会话围栏终止指令'
+
 function activeRunOf(state: TeamControlState) {
   if (!state.activeWorkspaceId) return undefined
   return state.runs
@@ -313,8 +317,13 @@ export class TeamControlService {
     const run = activeRunOf(this.loadState())
     if (!run) throw new Error('当前没有可结束的运行')
     if (run.status === 'completed') throw new Error('当前运行已经结束')
+    // draft/ready 还没有任何会话（团队 run 要到 launch 才签发启动提示），无所谓「结束」；
+    // completeRun 对这两个状态也不生效，提前给出准确原因而不是「状态已变化」。
+    if (run.status === 'draft' || run.status === 'ready') {
+      throw new Error('当前运行尚未启动，没有需要结束的会话')
+    }
     this.assertNoLaunchInFlight()
-    if (!this.repository.completeRun(run.id, Date.now())) {
+    if (!this.repository.completeRun(run.id, Date.now(), RUN_ENDED_BY_USER_DETAIL)) {
       throw new Error('运行状态已变化，请刷新后重试')
     }
     this.emit()
@@ -325,11 +334,15 @@ export class TeamControlService {
     if (this.activeLaunch) throw new Error('团队启动指令正在投递，请稍后再切换')
   }
 
-  /** 用新 run 替换当前活动 run：旧 run 显式收尾 → 写入新拓扑 → 切换会话作用域。 */
+  /**
+   * 用新 run 替换当前活动 run：旧 run 显式收尾 → 写入新拓扑 → 切换会话作用域。
+   * 旧 run 仍是 draft/ready（从未启动、没有会话）时 completeRun 不适用，只被更新的
+   * created_at 取代——不伪造一个从未运行过的 completed。
+   */
   private replaceActiveRun(bundle: WorkspaceTeamBundle): TeamControlSnapshot {
     const previous = activeRunOf(this.loadState())
     if (previous && previous.status !== 'completed' && previous.id !== bundle.run.id) {
-      this.repository.completeRun(previous.id, Date.now())
+      this.repository.completeRun(previous.id, Date.now(), RUN_REPLACED_DETAIL)
     }
     this.repository.upsertWorkspaceTeam(bundle)
     this.collaborationLifecycle?.clearRun(bundle.run.id)
@@ -338,7 +351,14 @@ export class TeamControlService {
     return this.getSnapshot()
   }
 
+  /**
+   * 团队「开始新一轮」：沿用上一轮角色/席位重建 run。团队 run 是一次性会话，语义上
+   * 要求上一轮已经结束（或全部离线可显式收尾），因此保留在线硬阻——这与模式切换
+   * （configureWorkspace / configureIndependentWorkspace 的围栏软守卫）是两种意图。
+   * 启动投递在途时禁止：launching 中的成员尚未签到，会被误判「全部离线」而收尾。
+   */
   createNextRun(): TeamControlSnapshot {
+    this.assertNoLaunchInFlight()
     let state = this.loadState()
     let previousRun = activeRunOf(state)
     const workspace = state.workspaces.find((candidate) => candidate.id === state.activeWorkspaceId)
@@ -411,11 +431,8 @@ export class TeamControlService {
       runKey: freshTeamRunKey(),
       now: this.nextRunCreatedAt()
     })
-    this.repository.upsertWorkspaceTeam(bundle)
-    this.collaborationLifecycle?.clearRun(bundle.run.id)
-    this.syncConversationScope(this.loadState())
-    this.emit()
-    return this.getSnapshot()
+    // 上一轮已 completed，replaceActiveRun 只负责写入拓扑与切换作用域。
+    return this.replaceActiveRun(bundle)
   }
 
   setActiveWorkspace(workspaceId: string): TeamControlSnapshot {

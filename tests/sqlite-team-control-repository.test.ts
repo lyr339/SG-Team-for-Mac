@@ -889,3 +889,160 @@ describe('SqliteTeamControlRepository', () => {
     }
   })
 })
+
+describe('SqliteTeamControlRepository 会话围栏令牌', () => {
+  const TOKEN_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/
+
+  function installed(repository: SqliteTeamControlRepository, workspaceId: string, channelIds: string[]) {
+    const team = createConfiguredTeamBundle({
+      workspaceId, workspaceName: workspaceId, workspacePath: `/workspace/${workspaceId}`, now: 100,
+      members: channelIds.map((channelId, index) => (
+        index === 0
+          ? { channelId, roleTemplateKey: 'lead', avatarId: 'lead', skills: [] }
+          : { channelId, roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }
+      ))
+    })
+    repository.upsertWorkspaceTeam(team)
+    repository.recordInstallation({
+      workspaceId, runId: team.run.id, generation: 'generation123',
+      agents: team.slots.map((slot) => ({
+        agentSessionId: `${workspaceId}:ch-${slot.channelId}:generation123`, workspaceId,
+        channelId: slot.channelId!, generation: 'generation123', runId: team.run.id,
+        capabilities: team.roles.find((role) => role.id === slot.roleId)!.capabilities
+      }))
+    })
+    return team
+  }
+
+  it('issues one distinct token per binding at install time and exposes it through the owner query', () => {
+    const repository = repositoryFixture()
+    try {
+      const team = installed(repository, 'fenced', ['1', '2'])
+      const bindings = repository.loadTeamControl().bindings.filter((binding) => binding.runId === team.run.id)
+      expect(bindings).toHaveLength(2)
+      for (const binding of bindings) expect(binding.sessionToken).toMatch(TOKEN_PATTERN)
+      expect(new Set(bindings.map((binding) => binding.sessionToken)).size).toBe(2)
+
+      const lead = repository.resolveChannelSessionOwner('1')
+      expect(lead).toEqual({
+        runId: team.run.id, runStatus: 'draft', bound: true,
+        sessionToken: bindings.find((binding) => binding.channelId === '1')!.sessionToken, solo: false
+      })
+      expect(repository.resolveChannelSessionOwner('2')).toMatchObject({ bound: true, solo: true })
+      expect(repository.resolveChannelSessionOwner(' 2 ')).toEqual(repository.resolveChannelSessionOwner('2'))
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('reports an unbound channel of the active run and no owner when no workspace is active', () => {
+    const repository = repositoryFixture()
+    try {
+      expect(repository.resolveChannelSessionOwner('1')).toBeUndefined()
+      const team = installed(repository, 'partial', ['1'])
+      expect(repository.resolveChannelSessionOwner('9')).toEqual({
+        runId: team.run.id, runStatus: 'draft', bound: false, sessionToken: undefined, solo: false
+      })
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('follows the newest run of the active workspace, exactly like the desktop activeRun projection', () => {
+    const repository = repositoryFixture()
+    try {
+      const first = installed(repository, 'switching', ['1'])
+      const firstToken = repository.resolveChannelSessionOwner('1')?.sessionToken
+      const second = createConfiguredTeamBundle({
+        workspaceId: 'switching', workspaceName: 'switching', workspacePath: '/workspace/switching',
+        now: 200, runKey: 'run-second00', mode: 'independent',
+        members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }]
+      })
+      repository.upsertWorkspaceTeam(second)
+      // 新 run 尚未安装：通道在新 run 里无绑定 → 旧令牌按 channel_unbound 退役。
+      expect(repository.resolveChannelSessionOwner('1')).toMatchObject({ runId: second.run.id, bound: false })
+      expect(repository.resolveChannelSessionOwner('1')?.runId).not.toBe(first.run.id)
+      repository.recordInstallation({
+        workspaceId: 'switching', runId: second.run.id, generation: 'generation456',
+        agents: [{
+          agentSessionId: 'switching:ch-1:generation456', workspaceId: 'switching', channelId: '1',
+          generation: 'generation456', runId: second.run.id, capabilities: []
+        }]
+      })
+      const owner = repository.resolveChannelSessionOwner('1')
+      expect(owner).toMatchObject({ runId: second.run.id, runStatus: 'running', bound: true, solo: true })
+      expect(owner?.sessionToken).toMatch(TOKEN_PATTERN)
+      expect(owner?.sessionToken).not.toBe(firstToken)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('rotates the token on seat relaunch so a still-alive old Composer is fenced out', () => {
+    const repository = repositoryFixture()
+    try {
+      const team = installed(repository, 'relaunch', ['1'])
+      const before = repository.resolveChannelSessionOwner('1')!.sessionToken
+      const slot = team.slots[0]!
+      expect(repository.prepareComposerRelaunch({ runId: team.run.id, slotId: slot.id, bindingKey: 'relaunch-key-1' })).toBe(true)
+      const after = repository.resolveChannelSessionOwner('1')!.sessionToken
+      expect(after).toMatch(TOKEN_PATTERN)
+      expect(after).not.toBe(before)
+      // 团队 launch 不轮换令牌：启动前创建的会话不能被自己的团队围栏误杀。
+      repository.updateRunGoal(team.run.id, '围栏令牌在 launch 时保持不变')
+      repository.beginLaunch(team.run.id, 300, 'launch-key-1')
+      expect(repository.resolveChannelSessionOwner('1')!.sessionToken).toBe(after)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('marks the owner as completed with the caller-supplied completion detail', () => {
+    const repository = repositoryFixture()
+    try {
+      const team = installed(repository, 'ending', ['1'])
+      repository.updateRunGoal(team.run.id, '结束语义')
+      repository.beginLaunch(team.run.id, 300, 'launch-key-end')
+      expect(repository.completeRun(team.run.id, 400, '用户已结束本轮运行')).toBe(true)
+      expect(repository.resolveChannelSessionOwner('1')).toMatchObject({ runId: team.run.id, runStatus: 'completed', bound: true })
+      const binding = repository.loadTeamControl().bindings.find((candidate) => candidate.runId === team.run.id)!
+      expect(binding.launchStatus).toBe('failed')
+      expect(binding.launchDetail).toBe('用户已结束本轮运行')
+      // 缺省文案仍是 failover 的自动收尾语义。
+      const other = installed(repository, 'ending-default', ['1'])
+      repository.updateRunGoal(other.run.id, '缺省收尾文案')
+      repository.beginLaunch(other.run.id, 300, 'launch-key-default')
+      expect(repository.completeRun(other.run.id, 400)).toBe(true)
+      expect(repository.loadTeamControl().bindings.find((candidate) => candidate.runId === other.run.id)?.launchDetail)
+        .toBe('本轮所有 Agent 已离线，TeamRun 自动结束')
+      // draft/ready 不可收尾。
+      const fresh = installed(repository, 'ending-draft', ['1'])
+      expect(repository.completeRun(fresh.run.id, 500)).toBe(false)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('adds the session_token column to a pre-fence database and treats existing bindings as legacy', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-control-fence-migrate-')), 'control.sqlite3')
+    const seeded = new SqliteTeamControlRepository(path)
+    const team = installed(seeded, 'legacy', ['1'])
+    seeded.close()
+    // 模拟升级前的库：旧构建没有 session_token 列。
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE runtime_bindings DROP COLUMN session_token')
+    old.close()
+
+    const migrated = new SqliteTeamControlRepository(path)
+    try {
+      const binding = migrated.loadTeamControl().bindings.find((candidate) => candidate.runId === team.run.id)!
+      expect(binding.sessionToken).toBeUndefined()
+      expect(migrated.resolveChannelSessionOwner('1')).toMatchObject({ runId: team.run.id, bound: true, sessionToken: undefined })
+      // 迁移后新签发照常。
+      expect(migrated.prepareComposerRelaunch({ runId: team.run.id, slotId: team.slots[0]!.id, bindingKey: 'post-migrate' })).toBe(true)
+      expect(migrated.resolveChannelSessionOwner('1')?.sessionToken).toMatch(TOKEN_PATTERN)
+    } finally {
+      migrated.close()
+    }
+  })
+})

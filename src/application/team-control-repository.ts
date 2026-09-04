@@ -83,7 +83,12 @@ export interface TeamControlRepository extends AgentPresenceStore {
     at: number
   }): void
   listFailovers(runId: string): TeamFailoverRecord[]
-  completeRun(runId: string, at: number): boolean
+  /**
+   * 把 launching/running/attention/paused 的 run 收尾为 completed（撤销注册、
+   * 绑定标 failed）。`detail` 写入各绑定的 launch_detail，说明收尾原因（自动
+   * 离线收尾 / 用户显式结束 / 被新运行替换）；draft/ready 不适用，返回 false。
+   */
+  completeRun(runId: string, at: number, detail?: string): boolean
   recordAgentCheckIn(
     identity: Parameters<AgentPresenceStore['recordAgentCheckIn']>[0],
     note: string

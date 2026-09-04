@@ -69,6 +69,35 @@ describe('team agent launch prompts', () => {
     expect(prompt).toContain('SG Team')
     expect(prompt).not.toContain('qtwx-mcp-2')
     expect(prompt).not.toContain('核心职责')
+    // 升级前的绑定没有会话令牌：提示词不得凭空要求 Agent 附带 session。
+    expect(prompt).not.toContain('session')
+    expect(prompt).not.toContain('会话围栏')
+  })
+
+  it('hands the seat session token to the team Agent and tells it to stop on a fence instruction', async () => {
+    const binding: RuntimeBinding = {
+      id: 'binding-builder',
+      workspaceId: 'workspace-a',
+      runId: 'team-run:workspace-a:main',
+      slotId: 'agent-slot:workspace-a:builder',
+      channelId: '2',
+      agentSessionId: 'workspace-a:ch-2:generation1',
+      generation: 'generation1',
+      installedAt: 100,
+      launchStatus: 'not_started',
+      launchDetail: '',
+      lastCheckInNote: '',
+      composerBindingKey: 'generation1',
+      sessionToken: 'seat-token-builder-0001'
+    }
+    const prompts = createTeamAgentLaunchPromptPort({ getSnapshot: () => snapshotWith(binding) })
+    const prompt = await prompts.fetchStartPrompt('2')
+    // 团队工具只需 channel_id；令牌只约束通信工具。
+    expect(prompt).toContain("team_check_in({channel_id:'2'})")
+    expect(prompt).toContain('本会话令牌（session）：seat-token-builder-0001')
+    expect(prompt).toContain("session:'seat-token-builder-0001'")
+    expect(prompt).toContain('会话围栏')
+    expect(prompt).toContain('立即停止轮询并结束，不要重试')
   })
 
   it('fails before CDP launch when the channel has no installed runtime binding', async () => {

@@ -407,11 +407,14 @@ export class SqliteChannelMessageRepository {
       // 上一轮残留的终止相位（cursor_stopped/tool_aborted）必须随作用域切换清除：
       // presence 行不按 run 分表，死亡证据跨轮存活会把新 run 的签到 Agent
       // 永久判死。清除后进入 reviving 中转相，等待 Agent 的协议相位接管。
+      // retired 不在此复活：它表示「该通道的心跳来自已退役的作用域」，同 run 重放
+      // （应用重启）没有带来任何新的生命证据；复活权只属于新会话的首次工具调用
+      // （touchPresence）或 CDP 运行时活动（touchRuntimeActivity）。
       const revived = this.database.prepare(`
         UPDATE channel_presence
         SET connection_phase = ?, waiting = 0, updated_at = ?
-        WHERE connection_phase IN ('cursor_stopped', 'tool_aborted', ?)
-      `).run(PRESENCE_REVIVED_PHASE, now, PRESENCE_RETIRED_PHASE)
+        WHERE connection_phase IN ('cursor_stopped', 'tool_aborted')
+      `).run(PRESENCE_REVIVED_PHASE, now)
       // 真正换了 run（不是重启后同 run 重放）：全部通道的既有心跳都来自上一轮会话，
       // 不能再代表新席位在线——整体退役。新会话首次调用即复活；携带失效令牌的旧会话
       // 被围栏挡在 presence 之外，于是新席位不会被幽灵点亮。

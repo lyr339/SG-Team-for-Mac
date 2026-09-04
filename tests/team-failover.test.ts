@@ -549,16 +549,26 @@ describe('TeamFailoverService', () => {
     const data = fixture(true)
     try {
       const failoverId = 'team-failover:crash-recovery'
+      const before = data.builder.binding!
+      expect(before.sessionToken).toMatch(/^[a-zA-Z0-9_-]{8,128}$/)
       data.controlRepository.rebindSlotToStandby({
         failoverId,
         runId: data.runId,
         slotId: data.builder.slot.id,
-        expectedAgentSessionId: data.builder.binding!.agentSessionId,
+        expectedAgentSessionId: before.agentSessionId,
         replacementAgentSessionId: 'alpha:ch-3:generation123',
         reason: '模拟换绑后进程退出',
         detectedAt: 1_000,
         bindingKey: 'takeover-binding-123'
       })
+      // 会话围栏：备用会话早已在线、未持有本席令牌 → 令牌清空（按无令牌旧会话放行）；
+      // 原失联 Agent 若复活并出示旧令牌，按 token_mismatch 被围栏拒绝。
+      const rebound = data.controlRepository.loadTeamControl().bindings
+        .find((binding) => binding.runId === data.runId && binding.slotId === data.builder.slot.id)!
+      expect(rebound.agentSessionId).toBe('alpha:ch-3:generation123')
+      expect(rebound.sessionToken).toBeUndefined()
+      expect(data.controlRepository.resolveChannelSessionOwner(rebound.channelId))
+        .toMatchObject({ runId: data.runId, bound: true, sessionToken: undefined })
 
       data.failover.reconcile()
 

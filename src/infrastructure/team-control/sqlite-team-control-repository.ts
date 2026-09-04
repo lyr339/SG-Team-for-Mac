@@ -41,6 +41,8 @@ const TEAM_SCHEMA_VERSION = 7
 const COMPOSER_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/
 const COMPOSER_BINDING_KEY_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
 const COMPOSER_BINDING_METHODS = new Set<ComposerBindingMethod>(['launch_marker', 'channel_marker'])
+/** completeRun 的缺省收尾原因：failover 全部离线自动收尾（显式结束/替换由调用方传入）。 */
+const RUN_COMPLETED_ALL_OFFLINE_DETAIL = '本轮所有 Agent 已离线，TeamRun 自动结束'
 
 function optionalNumber(value: unknown): number | undefined {
   return value === null || value === undefined ? undefined : numberOf(value)
@@ -1243,7 +1245,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     `).all(runId.trim()) as SqliteRow[]).map(failoverFromRow)
   }
 
-  completeRun(runId: string, at: number): boolean {
+  completeRun(runId: string, at: number, detail = RUN_COMPLETED_ALL_OFFLINE_DETAIL): boolean {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       const normalizedRunId = runId.trim()
@@ -1258,9 +1260,9 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         `).run(at, normalizedRunId)
         this.database.prepare(`
           UPDATE runtime_bindings
-          SET launch_status = 'failed', launch_detail = '本轮所有 Agent 已离线，TeamRun 自动结束'
+          SET launch_status = 'failed', launch_detail = ?
           WHERE run_id = ?
-        `).run(normalizedRunId)
+        `).run(normalizedNote(detail), normalizedRunId)
         this.bumpRevision()
       }
       this.database.exec('COMMIT')
@@ -1738,8 +1740,14 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     }
     // 会话围栏令牌：纯附加列，不升 schema 版本（旧构建的 MCP 进程与新主进程可能
     // 短暂共用同一库；SELECT * 对多出的列无感）。NULL = 该绑定尚未签发令牌（旧会话）。
+    // 主进程与 MCP 进程各自打开同一库并各自迁移：检查与 ALTER 之间另一进程可能已加列，
+    // 此时 ALTER 报 duplicate column——按幂等处理，只在列确实不存在时才视为失败。
     if (!tableHasColumn(this.database, 'runtime_bindings', 'session_token')) {
-      this.database.exec('ALTER TABLE runtime_bindings ADD COLUMN session_token TEXT')
+      try {
+        this.database.exec('ALTER TABLE runtime_bindings ADD COLUMN session_token TEXT')
+      } catch (error) {
+        if (!tableHasColumn(this.database, 'runtime_bindings', 'session_token')) throw error
+      }
     }
     this.database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_bindings_run_composer

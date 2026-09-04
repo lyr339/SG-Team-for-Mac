@@ -870,4 +870,98 @@ describe('独立模式 → 团队切换（会话围栏软守卫）', () => {
       data.repository.close()
     }
   })
+
+  it('records why the previous run ended when it is replaced, so the lobby does not claim "all agents offline"', () => {
+    const data = independentFixture(true)
+    try {
+      const previous = data.service.getSnapshot().activeRun!
+      data.repository.recordInstallation({
+        workspaceId: 'alpha', runId: previous.id, generation: 'generation123',
+        agents: [{
+          agentSessionId: 'alpha:ch-1:generation123', workspaceId: 'alpha', channelId: '1',
+          generation: 'generation123', runId: previous.id, capabilities: []
+        }]
+      })
+      data.service.configureIndependentWorkspace({
+        workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
+        members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }]
+      })
+      const retired = data.repository.loadTeamControl().bindings.find((binding) => binding.runId === previous.id)!
+      expect(retired.launchStatus).toBe('failed')
+      expect(retired.launchDetail).toContain('已被新的运行替换')
+      expect(retired.launchDetail).toContain('会话围栏')
+    } finally {
+      data.service.dispose()
+      data.repository.close()
+    }
+  })
+
+  it('ends an independent batch explicitly and reports the user-initiated reason', () => {
+    const data = independentFixture(true)
+    try {
+      const run = data.service.getSnapshot().activeRun!
+      data.repository.recordInstallation({
+        workspaceId: 'alpha', runId: run.id, generation: 'generation123',
+        agents: [{
+          agentSessionId: 'alpha:ch-1:generation123', workspaceId: 'alpha', channelId: '1',
+          generation: 'generation123', runId: run.id, capabilities: []
+        }]
+      })
+      const snapshot = data.service.endActiveRun()
+      expect(snapshot.activeRun).toMatchObject({ id: run.id, status: 'completed' })
+      expect(workspaceRunMode(snapshot.activeRun)).toBe('independent')
+      expect(snapshot.bindings.find((binding) => binding.runId === run.id)?.launchDetail).toBe('用户已结束本轮运行')
+      // 围栏据 completed 状态把仍持令牌的旧会话判为 run_completed。
+      expect(data.repository.resolveChannelSessionOwner('1')).toMatchObject({ runId: run.id, runStatus: 'completed' })
+      expect(() => data.service.endActiveRun()).toThrow(/已经结束/)
+    } finally {
+      data.service.dispose()
+      data.repository.close()
+    }
+  })
+
+  it('refuses to end a run that has no sessions yet and explains why', () => {
+    const configured = fixture()
+    try {
+      // fixture 的团队 run 已安装但未启动（ready）：没有会话可结束。
+      expect(configured.service.getSnapshot().activeRun?.status).toBe('ready')
+      expect(() => configured.service.endActiveRun()).toThrow(/尚未启动/)
+    } finally {
+      configured.service.dispose()
+      configured.repository.close()
+    }
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-end-empty-')), 'control.sqlite3')
+    const repository = new SqliteTeamControlRepository(path)
+    const service = new TeamControlService(repository, new FakeBridge(desktopSnapshot(false)), 100)
+    try {
+      expect(() => service.endActiveRun()).toThrow(/没有可结束的运行/)
+    } finally {
+      service.dispose()
+      repository.close()
+    }
+  })
+
+  it('keeps the only hard block: no mode switch, batch replacement or end while a launch is being delivered', async () => {
+    const data = fixture(true)
+    try {
+      const launch = data.service.launch()
+      const solo = {
+        workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
+        members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }]
+      }
+      expect(() => data.service.configureIndependentWorkspace(solo)).toThrow(/启动指令正在投递/)
+      expect(() => data.service.configureWorkspace({
+        ...solo, members: [{ channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] }]
+      })).toThrow(/启动指令正在投递/)
+      expect(() => data.service.endActiveRun()).toThrow(/启动指令正在投递/)
+      expect(() => data.service.createNextRun()).toThrow(/启动指令正在投递/)
+      await launch
+      // 投递结束后不再硬阻：独立批次替换正在 launching 的团队 run。
+      const snapshot = data.service.configureIndependentWorkspace(solo)
+      expect(workspaceRunMode(snapshot.activeRun)).toBe('independent')
+    } finally {
+      data.service.dispose()
+      data.repository.close()
+    }
+  })
 })

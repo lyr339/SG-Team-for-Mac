@@ -4,16 +4,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ChannelMessageService } from '../src/application/channel-message-service'
+import type { ChannelSessionOwnership } from '../src/domain/session-fence'
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
 import { createUnifiedChannelServer } from '../src/mcp/unified-channel-server'
 
-async function fixture() {
+async function fixture(options: { ownershipFor?: (channelId: string) => ChannelSessionOwnership | undefined } = {}) {
   const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-mcp-')), 'channel.sqlite3')
   const repository = new SqliteChannelMessageRepository(path)
   const service = new ChannelMessageService(repository)
   const server = createUnifiedChannelServer({
     runtimeFor: () => { throw new Error('通道测试不应触达团队运行时') },
     channelServiceFor: () => service,
+    ownershipFor: options.ownershipFor,
     workspacePath: '/workspace/alpha',
     keepaliveTimeoutMs: 1_200
   })
@@ -251,6 +253,117 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
     const { client, close } = await fixture()
     try {
       const result = await client.callTool({ name: 'record_reply', arguments: { ...ch, content: '' } })
+      expect(result.isError).toBe(true)
+    } finally {
+      await close()
+    }
+  })
+})
+
+describe('SG Team unified MCP 会话围栏（session 令牌）', () => {
+  const CURRENT = 'current-seat-token-0001'
+  const STALE = 'stale-seat-token-00009'
+  const owner = (overrides: Partial<ChannelSessionOwnership> = {}): ChannelSessionOwnership => ({
+    runId: 'session-run:alpha:run-2', runStatus: 'running', bound: true, sessionToken: CURRENT, solo: true, ...overrides
+  })
+
+  it('serves the current seat token normally and records its heartbeat', async () => {
+    const { repository, client, close } = await fixture({ ownershipFor: () => owner() })
+    try {
+      repository.enqueueOutbound('1', '带令牌的新会话', 1_000)
+      const result = await client.callTool({ name: 'check_messages', arguments: { ...ch, session: CURRENT } })
+      expect(result.isError).not.toBe(true)
+      expect(textOf(result)).toContain('带令牌的新会话')
+      expect(repository.getPresence('1')?.pendingOutboundId).toBeTruthy()
+      const recorded = await client.callTool({ name: 'record_reply', arguments: { ...ch, session: CURRENT, content: '收到' } })
+      expect(recorded.isError).not.toBe(true)
+      expect(repository.listUnconsumedReplies().map((reply) => reply.content)).toEqual(['收到'])
+    } finally {
+      await close()
+    }
+  })
+
+  it('returns a terminal stop instruction to a stale token without touching presence or the queue', async () => {
+    const { repository, client, close } = await fixture({ ownershipFor: () => owner() })
+    try {
+      repository.enqueueOutbound('1', '只能由新会话取走', 1_000)
+      const result = await client.callTool({ name: 'check_messages', arguments: { ...ch, session: STALE } })
+      // 围栏指令是普通文本而非 isError：模型要把它当成「用户要求停止」，不是可重试错误。
+      expect(result.isError).not.toBe(true)
+      const text = textOf(result)
+      expect(text).toContain('[system] 会话围栏')
+      expect(text).toContain('CH-1 已由新的会话接管')
+      expect(text).toContain('不要重试')
+      expect(text).not.toContain('只能由新会话取走')
+      // 旧会话不得点亮新席位的 presence，也不得取走排队消息。
+      expect(repository.getPresence('1')).toBeUndefined()
+      expect(repository.countPendingOutbound('1')).toBe(1)
+    } finally {
+      await close()
+    }
+  })
+
+  it('refuses record_reply from a stale token with a session_retired error and stores nothing', async () => {
+    const { repository, client, close } = await fixture({ ownershipFor: () => owner() })
+    try {
+      const result = await client.callTool({ name: 'record_reply', arguments: { ...ch, session: STALE, content: '迟到的回复' } })
+      expect(result.isError).toBe(true)
+      expect(result.structuredContent).toMatchObject({ ok: false, code: 'session_retired' })
+      expect((result.structuredContent as { message: string }).message).toContain('会话围栏')
+      expect(repository.listUnconsumedReplies()).toEqual([])
+    } finally {
+      await close()
+    }
+  })
+
+  it('retires even the current token once the run is completed or the channel leaves the run', async () => {
+    let ownership: ChannelSessionOwnership | undefined = owner({ runStatus: 'completed' })
+    const { client, close } = await fixture({ ownershipFor: () => ownership })
+    try {
+      const completed = await client.callTool({ name: 'check_messages', arguments: { ...ch, session: CURRENT } })
+      expect(textOf(completed)).toContain('本轮运行已结束')
+
+      ownership = owner({ bound: false, sessionToken: undefined })
+      const unbound = await client.callTool({ name: 'check_messages', arguments: { ...ch, session: CURRENT } })
+      expect(textOf(unbound)).toContain('CH-1 不再属于当前运行')
+
+      ownership = undefined
+      const noRun = await client.callTool({ name: 'check_messages', arguments: { ...ch, session: CURRENT } })
+      expect(textOf(noRun)).toContain('当前没有活动运行')
+    } finally {
+      await close()
+    }
+  })
+
+  it('keeps legacy (token-less) callers on the old contract even when a token would be rejected', async () => {
+    const { repository, client, close } = await fixture({ ownershipFor: () => owner({ runStatus: 'completed' }) })
+    try {
+      repository.enqueueOutbound('1', '升级前创建的会话仍可服务', 1_000)
+      const result = await client.callTool({ name: 'check_messages', arguments: { ...ch } })
+      expect(result.isError).not.toBe(true)
+      expect(textOf(result)).toContain('升级前创建的会话仍可服务')
+      expect(repository.getPresence('1')?.pendingOutboundId).toBeTruthy()
+    } finally {
+      await close()
+    }
+  })
+
+  it('fails open when ownership cannot be resolved (fence only rejects on positive evidence)', async () => {
+    const { repository, client, close } = await fixture({ ownershipFor: () => { throw new Error('team db locked') } })
+    try {
+      repository.enqueueOutbound('1', '归属查询异常时照常投递', 1_000)
+      const result = await client.callTool({ name: 'check_messages', arguments: { ...ch, session: STALE } })
+      expect(result.isError).not.toBe(true)
+      expect(textOf(result)).toContain('归属查询异常时照常投递')
+    } finally {
+      await close()
+    }
+  })
+
+  it('rejects malformed session tokens at the schema boundary', async () => {
+    const { client, close } = await fixture({ ownershipFor: () => owner() })
+    try {
+      const result = await client.callTool({ name: 'check_messages', arguments: { ...ch, session: 'bad token!' } })
       expect(result.isError).toBe(true)
     } finally {
       await close()
