@@ -20,7 +20,7 @@ import { conversationTextIdentity, type ProcessBlock } from '../domain/conversat
 import { partitionVirtualProcessBlocks } from '../domain/virtual-process-turn'
 import type { CursorComposerTelemetrySource } from '../infrastructure/cursor/cursor-composer-telemetry'
 import type { ChannelMessageRelay } from './channel-message-relay'
-import type { CursorComposerRuntimeEvidence } from '../infrastructure/cursor/cursor-cdp-session-creator'
+import type { CursorComposerRuntimeEvidence, CursorProcessStream } from '../infrastructure/cursor/cursor-cdp-session-creator'
 import type { CursorNativeProcessEvent } from '../infrastructure/cursor/cursor-stream-observer'
 import { verifyAgentRuntime } from './verify-agent-runtime'
 
@@ -1162,6 +1162,8 @@ export class DesktopSessionService implements DesktopSessionBridge {
       process: event.process
     }
     let changed = this.updateLiveCursorProcess(channelId, evidence, { authoritative: true })
+    // 直播正文的撤下路径：正文候选被改判为中间过程时立即收回（见方法注释）。
+    if (event.process && this.revokeReclassifiedLiveResponse(channelId, event.process)) changed = true
     // 写后快照携带的流式正文：与 inspect 轮询同一 responseId（bubbleId），走同一
     // 合并入口；粒度对齐 Cursor 原生 token 批次，打字机不再吃 150–250ms 粗 chunk。
     if (event.response) {
@@ -1554,6 +1556,32 @@ export class DesktopSessionService implements DesktopSessionBridge {
       updatedAt: now,
       blockFirstSeen
     })
+    return true
+  }
+
+  /**
+   * 直播正文的撤下路径（2026-09-04 双打字机事故）。
+   *
+   * 「最终正文候选」不是气泡的固有属性，而是「其后没有业务工作」这一相对判定：
+   * 模型先写正文 B1 再调用业务工具时，B1 会从最终候选改判为中间过程 message
+   * （processSnapshot 把它放进 items 的 cursor-msg:B1），写后快照随之不再携带
+   * response。此前 updateLiveAgentResponse 只有建立/推进路径，把「不携带」一律当
+   * 「本帧无信息」保留旧值——这对 inspect 等不带正文的帧是必要的，但对改判场景意味着
+   * 同一段文字同时以 cursor-msg（过程卡，新打字机从头播放）和直播正文（TurnResponseText，
+   * 带光标）双份出现，直到 2.5s 流式断帧时效才把后者清掉。
+   *
+   * 撤下只认正面证据：权威完整帧（snapshotComplete）里出现了 `cursor-msg:<直播正文 id>`
+   * ——同一 bubble 已被过程卡接管。缺席、空文本抖动、非权威帧都不触发，避免误撤闪烁。
+   * 不写入 finalizedLiveResponseIds：若后续帧撤回该 cursor-msg（该 bubble 重新成为
+   * 最终候选），直播正文照常恢复。
+   */
+  private revokeReclassifiedLiveResponse(channelId: string, stream: CursorProcessStream): boolean {
+    if (stream.snapshotComplete !== true) return false
+    const existing = this.liveAgentResponses.get(channelId)
+    if (!existing || existing.id.startsWith('transcript:')) return false
+    const reclassifiedId = `cursor-msg:${existing.id}`
+    if (!stream.items.some((item) => item.kind === 'message' && item.id === reclassifiedId)) return false
+    this.liveAgentResponses.delete(channelId)
     return true
   }
 

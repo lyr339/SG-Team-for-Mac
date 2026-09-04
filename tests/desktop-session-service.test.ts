@@ -2373,6 +2373,104 @@ describe('封口防线：最终正文不重复成为过程 message（§8.4-4，2
   })
 })
 
+describe('直播正文改判为过程 message 时立即撤下（2026-09-04 双打字机事故）', () => {
+  function runningService(): DesktopSessionService {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(active),
+      { readWorkspace: () => ({ ...telemetry(), composers: [] }) },
+      undefined,
+      { inspectComposerRuntime: async () => ({}) }
+    )
+    service.refreshTelemetry()
+    return service
+  }
+
+  it('revokes the live response the moment the same bubble reappears as cursor-msg (text → business tool)', () => {
+    const service = runningService()
+    try {
+      const base = Date.now()
+      const text = 'Now the core source. Let me read the main process entry and MCP server together.'
+      // 帧 1：正文气泡 B1 之后没有业务工作 → 最终正文候选，走直播正文（TurnResponseText 打字机）。
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: base, isGenerating: true,
+        process: { turnId: 'user-t1', items: [], generatingBubbleCount: 1, snapshotComplete: true },
+        response: { id: 'bubble-b1', text }
+      })
+      expect(service.getSnapshot().liveAgentResponses?.['1']).toMatchObject({ id: 'bubble-b1', status: 'streaming' })
+
+      // 帧 2：模型紧接着调用业务工具（read_file）→ B1 有后续工作，被改判为过程 message
+      // （cursor-msg:bubble-b1 进入 items），写后快照不再携带 response。
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: base + 40, isGenerating: true,
+        process: {
+          turnId: 'user-t1', snapshotComplete: true, generatingBubbleCount: 1,
+          items: [
+            { kind: 'message', id: 'cursor-msg:bubble-b1', text, status: 'done', startedAt: base },
+            { kind: 'tool', id: 'cursor:bubble-b2', toolName: 'read_file', toolKind: 'read', summary: '/workspace/alpha/src/main/index.ts', status: 'running', startedAt: base + 35 }
+          ]
+        }
+      })
+      const snapshot = service.getSnapshot()
+      expect(snapshot.liveProcess?.['1']?.blocks.map((block) => block.id)).toEqual(['cursor-msg:bubble-b1', 'cursor:bubble-b2'])
+      // 同一段文字只能出现一次：过程卡已经接管 B1，直播正文必须在本帧即撤下，
+      // 而不是等 2.5s 流式断帧时效才消失（那 2.5s 就是用户看到的「两个一模一样的打字机」）。
+      expect(snapshot.liveAgentResponses?.['1']).toBeUndefined()
+
+      // 撤下后模型再输出新的正文气泡 B3：直播正文以新身份恢复，不受此前撤下影响。
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: base + 900, isGenerating: true,
+        process: {
+          turnId: 'user-t1', snapshotComplete: true, generatingBubbleCount: 1,
+          items: [
+            { kind: 'message', id: 'cursor-msg:bubble-b1', text, status: 'done', startedAt: base },
+            { kind: 'tool', id: 'cursor:bubble-b2', toolName: 'read_file', toolKind: 'read', summary: '/workspace/alpha/src/main/index.ts', status: 'done', startedAt: base + 35 }
+          ]
+        },
+        response: { id: 'bubble-b3', text: '读完了，主进程入口在' }
+      })
+      expect(service.getSnapshot().liveAgentResponses?.['1']).toMatchObject({ id: 'bubble-b3', status: 'streaming' })
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('keeps the live response when the following bubble is still a pending MCP call or transport noise (no cursor-msg)', () => {
+    const service = runningService()
+    try {
+      const base = Date.now()
+      const text = '已完成修复，下面是说明。'
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: base, isGenerating: true,
+        process: { turnId: 'user-t1', items: [], generatingBubbleCount: 1, snapshotComplete: true },
+        response: { id: 'bubble-final', text }
+      })
+      // 正文之后只有 record_reply/check_messages 脚手架：observer 过滤后 items 为空，
+      // 正文仍是最终候选，写后快照继续携带 response —— 不得撤下。
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: base + 40, isGenerating: true,
+        process: { turnId: 'user-t1', items: [], generatingBubbleCount: 1, snapshotComplete: true },
+        response: { id: 'bubble-final', text }
+      })
+      expect(service.getSnapshot().liveAgentResponses?.['1']).toMatchObject({ id: 'bubble-final', status: 'streaming' })
+      // 非权威帧（无 snapshotComplete）即使缺 response 也只是「本帧不携带」，不构成撤下证据。
+      service.notifyNativeProcessSnapshot({
+        composerId: 'composer-alpha-123', observedAt: base + 80, isGenerating: true,
+        process: { turnId: 'user-t1', items: [], generatingBubbleCount: 1 }
+      })
+      expect(service.getSnapshot().liveAgentResponses?.['1']).toMatchObject({ id: 'bubble-final', status: 'streaming' })
+    } finally {
+      service.dispose()
+    }
+  })
+})
+
 describe('遥测落盘态 contextTokensUsed → 用量采样转发（长会话近实时 TOKENS/COST 的活水源）', () => {
   function telemetryWithUsed(used?: number): CursorTelemetrySnapshot {
     const base = telemetry()
