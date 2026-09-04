@@ -56,7 +56,13 @@ export interface CursorSessionUsage {
 /** composerId → 累积用量。 */
 export type CursorUsageSnapshot = Record<string, CursorSessionUsage>
 
-/** 百万 token 单价（USD）。cacheWrite 缺省按 input 的 1.25 倍（Anthropic 口径）。 */
+/**
+ * 百万 token 单价（USD）。
+ * cacheWritePerM 是「写入缓存那部分输入的单价」：Anthropic 与 GPT-5.6 系按输入 1.25×
+ * 收写入溢价；其余厂商（OpenAI 5.5 及更早 / Gemini / Grok / Composer / Kimi / GLM）
+ * 不收写入费——新进上下文按普通输入价计，因此 cacheWritePerM = inputPerM，而不是 0
+ * （0 会把新进 token 算成免费）。
+ */
 export interface ModelTokenPrice {
   label: string
   inputPerM: number
@@ -65,36 +71,105 @@ export interface ModelTokenPrice {
   cacheWritePerM: number
 }
 
+/** 快照日期：牌价随时间漂移，核对时以 cursor.com/docs/models-and-pricing 为准。 */
+export const MODEL_PRICES_SNAPSHOT_DATE = '2026-09-04'
+
+function price(label: string, inputPerM: number, outputPerM: number, cacheReadPerM: number, cacheWritePerM = inputPerM): ModelTokenPrice {
+  return { label, inputPerM, outputPerM, cacheReadPerM, cacheWritePerM }
+}
+
 /**
- * 常用模型牌价表（USD / 1M tokens，公开 API 价，2026 快照）。
- * 匹配规则：modelId 小写子串首个命中；未命中走 DEFAULT（sonnet 档）。
+ * 模型牌价表（USD / 1M tokens）。来源：Cursor「Models & Pricing」页（Cursor 按模型
+ * API 价扣用量，与「等价 API 成本」口径一致）；Cursor 目录外的 DeepSeek / Qwen 取官方
+ * API 标价（DeepSeek 为非高峰价）。长上下文（>200K）加价、Fast 未列变体、区域加价不建模。
+ *
+ * 匹配规则：modelId 与键都归一为小写、非字母数字折成 `-`，键必须从词首（^ 或 `-` 之后）
+ * 开始、到词尾（`-`、结尾或紧随的版本数字）结束——`o3` 不会命中 `gpt-5-3-codex`，
+ * `qwen` 仍能命中 `qwen3-max`。表内顺序即优先级（更具体的在前）。
  */
 const MODEL_PRICES: Array<{ match: string; price: ModelTokenPrice }> = [
-  { match: 'opus', price: { label: 'Claude Opus', inputPerM: 15, outputPerM: 75, cacheReadPerM: 1.5, cacheWritePerM: 18.75 } },
-  { match: 'haiku', price: { label: 'Claude Haiku', inputPerM: 0.8, outputPerM: 4, cacheReadPerM: 0.08, cacheWritePerM: 1 } },
-  { match: 'sonnet', price: { label: 'Claude Sonnet', inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 } },
-  { match: 'claude', price: { label: 'Claude', inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 } },
-  { match: 'gpt-5', price: { label: 'GPT-5', inputPerM: 1.25, outputPerM: 10, cacheReadPerM: 0.125, cacheWritePerM: 1.25 } },
-  { match: 'gpt-4.1', price: { label: 'GPT-4.1', inputPerM: 2, outputPerM: 8, cacheReadPerM: 0.5, cacheWritePerM: 2 } },
-  { match: 'gpt-4o-mini', price: { label: 'GPT-4o mini', inputPerM: 0.15, outputPerM: 0.6, cacheReadPerM: 0.075, cacheWritePerM: 0.15 } },
-  { match: 'gpt-4o', price: { label: 'GPT-4o', inputPerM: 2.5, outputPerM: 10, cacheReadPerM: 1.25, cacheWritePerM: 2.5 } },
-  { match: 'gpt', price: { label: 'GPT', inputPerM: 1.25, outputPerM: 10, cacheReadPerM: 0.125, cacheWritePerM: 1.25 } },
-  { match: 'gemini-3', price: { label: 'Gemini 3', inputPerM: 2, outputPerM: 12, cacheReadPerM: 0.5, cacheWritePerM: 2 } },
-  { match: 'gemini', price: { label: 'Gemini', inputPerM: 1.25, outputPerM: 10, cacheReadPerM: 0.31, cacheWritePerM: 1.25 } }
+  // Anthropic（写 1.25×，读 0.1×；Fable 5.1 读 0.025×）
+  { match: 'fable-5-1', price: price('Claude Fable 5.1', 10, 50, 0.25, 12.5) },
+  { match: 'fable', price: price('Claude Fable 5', 10, 50, 1, 12.5) },
+  { match: 'opus-4-7-fast', price: price('Claude Opus 4.7 Fast', 30, 150, 3, 37.5) },
+  { match: 'opus-4-8-fast', price: price('Claude Opus 4.8 Fast', 10, 50, 1, 12.5) },
+  { match: 'opus-4-1', price: price('Claude Opus 4.1', 15, 75, 1.5, 18.75) },
+  { match: 'opus', price: price('Claude Opus', 5, 25, 0.5, 6.25) },
+  { match: 'sonnet-5', price: price('Claude Sonnet 5', 2, 10, 0.2, 2.5) },
+  { match: '4-sonnet-1m', price: price('Claude 4 Sonnet 1M', 6, 22.5, 0.6, 7.5) },
+  { match: 'sonnet', price: price('Claude Sonnet', 3, 15, 0.3, 3.75) },
+  { match: 'haiku-3-5', price: price('Claude Haiku 3.5', 0.8, 4, 0.08, 1) },
+  { match: 'haiku', price: price('Claude Haiku', 1, 5, 0.1, 1.25) },
+  { match: 'claude', price: price('Claude', 3, 15, 0.3, 3.75) },
+  // OpenAI（读 0.1×；5.6 系写 1.25×，其余无写入费）
+  { match: 'gpt-5-6-sol', price: price('GPT-5.6 Sol', 4, 20, 0.4, 5) },
+  { match: 'gpt-5-6-terra', price: price('GPT-5.6 Terra', 2, 12, 0.2, 2.5) },
+  { match: 'gpt-5-6-luna', price: price('GPT-5.6 Luna', 0.2, 1.2, 0.02, 0.25) },
+  { match: 'gpt-5-5', price: price('GPT-5.5', 5, 30, 0.5) },
+  { match: 'gpt-5-4-mini', price: price('GPT-5.4 Mini', 0.75, 4.5, 0.075) },
+  { match: 'gpt-5-4-nano', price: price('GPT-5.4 Nano', 0.2, 1.25, 0.02) },
+  { match: 'gpt-5-4', price: price('GPT-5.4', 2.5, 15, 0.25) },
+  { match: 'gpt-5-3-codex', price: price('GPT-5.3 Codex', 1.75, 14, 0.175) },
+  { match: 'gpt-5-2', price: price('GPT-5.2', 1.75, 14, 0.175) },
+  { match: 'gpt-5-1-codex-mini', price: price('GPT-5.1 Codex Mini', 0.25, 2, 0.025) },
+  { match: 'gpt-5-1', price: price('GPT-5.1', 1.25, 10, 0.125) },
+  { match: 'gpt-5-mini', price: price('GPT-5 Mini', 0.25, 2, 0.025) },
+  { match: 'gpt-5-fast', price: price('GPT-5 Fast', 2.5, 20, 0.25) },
+  { match: 'gpt-5', price: price('GPT-5', 1.25, 10, 0.125) },
+  { match: 'gpt-4-1', price: price('GPT-4.1', 2, 8, 0.5) },
+  { match: 'gpt-4o-mini', price: price('GPT-4o mini', 0.15, 0.6, 0.075) },
+  { match: 'gpt-4o', price: price('GPT-4o', 2.5, 10, 1.25) },
+  { match: 'o4-mini', price: price('OpenAI o4-mini', 1.1, 4.4, 0.275) },
+  { match: 'o3-mini', price: price('OpenAI o3-mini', 1.1, 4.4, 0.275) },
+  { match: 'o3-pro', price: price('OpenAI o3-pro', 20, 80, 2) },
+  { match: 'o3', price: price('OpenAI o3', 2, 8, 0.5) },
+  { match: 'gpt', price: price('GPT', 1.25, 10, 0.125) },
+  // Google（读 0.1×，无写入费；显式缓存的存储费不建模）
+  { match: 'gemini-3-8-flash', price: price('Gemini 3.8 Flash', 0.75, 3.5, 0.075) },
+  { match: 'gemini-3-7-flash', price: price('Gemini 3.7 Flash', 0.75, 3.5, 0.075) },
+  { match: 'gemini-3-6-flash', price: price('Gemini 3.6 Flash', 1.5, 7.5, 0.15) },
+  { match: 'gemini-3-5-flash', price: price('Gemini 3.5 Flash', 1.5, 9, 0.15) },
+  { match: 'gemini-3-flash', price: price('Gemini 3 Flash', 0.5, 3, 0.05) },
+  { match: 'gemini-2-5-flash', price: price('Gemini 2.5 Flash', 0.3, 2.5, 0.03) },
+  { match: 'gemini-2-5-pro', price: price('Gemini 2.5 Pro', 1.25, 10, 0.31) },
+  { match: 'gemini', price: price('Gemini 3 Pro', 2, 12, 0.2) },
+  // Cursor 自家 / 联合训练模型（读 0.25×，无写入费）
+  { match: 'grok-4-6-fast', price: price('Grok 4.6 Fast', 4, 12, 1) },
+  { match: 'grok-4-5-fast', price: price('Grok 4.5 Fast', 4, 18, 1) },
+  { match: 'grok', price: price('Grok', 2, 6, 0.5) },
+  { match: 'composer-2-5-fast', price: price('Composer 2.5 Fast', 3, 15, 0.5) },
+  { match: 'composer', price: price('Composer', 0.5, 2.5, 0.2) },
+  // Moonshot / Z.ai（读 0.1× / 0.19×，无写入费）
+  { match: 'kimi-k2-7', price: price('Kimi K2.7 Code', 0.95, 4, 0.19) },
+  { match: 'kimi', price: price('Kimi K3', 3, 15, 0.3) },
+  { match: 'glm', price: price('GLM 5.2', 1.4, 4.4, 0.26) },
+  // Cursor 目录外（官方 API 价）：DeepSeek 非高峰价、缓存命中 ≈ 0.033×；Qwen3-Max 基础档隐式缓存 0.2×
+  { match: 'deepseek-v4-flash', price: price('DeepSeek V4 Flash', 0.22, 0.66, 0.007) },
+  { match: 'deepseek', price: price('DeepSeek V4 Pro', 0.66, 1.98, 0.022) },
+  { match: 'qwen', price: price('Qwen3 Max', 0.359, 1.434, 0.072) }
 ]
 
-const DEFAULT_PRICE: ModelTokenPrice = { label: '默认（Sonnet 档）', inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75 }
+const DEFAULT_PRICE: ModelTokenPrice = price('默认（Sonnet 档）', 3, 15, 0.3, 3.75)
+
+function normalizeModelKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+const MODEL_PRICE_MATCHERS = MODEL_PRICES.map((entry) => ({
+  price: entry.price,
+  pattern: new RegExp(`(^|-)${entry.match.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=-|$|\\d)`)
+}))
 
 /**
- * 按模型 id 解析单价表（子串匹配）。
+ * 按模型 id 解析单价表（归一化后按词边界匹配，表内顺序即优先级）。
  * 未命中（'auto'、新模型名、Cursor 内部代号）按 Sonnet 档估算，但标签如实
  * 显示真实模型名——用户看到的应是「哪个模型在什么口径下估算」，而不是一个
- * 凭空出现的「默认档」。标签含 'sonnet' 子串，跨回合重解析仍命中同档价格。
+ * 凭空出现的「默认档」。标签含 'sonnet' 词，跨回合重解析仍命中同档价格。
  */
 export function priceForModel(modelId: string | undefined): ModelTokenPrice {
-  const id = (modelId ?? '').toLowerCase()
-  if (!id) return DEFAULT_PRICE
-  const matched = MODEL_PRICES.find((entry) => id.includes(entry.match))?.price
+  const key = normalizeModelKey(modelId ?? '')
+  if (!key) return DEFAULT_PRICE
+  const matched = MODEL_PRICE_MATCHERS.find((entry) => entry.pattern.test(key))?.price
   if (matched) return matched
   const trimmed = (modelId ?? '').trim().slice(0, 60)
   return trimmed
@@ -222,10 +297,20 @@ export function applyTurnUsage(
  * 计账语义（Cursor 按请求对完整上下文计费）：
  * - 首样本：只建立基线，零累计（监控开始前的存量上下文不属于本 run 的账）；
  * - used 不变：同一请求内的重复采样，零累计；
- * - used 变化（无论方向，含上下文压缩回落）：新请求发生，按当时完整上下文
- *   全额累计 input 与成本（无 cache 拆分，全价是上界估算——如实呈现）。
- * 口径与事件通道一致：turnEnded 的 inputTokens 本就是回合内全部请求的累计
- * （2026-09-01 事故实测：单回合 input 6.2M，远超 1M 上下文上限，实证口径）。
+ * - used 变化（无论方向，含上下文压缩回落）：新请求发生，token 按当时完整
+ *   上下文累计（`inputTokens += used`，与事件通道口径一致——turnEnded 的
+ *   inputTokens 本就是回合内全部请求的累计；2026-09-01 事故实测：单回合
+ *   input 6.2M，远超 1M 上下文上限，实证口径）。
+ *
+ * 成本按缓存拆分近似（agentic 请求物理形态 = 前缀缓存命中 + 增量写入；
+ * 实测 97% 缓存命中率下旧的全价口径高估 6~9 倍）：
+ * - used 增长：存量前缀 contextLastUsed 按缓存读价、新增 delta 按缓存写价；
+ * - used 回落（上下文压缩）：压缩后全量视为新前缀写入，按缓存写价（保守），
+ *   基线重建；
+ * - 输出 token：上下文读数拿不到，不计（轻微低估）——口径在 cursorUsageDetail
+ *   如实标注。
+ * cacheRead/cacheWrite 桶同步累计同一拆分（缓存是输入的子集，桶增量之和恰为
+ * 本次 used），UI 分段条在采样模式下也有构成展示。
  */
 export function applyRequestSample(
   current: CursorSessionUsage | undefined,
@@ -252,11 +337,25 @@ export function applyRequestSample(
   // 首样本建基线 / 同值去重：零累计
   if (base.contextLastUsed === undefined || sample.used === base.contextLastUsed) return touched
   const price = priceForModel(pricedModel)
+  const grown = sample.used > base.contextLastUsed
+  const cacheReadTokens = grown ? base.contextLastUsed : 0
+  const cacheWriteTokens = grown ? sample.used - base.contextLastUsed : sample.used
+  // uncachedInput = used - read - write = 0：成本全部落在缓存读/写两桶上，
+  // 复用 estimateTurnCostUsd 保证与事件通道同一套拆分公式。
+  const requestCost = estimateTurnCostUsd({
+    inputTokens: sample.used,
+    outputTokens: 0,
+    cacheReadTokens,
+    cacheWriteTokens,
+    occurredAt: sample.occurredAt
+  }, price)
   return {
     ...touched,
     turns: base.turns + 1,
     inputTokens: base.inputTokens + sample.used,
-    estimatedCostUsd: base.estimatedCostUsd + sample.used / 1e6 * price.inputPerM,
+    cacheReadTokens: base.cacheReadTokens + cacheReadTokens,
+    cacheWriteTokens: base.cacheWriteTokens + cacheWriteTokens,
+    estimatedCostUsd: base.estimatedCostUsd + requestCost,
     pricedModel: base.turns > 0 && base.pricedModel !== price.label ? 'Mixed models' : price.label
   }
 }
@@ -289,7 +388,7 @@ export function formatCostUsd(costUsd: number): string {
 export function cursorUsageDetail(usage: CursorSessionUsage): string {
   const sampleBased = usage.contextLastUsed !== undefined
   const breakdown = sampleBased
-    ? `输入 ${usage.inputTokens.toLocaleString()}（按请求全额累计）`
+    ? `输入 ${usage.inputTokens.toLocaleString()}（按请求上下文累计；缓存读 ${usage.cacheReadTokens.toLocaleString()}、缓存写 ${usage.cacheWriteTokens.toLocaleString()} 为近似拆分，输出未计入）`
     : `输入 ${usage.inputTokens.toLocaleString()}（含缓存读 ${usage.cacheReadTokens.toLocaleString()}、缓存写 ${usage.cacheWriteTokens.toLocaleString()}）· 输出 ${usage.outputTokens.toLocaleString()}`
   return `本轮 TeamRun 计费 token（${usage.pricedModel}，${usage.turns} 次请求）：${breakdown}；总计 ${totalUsageTokens(usage).toLocaleString()}；等价 API 成本估算 ${formatCostUsd(usage.estimatedCostUsd)}（基于当前 API 定价实时估算）；团队结束后冻结，下轮启动时清零`
 }

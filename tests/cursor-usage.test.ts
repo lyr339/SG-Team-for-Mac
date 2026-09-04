@@ -29,21 +29,49 @@ describe('priceForModel', () => {
     expect(auto.label).toBe('auto · Sonnet 档估算')
     expect(auto.inputPerM).toBe(3)
     expect(priceForModel(auto.label).inputPerM).toBe(auto.inputPerM)
-    expect(priceForModel('composer-2.5').label).toBe('composer-2.5 · Sonnet 档估算')
+    expect(priceForModel('starlight-9').label).toBe('starlight-9 · Sonnet 档估算')
   })
 
-  it('按子串匹配常用模型并落到默认档', () => {
+  it('归一化后按词边界匹配并区分版本（表内顺序即优先级，更具体的在前）', () => {
     expect(priceForModel('claude-sonnet-4-5').label).toBe('Claude Sonnet')
-    expect(priceForModel('CLAUDE-OPUS-4-1').label).toBe('Claude Opus')
-    expect(priceForModel('gpt-5.1').label).toBe('GPT-5')
-    expect(priceForModel('gemini-2.5-pro').label).toBe('Gemini')
+    expect(priceForModel('CLAUDE-OPUS-4-1').label).toBe('Claude Opus 4.1')
+    expect(priceForModel('gpt-5.1').label).toBe('GPT-5.1')
+    expect(priceForModel('gpt-5.1-codex-mini').label).toBe('GPT-5.1 Codex Mini')
+    expect(priceForModel('gemini-2.5-pro').label).toBe('Gemini 2.5 Pro')
+    expect(priceForModel('composer-2.5').label).toBe('Composer')
     expect(priceForModel(undefined).label).toBe('默认（Sonnet 档）')
-    expect(priceForModel(undefined).label).toContain('默认')
   })
 
   it('gpt-4o-mini 先于 gpt-4o 命中（顺序敏感）', () => {
     expect(priceForModel('gpt-4o-mini-2024').inputPerM).toBe(0.15)
     expect(priceForModel('gpt-4o-2024').inputPerM).toBe(2.5)
+  })
+
+  it('键与版本数字紧邻仍从词首命中（qwen3-max），跨系列不误伤（o3 ≠ gpt-5.3-codex）', () => {
+    expect(priceForModel('qwen3-max').label).toBe('Qwen3 Max')
+    expect(priceForModel('Qwen3 Max').label).toBe('Qwen3 Max')
+    expect(priceForModel('gpt-5.3-codex').label).toBe('GPT-5.3 Codex')
+    expect(priceForModel('o3-2025-04-16').label).toBe('OpenAI o3')
+    expect(priceForModel('claude-fable-5-1-20260815').label).toBe('Claude Fable 5.1')
+    expect(priceForModel('fable-5').label).toBe('Claude Fable 5')
+    expect(priceForModel('grok-4.6-fast').label).toBe('Grok 4.6 Fast')
+    // 无 fast 后缀的 grok 落泛化条目，而不是错拼进带版本的 fast 变体
+    expect(priceForModel('grok-4.6').label).toBe('Grok')
+    expect(priceForModel('kimi-k3').label).toBe('Kimi K3')
+    expect(priceForModel('deepseek-v4-flash').label).toBe('DeepSeek V4 Flash')
+  })
+
+  it('缓存写价按 provider 口径：Anthropic 与 GPT-5.6 系写 1.25×，其余写价 = 输入价（非 0）', () => {
+    const opus = priceForModel('claude-opus-4-1')
+    expect(opus.cacheWritePerM).toBeCloseTo(opus.inputPerM * 1.25, 6)
+    const sol = priceForModel('gpt-5.6-sol')
+    expect(sol.cacheWritePerM).toBeCloseTo(sol.inputPerM * 1.25, 6)
+    // OpenAI 5.5 及更早不收写入溢价：新进上下文按普通输入价计，写价为 0 会把新进 token 算成免费
+    const legacy = priceForModel('gpt-5.5')
+    expect(legacy.cacheWritePerM).toBe(legacy.inputPerM)
+    expect(legacy.cacheWritePerM).toBeGreaterThan(0)
+    const gemini = priceForModel('gemini-3-pro')
+    expect(gemini.cacheWritePerM).toBe(gemini.inputPerM)
   })
 })
 
@@ -114,23 +142,42 @@ describe('applyRequestSample（请求级采样，织梦算法）', () => {
     expect(usage.lastTurnAt).toBe(2_000)
   })
 
-  it('used 增长 = 新请求：按当时完整上下文全额累计（25K → 30K 记 30K，非增量 5K）', () => {
+  it('used 增长 = 新请求：token 按当时完整上下文累计（25.75K → 30K 记 30K，非增量 4.25K）', () => {
     let usage = applyRequestSample(undefined, sample(25_750), 'kimi-k3')
     usage = applyRequestSample(usage, sample(30_000, 2_000), 'kimi-k3')
     expect(usage.turns).toBe(1)
     expect(usage.inputTokens).toBe(30_000)
     expect(usage.contextLastUsed).toBe(30_000)
-    // 30K × $3/MTok（kimi 未命中价格表 → Sonnet 档估算）= $0.09
-    expect(usage.estimatedCostUsd).toBeCloseTo(0.09, 4)
+    // 成本缓存拆分（Kimi K3：读 $0.3/M、写 = 输入价 $3/M）：存量前缀 25 750 按读价
+    // + 新增 4 250 按写价 = $0.0077 + $0.0128 ≈ $0.0205（旧全价口径为 30K×$3/M = $0.09）
+    expect(usage.cacheReadTokens).toBe(25_750)
+    expect(usage.cacheWriteTokens).toBe(4_250)
+    expect(usage.estimatedCostUsd).toBeCloseTo(0.020475, 6)
   })
 
-  it('回落（上下文压缩）同样是新请求：按压缩后上下文全额计费', () => {
+  it('缓存拆分口径：1M 基线 + 50K 增量 = 1M×缓存读价 + 50K×缓存写价（97% 命中率下旧全价口径高估 6 倍）', () => {
+    let usage = applyRequestSample(undefined, sample(1_000_000), 'claude-sonnet-4-5')
+    usage = applyRequestSample(usage, sample(1_050_000, 2_000), 'claude-sonnet-4-5')
+    // Sonnet：1M×$0.3/M + 50K×$3.75/M = $0.3 + $0.1875（旧口径 1.05M×$3/M = $3.15）
+    expect(usage.estimatedCostUsd).toBeCloseTo(0.4875, 6)
+    expect(usage.inputTokens).toBe(1_050_000)
+    expect(usage.cacheReadTokens).toBe(1_000_000)
+    expect(usage.cacheWriteTokens).toBe(50_000)
+  })
+
+  it('回落（上下文压缩）同样是新请求：压缩后全量按缓存写价重建前缀，基线重建', () => {
     let usage = applyRequestSample(undefined, sample(30_000), 'kimi-k3')
     usage = applyRequestSample(usage, sample(30_000, 2_000), 'kimi-k3')
     usage = applyRequestSample(usage, sample(18_000, 3_000), 'kimi-k3')
     usage = applyRequestSample(usage, sample(21_000, 4_000), 'kimi-k3')
     expect(usage.turns).toBe(2)
     expect(usage.inputTokens).toBe(18_000 + 21_000)
+    // 回落帧 18K 全量按写价重建；随后 21K = 存量 18K 读 + 增量 3K 写。
+    // 缓存两桶增量之和始终等于该次 used——桶仍是输入的子集，UI 分段条不越界。
+    expect(usage.cacheWriteTokens).toBe(18_000 + 3_000)
+    expect(usage.cacheReadTokens).toBe(18_000)
+    expect(usage.cacheReadTokens + usage.cacheWriteTokens).toBe(usage.inputTokens)
+    expect(usage.contextLastUsed).toBe(21_000)
   })
 
   it('连续请求累计 + 模型变化标记混合计价', () => {

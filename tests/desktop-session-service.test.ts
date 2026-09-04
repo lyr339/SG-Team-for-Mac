@@ -2372,3 +2372,102 @@ describe('封口防线：最终正文不重复成为过程 message（§8.4-4，2
     }
   })
 })
+
+describe('遥测落盘态 contextTokensUsed → 用量采样转发（长会话近实时 TOKENS/COST 的活水源）', () => {
+  function telemetryWithUsed(used?: number): CursorTelemetrySnapshot {
+    const base = telemetry()
+    return {
+      ...base,
+      composers: [{
+        ...base.composers[0]!,
+        contextUsage: used === undefined
+          ? { ratio: 0.63 }
+          : { used, limit: 200_000, ratio: used / 200_000 }
+      }]
+    }
+  }
+
+  it('每次成功刷新都把已绑定 Composer 的落盘读数交给采样 sink（去重归聚合器，不依赖快照 changed 分支）', () => {
+    const samples: Array<{ composerId: string; used: number; observedAt: number }> = []
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(teamSnapshot('composer-alpha-123')),
+      { readWorkspace: () => telemetryWithUsed(126_000) },
+      undefined,
+      undefined,
+      undefined,
+      (sample) => { samples.push(sample) }
+    )
+    try {
+      service.refreshTelemetry()
+      expect(samples).toEqual([expect.objectContaining({ composerId: 'composer-alpha-123', used: 126_000 })])
+      // 遥测指纹未变（同一快照）也照样转发：记账去重是 applyRequestSample 的职责，
+      // 推送节流是聚合器的职责——转发层不做任何裁剪。
+      service.refreshTelemetry()
+      expect(samples).toHaveLength(2)
+    } finally {
+      service.dispose()
+    }
+  })
+
+  it('未绑定 Composer、缺失或非正的读数一律不转发', () => {
+    const samples: unknown[] = []
+    const sink = (sample: unknown) => { samples.push(sample) }
+    const unbound = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(teamSnapshot(undefined)),
+      { readWorkspace: () => telemetryWithUsed(126_000) },
+      undefined, undefined, undefined, sink
+    )
+    try {
+      unbound.refreshTelemetry()
+      expect(samples).toHaveLength(0)
+    } finally {
+      unbound.dispose()
+    }
+    const noUsed = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')),
+      { readWorkspace: () => telemetryWithUsed(undefined) },
+      undefined, undefined, undefined, sink
+    )
+    try {
+      noUsed.refreshTelemetry()
+      expect(samples).toHaveLength(0)
+    } finally {
+      noUsed.dispose()
+    }
+    const zeroUsed = new DesktopSessionService(
+      new FakeBridge(), new FakeTeam(teamSnapshot('composer-alpha-123')),
+      { readWorkspace: () => telemetryWithUsed(0) },
+      undefined, undefined, undefined, sink
+    )
+    try {
+      zeroUsed.refreshTelemetry()
+      expect(samples).toHaveLength(0)
+    } finally {
+      zeroUsed.dispose()
+    }
+  })
+
+  it('sink 异常不打断遥测主链：快照仍正常落地', () => {
+    const calls: number[] = []
+    const service = new DesktopSessionService(
+      new FakeBridge(),
+      new FakeTeam(teamSnapshot('composer-alpha-123')),
+      { readWorkspace: () => telemetryWithUsed(126_000) },
+      undefined,
+      undefined,
+      undefined,
+      (sample) => {
+        calls.push(sample.used)
+        throw new Error('用量聚合器爆炸')
+      }
+    )
+    try {
+      service.refreshTelemetry()
+      expect(calls).toEqual([126_000])
+      expect(service.getSnapshot().sessions[0]?.contextUsage?.ratio).toBeCloseTo(0.63, 2)
+    } finally {
+      service.dispose()
+    }
+  })
+})

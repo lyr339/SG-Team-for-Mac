@@ -96,6 +96,8 @@ let teamControlService: TeamControlService | undefined
 let desktopSessionService: DesktopSessionService | undefined
 let cursorStreamObserver: CursorStreamObserver | undefined
 let cursorUsageTrackerRef: CursorUsageTracker | undefined
+/** CDP 内存态 contextTokensUsed 曾供水的 composer：遥测落盘采样源对其让位（双源互斥）。 */
+const cdpContextSampledComposers = new Set<string>()
 let teamCollaborationRepository: SqliteTeamCollaborationRepository | undefined
 let teamMessageDispatcher: TeamMessageDispatcher | undefined
 let teamMemoryRepository: SqliteTeamMemoryRepository | undefined
@@ -299,12 +301,26 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
         return
       }
       if (usage.contextTokensUsed) {
+        // CDP 内存态读数在场：该 composer 的采样由 CDP 源独占，遥测落盘源让位。
+        cdpContextSampledComposers.add(input.composerId)
         tracker.recordRequestSample({
           composerId: input.composerId,
           used: usage.contextTokensUsed,
           occurredAt: input.observedAt
         })
       }
+    },
+    // 遥测落盘态 contextTokensUsed（state.vscdb，250ms 轮询持续有值）：长会话近实时
+    // 用量的实际活水源（CDP 内存态在当前 Cursor 版本恒空）。两源读数有时间差，同一
+    // composer 同时记账会把同一请求记两次——同一时刻只允许一源：CDP 曾供水则遥测让位。
+    (sample) => {
+      const tracker = cursorUsageTrackerRef
+      if (!tracker || cdpContextSampledComposers.has(sample.composerId)) return
+      tracker.recordRequestSample({
+        composerId: sample.composerId,
+        used: sample.used,
+        occurredAt: sample.observedAt
+      })
     }
   )
   desktopSessionService.startWatcher()
@@ -536,7 +552,10 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
       { runId: nextRunId, status: nextRunStatus }
     )
     if (usageDecision.reset) usageRunId = nextRunId
-    if (usageDecision.reset) cursorUsageTracker.reset()
+    if (usageDecision.reset) {
+      cursorUsageTracker.reset()
+      cdpContextSampledComposers.clear()
+    }
     usageRunStatus = nextRunStatus
     // 用量采集与 TeamRun 状态解耦：run 被误判结束/暂停期间 Composer 仍在
     // 真实消耗 token（2026-09-01 实证：run 14:32 被收尾后 14:45 事件仍到达

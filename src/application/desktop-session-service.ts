@@ -96,6 +96,20 @@ export type TurnUsageSink = (input: {
   observedAt: number
 }) => void
 
+/**
+ * 遥测落盘态的上下文读数出口（`state.vscdb` composerData.contextTokensUsed，
+ * 即 Cursor 自家「Context: X%」同源）。持续对话模式下回合永不结束，turnEnded /
+ * turnTokenUsage 恒空，CDP 读到的内存态 contextTokensUsed 在当前 Cursor 版本
+ * 也恒空——这条落盘读数是长会话里唯一持续刷新的请求级活水，喂给用量聚合器的
+ * 请求级采样通道即可实现近实时 TOKENS/COST（刷新率 = 遥测轮询 250ms + 聚合器
+ * 800ms 节流；滞后上限由 Cursor 落盘频率决定）。注入方负责与 CDP 采样源互斥。
+ */
+export type ContextUsageSampleSink = (input: {
+  composerId: string
+  used: number
+  observedAt: number
+}) => void
+
 type DesktopSessionListener = (snapshot: DesktopSnapshot) => void
 
 function activeWorkspaceOf(team: TeamControlSnapshot) {
@@ -355,7 +369,8 @@ export class DesktopSessionService implements DesktopSessionBridge {
     private readonly telemetrySource: CursorComposerTelemetrySource,
     private readonly embeddedRelay?: ChannelMessageRelay,
     private readonly runtimeSource?: CursorComposerRuntimeSource,
-    private readonly turnUsageSink?: TurnUsageSink
+    private readonly turnUsageSink?: TurnUsageSink,
+    private readonly contextUsageSink?: ContextUsageSampleSink
   ) {
     const initialTeam = team.getSnapshot()
     this.activeWorkspaceId = initialTeam.activeWorkspaceId
@@ -991,6 +1006,10 @@ export class DesktopSessionService implements DesktopSessionBridge {
       this.telemetry = next
       this.telemetryFingerprint = fingerprint
       if (changed || transcriptResponseChanged) this.emit()
+      // 用量采样不依赖 changed 分支（记账语义独立于快照推送），也不进 getSnapshot()：
+      // 每次成功刷新都把已绑定 Composer 的落盘上下文读数交给聚合器，同值由
+      // applyRequestSample 去重，零额外轮询。
+      this.forwardContextUsageSamples(teamSnapshot.bindings, composerByIdForReplies)
       if (workspace) this.refreshRuntimeEvidence(workspace.path, teamSnapshot.bindings)
     } catch (error) {
       const failed = emptyCursorTelemetrySnapshot(
@@ -1007,6 +1026,25 @@ export class DesktopSessionService implements DesktopSessionBridge {
       if (changed) this.emit()
     } finally {
       this.refreshing = false
+    }
+  }
+
+  /** 遥测刷新后的用量采样转发：只转发已绑定 Composer 的有效正读数，转发失败不影响遥测主链。 */
+  private forwardContextUsageSamples(
+    bindings: RuntimeBinding[],
+    composerById: Map<string, CursorComposerTelemetry>
+  ): void {
+    if (!this.contextUsageSink) return
+    const observedAt = Date.now()
+    for (const binding of bindings) {
+      if (!binding.composerId) continue
+      const used = composerById.get(binding.composerId)?.contextUsage?.used
+      if (typeof used !== 'number' || !Number.isFinite(used) || used <= 0) continue
+      try {
+        this.contextUsageSink({ composerId: binding.composerId, used, observedAt })
+      } catch {
+        // 用量聚合异常不得打断遥测/活性主链。
+      }
     }
   }
 
