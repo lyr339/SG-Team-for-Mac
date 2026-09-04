@@ -132,6 +132,8 @@ async function serveUnified(databasePath: string): Promise<void> {
   const handle = serveStdio(() => createUnifiedChannelServer({
     runtimeFor,
     channelServiceFor,
+    // 会话围栏：通道在当前活动 run 内的席位归属；查询异常由工具层按「无法判定」放行。
+    ownershipFor: (channelId) => teamRepository.resolveChannelSessionOwner(channelId),
     refreshIdentity: (channelId) => {
       try {
         refreshIdentity(channelId)

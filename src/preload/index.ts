@@ -72,6 +72,7 @@ const api: QingtianDesktopApi = {
   createIndependentSessions: (input) => ipcRenderer.invoke(IPC.teamControlCreateIndependent, input),
   chooseIndependentWorkspace: () => ipcRenderer.invoke(IPC.teamControlChooseIndependentWorkspace),
   createNextTeamRun: () => ipcRenderer.invoke(IPC.teamControlNextRun),
+  endActiveRun: () => ipcRenderer.invoke(IPC.teamControlEndRun),
   prepareActiveTeamSetup: () => ipcRenderer.invoke(IPC.teamControlPrepareActiveSetup),
   updateTeamGoal: (goal) => ipcRenderer.invoke(IPC.teamControlUpdateGoal, goal),
   launchTeam: () => ipcRenderer.invoke(IPC.teamControlLaunch),

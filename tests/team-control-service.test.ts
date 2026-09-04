@@ -197,13 +197,21 @@ describe('TeamControlService', () => {
     }
   })
 
-  it('blocks an independent batch while any current session still has live evidence', () => {
+  it('replaces a team run with an independent batch even while its sessions still show live evidence (soft guard)', () => {
+    // 会话围栏取代硬阻：旧会话在下一次轮询被围栏拒绝并自行退出，服务端不再以
+    // 「全部离线」为前提；后果确认由渲染层负责。
     const data = fixture()
     try {
-      expect(() => data.service.configureIndependentWorkspace({
+      const previous = data.service.getSnapshot().activeRun!
+      const snapshot = data.service.configureIndependentWorkspace({
         workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
         members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }]
-      })).toThrowError(/仍有在线或执行中的会话/)
+      })
+      expect(workspaceRunMode(snapshot.activeRun)).toBe('independent')
+      expect(snapshot.activeRun?.id).not.toBe(previous.id)
+      // 未启动（ready）的旧团队 run 没有会话可围栏，只被新 run 取代，不伪造 completed。
+      expect(snapshot.runs.find((run) => run.id === previous.id)?.status).toBe(previous.status)
+      expect(data.bridge.conversationScopes.at(-1)?.runId).toBe(snapshot.activeRun?.id)
     } finally {
       data.service.dispose()
       data.repository.close()
@@ -806,6 +814,60 @@ describe('TeamControlService', () => {
     } finally {
       service.dispose()
       repository.close()
+    }
+  })
+})
+
+describe('独立模式 → 团队切换（会话围栏软守卫）', () => {
+  function independentFixture(online: boolean) {
+    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-ind-to-team-')), 'control.sqlite3')
+    const repository = new SqliteTeamControlRepository(path)
+    const desktop = desktopSnapshot(false)
+    desktop.sessions = desktop.sessions.map((session) => (
+      { ...session, online, connected: online, waiting: online, status: online ? 'waiting' as const : 'offline' as const, connectionPhase: online ? 'waiting' : 'offline' }
+    ))
+    const bridge = new FakeBridge(desktop)
+    const service = new TeamControlService(repository, bridge, 100)
+    service.configureIndependentWorkspace({
+      workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
+      members: [{ channelId: '1', roleTemplateKey: 'solo', avatarId: 'researcher', skills: [], solo: true }]
+    })
+    return { repository, bridge, service }
+  }
+
+  it('switches to a team run while solo sessions are still online: the independent run is completed, not blocked', () => {
+    const data = independentFixture(true)
+    try {
+      const previous = data.service.getSnapshot().activeRun!
+      expect(previous.status).toBe('running')
+      const snapshot = data.service.configureWorkspace({
+        workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
+        members: [{ channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] }]
+      })
+      expect(workspaceRunMode(snapshot.activeRun)).toBe('team')
+      expect(snapshot.activeRun?.id).not.toBe(previous.id)
+      // 旧独立 run 显式收尾：围栏据此把仍持旧令牌的会话判为 retired。
+      expect(snapshot.runs.find((run) => run.id === previous.id)?.status).toBe('completed')
+      expect(data.bridge.conversationScopes.at(-1)?.runId).toBe(snapshot.activeRun?.id)
+    } finally {
+      data.service.dispose()
+      data.repository.close()
+    }
+  })
+
+  it('replaces the independent run with a team run once every solo session is offline', () => {
+    const data = independentFixture(false)
+    try {
+      const snapshot = data.service.configureWorkspace({
+        workspaceId: 'alpha', workspaceName: 'alpha', workspacePath: '/workspace/alpha',
+        members: [{ channelId: '1', roleTemplateKey: 'lead', avatarId: 'lead', skills: [] }]
+      })
+      expect(workspaceRunMode(snapshot.activeRun)).toBe('team')
+      expect(snapshot.members.map((member) => member.role.templateKey)).toEqual(['lead'])
+      expect(snapshot.members.some((member) => member.slot.solo === true)).toBe(false)
+    } finally {
+      data.service.dispose()
+      data.repository.close()
     }
   })
 })

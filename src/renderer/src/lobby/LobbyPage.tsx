@@ -16,6 +16,7 @@ import { LobbySummaryTile } from './LobbySummaryTile'
 import { LobbyAccountTile, type LobbyAccountTileProps } from './LobbyAccountTile'
 import { lobbyFlowStepsFor } from './lobby-flow'
 import { IndependentSessionPage } from './IndependentSessionPage'
+import { RunModePanel } from './RunModePanel'
 
 export type ConfigurationSection = 'team' | 'independent' | 'account'
 
@@ -43,6 +44,8 @@ interface LobbyPageProps {
   onLaunchAgentSessions: (requests: AgentLaunchRequest[]) => Promise<AgentLaunchPlan>
   onCreateIndependentSessions: (input: CreateIndependentSessionsInput) => Promise<AgentLaunchPlan>
   onChooseIndependentWorkspace: () => Promise<IndependentWorkspaceSelection | undefined>
+  /** 显式结束当前运行（团队或独立批次）；旧会话经会话围栏在下一次轮询自行退出。 */
+  onEndActiveRun: () => Promise<void>
   onOpenSessions: () => void
   onPersistModelSelection?: (channelId: string, selection: CursorModelSelection) => Promise<TeamControlSnapshot>
   onEnableCursorCdp?: () => Promise<{ ok: boolean; message: string; suggestAutoHeal?: boolean }>
@@ -73,6 +76,7 @@ export function LobbyPage({
   onLaunchAgentSessions,
   onCreateIndependentSessions,
   onChooseIndependentWorkspace,
+  onEndActiveRun,
   onOpenSessions,
   onPersistModelSelection,
   onEnableCursorCdp,
@@ -197,6 +201,7 @@ export function LobbyPage({
             cdpAutoHealEvent={cdpAutoHealEvent}
             onCreate={onCreateIndependentSessions}
             onChooseWorkspace={onChooseIndependentWorkspace}
+            onEndRun={onEndActiveRun}
             onLaunch={onLaunchAgentSessions}
             onPersistModelSelection={onPersistModelSelection}
             onEnableCursorCdp={onEnableCursorCdp}
@@ -241,15 +246,24 @@ export function LobbyPage({
   }
 
   if (workspaceRunMode(activeRun) === 'independent') {
+    // 独立模式：显式的模式面板，而不是整页拦截。切换/结束不再等旧会话心跳过期——
+    // 会话围栏让它们在下一次轮询自行退出；面板负责讲清后果并要一次确认。
     return (
       <div className="lobby-page configuration-page">
         <div className="configuration-frame">
           {sectionNavigation}
-          <div className="v2-empty-team">
-            <span><BrandMark /></span><h1>当前正在使用独立会话</h1>
-            <p>独立会话不加入团队协作；可在“独立会话”分页查看状态或补齐掉线会话。</p>
-            <button onClick={() => onSectionChange('independent')}>查看独立会话</button>
-          </div>
+          <RunModePanel
+            team={team}
+            busy={Boolean(busy)}
+            error={error}
+            onViewSessions={() => onSectionChange('independent')}
+            onSwitchToTeam={() => run('workspace', onChooseWorkspace)}
+            onEndRun={() => run('end-run', async () => {
+              await onEndActiveRun()
+              setNotice('独立批次已结束；旧会话会在下一次轮询自行退出。')
+            })}
+          />
+          {notice ? <div className="v2-inline-notice" role="status" aria-live="polite">{notice}</div> : null}
         </div>
       </div>
     )

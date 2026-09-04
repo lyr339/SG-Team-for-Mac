@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import type { ChannelMessageService } from '../application/channel-message-service'
 import { SG_TEAM_MCP_DISPLAY_NAME } from '../domain/channel-message'
+import type { ChannelSessionOwnership } from '../domain/session-fence'
 import {
   registerChannelCommunicationTools
 } from './channel-communication-tools'
@@ -15,6 +16,8 @@ export interface UnifiedChannelServerOptions {
   runtimeFor(channelId: string): TeamChannelRuntime
   /** 按 channel_id 解析通道消息服务。 */
   channelServiceFor(channelId: string): ChannelMessageService
+  /** 会话围栏：通道在当前活动 run 内的席位归属（缺省不围栏）。 */
+  ownershipFor?: (channelId: string) => ChannelSessionOwnership | undefined
   refreshIdentity?: (channelId: string) => void
   /** team_check_in 返回的角色简报（S4 底层注入）。 */
   briefingFor?: (channelId: string) => string | undefined
@@ -41,6 +44,7 @@ export function createUnifiedChannelServer(options: UnifiedChannelServerOptions)
   })
   registerChannelCommunicationTools(server, {
     serviceFor: options.channelServiceFor,
+    ownershipFor: options.ownershipFor,
     workspacePath: options.workspacePath,
     keepaliveTimeoutMs: options.keepaliveTimeoutMs
   })

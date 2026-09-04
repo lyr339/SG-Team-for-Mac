@@ -1,4 +1,5 @@
 import { numberOf, type SqliteRow } from '../sqlite/rows'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
@@ -22,6 +23,7 @@ import type {
 } from '../../domain/team-control'
 import type { AssignedAgentSkill } from '../../domain/agent-skill'
 import type { CursorModelSelection } from '../../domain/cursor-model'
+import type { ChannelSessionOwnership } from '../../domain/session-fence'
 import { TaskPoolError } from '../../domain/task-pool'
 import type { ComposerBindingMethod } from '../../domain/cursor-telemetry'
 import type {
@@ -42,6 +44,16 @@ const COMPOSER_BINDING_METHODS = new Set<ComposerBindingMethod>(['launch_marker'
 
 function optionalNumber(value: unknown): number | undefined {
   return value === null || value === undefined ? undefined : numberOf(value)
+}
+
+/**
+ * 会话围栏令牌：每个 (run, slot) 绑定在签发/换席时生成一次，随开场提示交给该
+ * Cursor 会话；通信工具携带它时服务端据此区分「同一通道号上的新旧会话」。
+ * 与 composer_binding_key 不同，团队 launch 不轮换它（否则启动前创建的会话会被
+ * 自己的团队围栏误杀）。
+ */
+function newSessionToken(): string {
+  return randomUUID()
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -258,7 +270,8 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
       composerBindingKey: optionalString(row.composer_binding_key) ?? String(row.generation),
       composerId: optionalString(row.composer_id),
       composerBoundAt: optionalNumber(row.composer_bound_at),
-      composerBindingMethod: optionalString(row.composer_binding_method) as RuntimeBinding['composerBindingMethod']
+      composerBindingMethod: optionalString(row.composer_binding_method) as RuntimeBinding['composerBindingMethod'],
+      sessionToken: optionalString(row.session_token)
     }))
 
     return {
@@ -583,8 +596,8 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         INSERT INTO runtime_bindings (
           id, workspace_id, run_id, slot_id, channel_id, agent_session_id, generation,
           installed_at, launch_status, launch_command_id, launch_detail,
-          acknowledged_at, last_check_in_at, last_check_in_note, composer_binding_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'not_started', NULL, '', NULL, NULL, '', ?)
+          acknowledged_at, last_check_in_at, last_check_in_note, composer_binding_key, session_token
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'not_started', NULL, '', NULL, NULL, '', ?, ?)
       `)
       for (const slot of expectedSlots) {
         const agent = batch.agents.find((candidate) => candidate.channelId === String(slot.channel_id))
@@ -598,7 +611,8 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
           agent.agentSessionId,
           agent.generation,
           installedAt,
-          agent.generation
+          agent.generation,
+          newSessionToken()
         )
       }
       // 安装批次只把「尚未启动」的 run 归位到 ready/draft；launching/running 等
@@ -700,14 +714,15 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     if (!COMPOSER_BINDING_KEY_PATTERN.test(bindingKey)) throw new Error('Cursor Composer 绑定键无效')
     this.database.exec('BEGIN IMMEDIATE')
     try {
+      // 换席重建：旧 Composer 若仍活着，其持有的旧 session 令牌即刻失效（会话围栏）。
       const result = this.database.prepare(`
         UPDATE runtime_bindings
         SET composer_binding_key = ?, composer_id = NULL, composer_bound_at = NULL,
             composer_binding_method = NULL, launch_status = 'not_started',
             launch_command_id = NULL, launch_detail = '', acknowledged_at = NULL,
-            last_check_in_at = NULL, last_check_in_note = ''
+            last_check_in_at = NULL, last_check_in_note = '', session_token = ?
         WHERE run_id = ? AND slot_id = ?
-      `).run(bindingKey, input.runId.trim(), input.slotId.trim())
+      `).run(bindingKey, newSessionToken(), input.runId.trim(), input.slotId.trim())
       if (numberOf(result.changes) > 0) this.bumpRevision()
       this.database.exec('COMMIT')
       return numberOf(result.changes) === 1
@@ -837,6 +852,37 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     }
   }
 
+  /**
+   * 会话围栏查询（通信工具每次调用）：当前活动 run 内该通道的席位归属。
+   * 轻量 SQL，不装配完整团队状态——check_messages 每 60s 一次 × 通道数，
+   * loadTeamControl 的十余条查询在这里是浪费。
+   * - undefined：没有活动 run，或该通道不属于活动 run（无绑定）；
+   * - sessionToken 缺失：该绑定尚未签发令牌（旧会话 / 备用接替），按无令牌旧会话放行。
+   */
+  resolveChannelSessionOwner(channelId: string): ChannelSessionOwnership | undefined {
+    const normalizedChannelId = String(channelId).trim()
+    const row = this.database.prepare(`
+      SELECT tr.id AS run_id, tr.status AS run_status, b.slot_id, b.session_token, s.is_solo
+      FROM team_control_meta meta
+      JOIN team_runs tr ON tr.workspace_id = meta.active_workspace_id
+      LEFT JOIN runtime_bindings b ON b.run_id = tr.id AND b.channel_id = ?
+      LEFT JOIN agent_slots s ON s.id = b.slot_id AND s.run_id = b.run_id
+      WHERE meta.id = 1
+      ORDER BY tr.created_at DESC
+      LIMIT 1
+    `).get(normalizedChannelId) as SqliteRow | undefined
+    const runId = row ? optionalString(row.run_id) : undefined
+    if (!row || !runId) return undefined
+    const bound = optionalString(row.slot_id) !== undefined
+    return {
+      runId,
+      runStatus: String(row.run_status) as TeamRunStatus,
+      bound,
+      sessionToken: bound ? optionalString(row.session_token) : undefined,
+      solo: bound && numberOf(row.is_solo) === 1
+    }
+  }
+
   listAgentRegistrations(runId: string): AgentRegistration[] {
     return (this.database.prepare(`
       SELECT agent_session_id, runtime_id, workspace_id, channel_id, generation, run_id, capabilities_json
@@ -913,13 +959,16 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         UPDATE agent_registrations SET capabilities_json = ?
         WHERE agent_session_id = ? AND run_id = ? AND revoked_at IS NULL
       `).run(String(current.capabilities_json), replacementAgentSessionId, runId)
+      // 备用会话早已在线、未持有本席令牌：令牌清空（按无令牌旧会话放行），同时让
+      // 原失联 Agent 若复活并出示旧令牌时被围栏拒绝。
       const updated = this.database.prepare(`
         UPDATE runtime_bindings
         SET id = ?, channel_id = ?, agent_session_id = ?, generation = ?, installed_at = ?,
             launch_status = 'sending', launch_command_id = NULL,
             launch_detail = '备用 Agent 正在接替职责', acknowledged_at = NULL,
             last_check_in_at = NULL, last_check_in_note = '', composer_binding_key = ?,
-            composer_id = NULL, composer_bound_at = NULL, composer_binding_method = NULL
+            composer_id = NULL, composer_bound_at = NULL, composer_binding_method = NULL,
+            session_token = NULL
         WHERE run_id = ? AND slot_id = ? AND agent_session_id = ?
       `).run(
         `runtime-binding:${replacementAgentSessionId}`,
@@ -1039,6 +1088,8 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
         UPDATE runtime_bindings SET id = ?, agent_session_id = ?
         WHERE run_id = ? AND slot_id = ? AND agent_session_id = ?
       `).run(temporaryId, temporaryAgent, runId, slotId, expectedAgentSessionId)
+      // 会话令牌随运行身份一起交换：在线的 donor 继续用自己的令牌通过围栏；
+      // 迁到 donor 席的离线身份令牌清空（其旧令牌若复活出示即被拒绝）。
       this.database.prepare(`
         UPDATE runtime_bindings
         SET id = ?, channel_id = ?, agent_session_id = ?, generation = ?, installed_at = ?,
@@ -1046,7 +1097,7 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
             launch_detail = '原运行时已离线；在线 Agent 已迁移到其他职责',
             acknowledged_at = NULL, last_check_in_at = NULL, last_check_in_note = '',
             composer_binding_key = ?, composer_id = NULL, composer_bound_at = NULL,
-            composer_binding_method = NULL
+            composer_binding_method = NULL, session_token = NULL
         WHERE run_id = ? AND slot_id = ? AND agent_session_id = ?
       `).run(
         String(current.id), String(current.channel_id), expectedAgentSessionId,
@@ -1059,11 +1110,13 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
             launch_status = 'sending', launch_command_id = NULL,
             launch_detail = '用户手动交接，等待新角色确认', acknowledged_at = NULL,
             last_check_in_at = NULL, last_check_in_note = '', composer_binding_key = ?,
-            composer_id = NULL, composer_bound_at = NULL, composer_binding_method = NULL
+            composer_id = NULL, composer_bound_at = NULL, composer_binding_method = NULL,
+            session_token = ?
         WHERE run_id = ? AND slot_id = ? AND agent_session_id = ?
       `).run(
         String(donor.id), String(donor.channel_id), replacementAgentSessionId,
         String(donor.generation), at, input.bindingKey.trim(),
+        optionalString(donor.session_token) ?? null,
         runId, slotId, temporaryAgent
       )
       this.database.prepare(`
@@ -1682,6 +1735,11 @@ export class SqliteTeamControlRepository implements TeamControlRepository {
     }
     if (databaseVersion !== TEAM_SCHEMA_VERSION) {
       throw new Error(`团队控制数据库版本不兼容：${databaseVersion}，当前支持 ${TEAM_SCHEMA_VERSION}`)
+    }
+    // 会话围栏令牌：纯附加列，不升 schema 版本（旧构建的 MCP 进程与新主进程可能
+    // 短暂共用同一库；SELECT * 对多出的列无感）。NULL = 该绑定尚未签发令牌（旧会话）。
+    if (!tableHasColumn(this.database, 'runtime_bindings', 'session_token')) {
+      this.database.exec('ALTER TABLE runtime_bindings ADD COLUMN session_token TEXT')
     }
     this.database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_bindings_run_composer

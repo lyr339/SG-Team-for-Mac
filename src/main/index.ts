@@ -635,7 +635,8 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     teamControlService,
     desktopSessionService,
     cursorWorkspaceDetector,
-    () => mainWindow
+    () => mainWindow,
+    { isSessionLaunchRunning: () => agentSessionLauncher.getPlan()?.state === 'running' }
   )
   disposeTeamCollaborationIpc = registerTeamCollaborationIpc(
     teamCollaborationService,

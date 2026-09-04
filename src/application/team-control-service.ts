@@ -17,7 +17,8 @@ import {
   type TeamMemberConfiguration,
   type TeamMemberReadiness,
   type TeamMemberView,
-  type TeamRun
+  type TeamRun,
+  type WorkspaceTeamBundle
 } from '../domain/team-control'
 import type {
   DesktopSnapshot,
@@ -264,9 +265,18 @@ export class TeamControlService {
     return this.getSnapshot()
   }
 
+  /**
+   * 组建团队 run（可能替换当前独立 run / 旧团队 run）。
+   *
+   * 模式切换不再以「旧会话全部离线」为前提：会话围栏（session 令牌）让被替换的
+   * 旧会话在下一次轮询就收到终止指令自行退出，且不能刷新新席位的 presence；
+   * 作用域切换同时把全部通道的既有心跳退役。唯一硬阻塞是正在进行的团队启动
+   * 投递（单飞）。后果（旧会话结束、排队消息归档）由渲染层在切换前向用户确认。
+   */
   configureWorkspace(input: Omit<TeamWorkspaceSelection, 'channelIds'> & {
     members: TeamMemberConfiguration[]
   }): TeamControlSnapshot {
+    this.assertNoLaunchInFlight()
     const bundle = createConfiguredTeamBundle({
       workspaceId: input.workspaceId,
       workspaceName: input.workspaceName,
@@ -275,25 +285,14 @@ export class TeamControlService {
       runKey: freshTeamRunKey(),
       now: this.nextRunCreatedAt()
     })
-    this.repository.upsertWorkspaceTeam(bundle)
-    this.collaborationLifecycle?.clearRun(bundle.run.id)
-    this.syncConversationScope(this.loadState())
-    this.emit()
-    return this.getSnapshot()
+    return this.replaceActiveRun(bundle)
   }
 
+  /** 创建独立批次 run（可能替换当前团队 run / 旧独立批次）；守卫语义同 configureWorkspace。 */
   configureIndependentWorkspace(input: Omit<TeamWorkspaceSelection, 'channelIds'> & {
     members: TeamMemberConfiguration[]
   }): TeamControlSnapshot {
-    const current = this.getSnapshot()
-    const currentRun = current.activeRun
-    const activeSession = current.members.some((member) => (
-      member.runtime?.online || hasInFlightExecution(member.runtime)
-    ))
-    const unresolvedSession = current.members.some((member) => member.binding && !member.runtime)
-    if (currentRun && (activeSession || unresolvedSession)) {
-      throw new Error('当前仍有在线或执行中的会话，请先结束当前运行后再创建独立会话')
-    }
+    this.assertNoLaunchInFlight()
     const bundle = createConfiguredTeamBundle({
       workspaceId: input.workspaceId,
       workspaceName: input.workspaceName,
@@ -303,6 +302,35 @@ export class TeamControlService {
       runKey: freshTeamRunKey(),
       now: this.nextRunCreatedAt()
     })
+    return this.replaceActiveRun(bundle)
+  }
+
+  /**
+   * 显式结束当前 run（团队或独立批次）。独立批次此前没有任何结束出口，只能被
+   * 替换或等待旧会话心跳过期；结束后携带令牌的旧会话在下一次轮询被围栏拒绝。
+   */
+  endActiveRun(): TeamControlSnapshot {
+    const run = activeRunOf(this.loadState())
+    if (!run) throw new Error('当前没有可结束的运行')
+    if (run.status === 'completed') throw new Error('当前运行已经结束')
+    this.assertNoLaunchInFlight()
+    if (!this.repository.completeRun(run.id, Date.now())) {
+      throw new Error('运行状态已变化，请刷新后重试')
+    }
+    this.emit()
+    return this.getSnapshot()
+  }
+
+  private assertNoLaunchInFlight(): void {
+    if (this.activeLaunch) throw new Error('团队启动指令正在投递，请稍后再切换')
+  }
+
+  /** 用新 run 替换当前活动 run：旧 run 显式收尾 → 写入新拓扑 → 切换会话作用域。 */
+  private replaceActiveRun(bundle: WorkspaceTeamBundle): TeamControlSnapshot {
+    const previous = activeRunOf(this.loadState())
+    if (previous && previous.status !== 'completed' && previous.id !== bundle.run.id) {
+      this.repository.completeRun(previous.id, Date.now())
+    }
     this.repository.upsertWorkspaceTeam(bundle)
     this.collaborationLifecycle?.clearRun(bundle.run.id)
     this.syncConversationScope(this.loadState())

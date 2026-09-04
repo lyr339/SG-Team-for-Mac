@@ -45,3 +45,4 @@
 .v2-empty-team p { margin: 0; color: var(--muted); font-size: var(--fs-12); }
 .v2-empty-team em { margin-top: 10px; color: var(--red); font-size: var(--fs-10); font-style: normal; }
 .v2-empty-team button { margin-top: 18px; padding: 10px 17px; color: var(--color-text-inverse); background: var(--color-background-inverse); border: 0; border-radius: 10px; font-weight: 600; font-size: var(--fs-12); box-shadow: var(--shadow-sm); }
+.v2-empty-team button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }

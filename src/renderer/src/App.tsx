@@ -970,6 +970,9 @@ export function App(): React.JSX.Element {
           onLaunchAgentSessions={launchAgentSessions}
           onCreateIndependentSessions={createIndependentSessions}
           onChooseIndependentWorkspace={() => window.qingtianDesktop.chooseIndependentWorkspace()}
+          onEndActiveRun={async () => {
+            acceptTeamControl(await window.qingtianDesktop.endActiveRun())
+          }}
           onOpenSessions={() => setActiveModule('sessions')}
           onPersistModelSelection={async (channelId, selection) => {
             const result = await window.qingtianDesktop.setSlotModelSelection(channelId, selection)

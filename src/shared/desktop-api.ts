@@ -282,6 +282,11 @@ export interface QingtianDesktopApi {
   createIndependentSessions(input: CreateIndependentSessionsInput): Promise<TeamControlSnapshot>
   chooseIndependentWorkspace(): Promise<IndependentWorkspaceSelection | undefined>
   createNextTeamRun(): Promise<TeamControlSnapshot>
+  /**
+   * 显式结束当前运行（团队或独立批次）：run 进入 completed，本轮排队消息归档；
+   * 携带会话令牌的旧 Cursor 会话在下一次轮询收到围栏终止指令并自行退出。
+   */
+  endActiveRun(): Promise<TeamControlSnapshot>
   prepareActiveTeamSetup(): Promise<TeamSetupDraft>
   updateTeamGoal(goal: string): Promise<TeamControlSnapshot>
   launchTeam(): Promise<TeamControlSnapshot>
@@ -357,6 +362,7 @@ export const IPC = {
   teamControlCreateIndependent: 'team-control:create-independent',
   teamControlChooseIndependentWorkspace: 'team-control:choose-independent-workspace',
   teamControlNextRun: 'team-control:next-run',
+  teamControlEndRun: 'team-control:end-run',
   teamControlPrepareActiveSetup: 'team-control:prepare-active-setup',
   teamControlUpdateGoal: 'team-control:update-goal',
   teamControlLaunch: 'team-control:launch',

@@ -21,6 +21,8 @@ interface IndependentSessionPageProps {
   cdpAutoHealEvent?: CdpAutoHealEvent
   onCreate: (input: CreateIndependentSessionsInput) => Promise<AgentLaunchPlan>
   onChooseWorkspace: () => Promise<IndependentWorkspaceSelection | undefined>
+  /** 显式结束当前独立批次。 */
+  onEndRun: () => Promise<void>
   onLaunch: (requests: AgentLaunchRequest[]) => Promise<AgentLaunchPlan>
   onPersistModelSelection?: (channelId: string, selection: CursorModelSelection) => Promise<TeamControlSnapshot>
   onEnableCursorCdp?: () => Promise<{ ok: boolean; message: string; suggestAutoHeal?: boolean }>
@@ -38,6 +40,7 @@ export function IndependentSessionPage({
   cdpAutoHealEvent,
   onCreate,
   onChooseWorkspace,
+  onEndRun,
   onLaunch,
   onPersistModelSelection,
   onEnableCursorCdp,
@@ -52,6 +55,8 @@ export function IndependentSessionPage({
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  /** 软守卫确认：replace = 新建批次替换当前批次；end = 结束批次；create = 替换活跃团队 run。 */
+  const [confirming, setConfirming] = useState<'replace' | 'end' | 'create' | null>(null)
   const activeRun = team.activeRun
   const independentActive = workspaceRunMode(activeRun) === 'independent'
   const configuringNew = !independentActive || replaceMode
@@ -60,9 +65,10 @@ export function IndependentSessionPage({
   const members = independentActive ? team.members.filter((member) => member.slot.solo === true) : []
   const pendingMembers = members.filter((member) => !isAgentOnDuty(member.runtime))
   const pendingEvidence = pendingMembers.some((member) => !member.runtime)
-  const currentBlocksReplacement = members.some((member) => (
+  /** 在线 / 执行中 / 尚无运行时证据的会话数：软守卫据此决定是否需要一次确认。 */
+  const liveMemberCount = members.filter((member) => (
     !member.runtime || member.runtime.online || hasInFlightExecution(member.runtime)
-  ))
+  )).length
   const channels = configuringNew
     ? Array.from({ length: count }, (_, index) => String(index + 1))
     : pendingMembers.map((member) => member.binding?.channelId ?? member.slot.channelId)
@@ -78,7 +84,9 @@ export function IndependentSessionPage({
     const normalized = candidate && option ? normalizeCursorModelSelection(candidate, option) : defaultSelection
     return normalized ? [[channelId, normalized] as const] : []
   }))
+  // 仅针对「外来」的团队 run：独立批次替换自身（replaceMode）已在进入配置前确认过，不重复守卫。
   const activeForeignRun = Boolean(configuringNew && activeRun
+    && workspaceRunMode(activeRun) !== 'independent'
     && team.members.some((member) => !member.runtime || member.runtime.online || hasInFlightExecution(member.runtime)))
   const relevantPlan = plan && activeRun && plan.startedAt >= activeRun.createdAt
     && plan.items.every((item) => members.some((member) => (
@@ -143,6 +151,50 @@ export function IndependentSessionPage({
     }
   }
 
+  const launchSessions = (): void => {
+    if (!workspace) return
+    void run(() => configuringNew
+      ? onCreate({
+          workspacePath: workspace.path,
+          sessions: channels.map((channelId) => ({ modelSelection: selections[channelId] }))
+        })
+      : onLaunch(channels.map((channelId) => ({ channelId, modelSelection: selections[channelId] }))))
+  }
+
+  const endRun = async (): Promise<void> => {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await onEndRun()
+      setReplaceMode(false)
+      setNotice('独立批次已结束；旧会话会在下一次轮询自行退出。')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 软守卫：有仍在线/待确认的会话时先确认一次，全部离线则直接执行。 */
+  const performGuarded = (action: 'replace' | 'end' | 'create'): void => {
+    setConfirming(null)
+    if (action === 'replace') setReplaceMode(true)
+    else if (action === 'end') void endRun()
+    else launchSessions()
+  }
+  const requestGuarded = (action: 'replace' | 'end' | 'create'): void => {
+    const needsConfirm = action === 'create' ? activeForeignRun : liveMemberCount > 0
+    if (needsConfirm) setConfirming(action)
+    else performGuarded(action)
+  }
+
+  const confirmText = confirming === 'replace'
+    ? `确认新建批次？${liveMemberCount} 个会话仍在线或待确认，它们会在下一次轮询（最长 60 秒）收到结束指令并自行退出；尚未取走的排队消息将归档。`
+    : confirming === 'end'
+      ? `确认结束独立批次？${liveMemberCount} 个会话将收到结束指令并自行退出；尚未取走的排队消息将归档。`
+      : '当前团队运行仍有在线或执行中的 Agent。创建独立批次会结束该团队运行，旧会话在下一次轮询收到结束指令并自行退出。确认继续？'
+
   return (
     <section className="independent-config" aria-label="独立会话配置">
       <header className="independent-config__intro">
@@ -175,18 +227,31 @@ export function IndependentSessionPage({
           <span><b>{members.filter((member) => isAgentOnDuty(member.runtime)).length}</b> / {members.length} 已待命</span>
           <div>
             <button onClick={onOpenSessions}>打开会话</button>
-            <button disabled={currentBlocksReplacement} onClick={() => setReplaceMode(true)}>新建批次</button>
+            <button disabled={busy} onClick={() => requestGuarded('end')}>结束批次</button>
+            <button disabled={busy} onClick={() => requestGuarded('replace')}>新建批次</button>
           </div>
         </div>
       )}
 
       {activeForeignRun ? (
-        <p className="independent-config__warning">当前团队仍有在线或执行中的 Agent。结束本轮运行后即可切换到独立会话模式。</p>
+        <p className="independent-config__warning">当前团队运行仍有在线或执行中的 Agent；创建独立批次会结束该团队运行（点击创建时需确认一次）。</p>
       ) : null}
       {!configuringNew && pendingEvidence ? (
         <p className="independent-config__warning">正在确认离线会话的运行状态，确认完成后开放安全重建。</p>
       ) : null}
       {error || notice ? <p className={`independent-config__notice${error ? ' is-error' : ''}`} role="status">{error || notice}</p> : null}
+
+      {confirming ? (
+        <div className="independent-config__confirm" role="alertdialog" aria-label="确认操作">
+          <p>{confirmText}</p>
+          <div>
+            <button className="is-secondary" disabled={busy} onClick={() => setConfirming(null)}>取消</button>
+            <button className="is-danger" disabled={busy} onClick={() => performGuarded(confirming)}>
+              {confirming === 'replace' ? '确认新建' : confirming === 'end' ? '确认结束' : '确认创建'}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {(configuringNew || pendingMembers.length > 0) && workspace ? (
         <LobbySessionLaunchTile
@@ -196,15 +261,10 @@ export function IndependentSessionPage({
           selections={selections}
           isPrelaunch={configuringNew}
           plan={relevantPlan}
-          busy={busy || activeForeignRun || pendingEvidence}
+          busy={busy || pendingEvidence}
           cdpAutoHealEnabled={cdpAutoHealEnabled}
           cdpAutoHealEvent={cdpAutoHealEvent}
-          onLaunch={() => void run(() => configuringNew
-            ? onCreate({
-                workspacePath: workspace.path,
-                sessions: channels.map((channelId) => ({ modelSelection: selections[channelId] }))
-              })
-            : onLaunch(channels.map((channelId) => ({ channelId, modelSelection: selections[channelId] }))))}
+          onLaunch={() => requestGuarded('create')}
           onModelSave={async (channelId, selection) => {
             if (!configuringNew && onPersistModelSelection) {
               await onPersistModelSelection(channelId, selection)

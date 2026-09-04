@@ -12,10 +12,21 @@ import {
   buildTurnNote
 } from '../domain/channel-delivery-policy'
 import type { MessageAttachment } from '../domain/conversation-entry'
+import {
+  buildSessionRetiredText,
+  evaluateSessionFence,
+  type ChannelSessionOwnership,
+  type SessionFenceVerdict
+} from '../domain/session-fence'
 
 export interface ChannelCommunicationDeps {
   /** 单服务器按 channel_id 解析通道消息服务。 */
   serviceFor(channelId: string): ChannelMessageService
+  /**
+   * 会话围栏：解析通道在当前活动 run 内的归属（缺省 = 不围栏，全部放行）。
+   * 调用携带 session 令牌时才校验；不携带保持旧语义。
+   */
+  ownershipFor?(channelId: string): ChannelSessionOwnership | undefined
   workspacePath?: string
   keepaliveTimeoutMs?: number
 }
@@ -198,7 +209,9 @@ function deliveredContentBlocks(input: {
 
 const channelSchema = {
   channel_id: z.string().regex(/^\d+$/)
-    .describe('拾光分配给当前 Agent 的通道号（如 "2"），启动指令中声明，每次调用必传')
+    .describe('拾光分配给当前 Agent 的通道号（如 "2"），启动指令中声明，每次调用必传'),
+  session: z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/).optional()
+    .describe('启动指令给出的会话令牌（session）；给出后每次调用都要附带，用于区分同一通道上的新旧会话。启动指令未给出时省略')
 }
 
 /**
@@ -209,11 +222,27 @@ export function registerChannelCommunicationTools(
   server: McpServer,
   deps: ChannelCommunicationDeps
 ): void {
+  // 围栏在任何 presence 写入之前判定：被拒绝的旧会话不得刷新新席位的心跳。
+  // 归属查询异常 = 无法判定 → 放行（fail-open）：围栏只在证据确凿时拒绝。
+  const fence = (channelId: string, session: string | undefined): SessionFenceVerdict => {
+    if (!deps.ownershipFor || !session) return { status: 'legacy' }
+    try {
+      return evaluateSessionFence(deps.ownershipFor(channelId), session)
+    } catch (error) {
+      process.stderr.write(`[sg-team-mcp] 会话归属解析失败，围栏放行：${error instanceof Error ? error.message : String(error)}\n`)
+      return { status: 'legacy' }
+    }
+  }
+
   const runCheck = async (
     channelId: string,
-    input: { reply?: string },
+    input: { reply?: string; session?: string },
     signal: AbortSignal
   ): Promise<ToolResult> => {
+    const verdict = fence(channelId, input.session)
+    if (verdict.status === 'retired') {
+      return { content: [{ type: 'text' as const, text: buildSessionRetiredText({ channelId, reason: verdict.reason }) }] }
+    }
     const service = deps.serviceFor(channelId)
     const result = await service.checkMessages({
       channelId,
@@ -271,7 +300,7 @@ export function registerChannelCommunicationTools(
       }),
       annotations: { readOnlyHint: false, idempotentHint: false }
     },
-    async ({ channel_id, reply }, ctx) => runCheck(channel_id, { reply }, ctx.mcpReq.signal)
+    async ({ channel_id, reply, session }, ctx) => runCheck(channel_id, { reply, session }, ctx.mcpReq.signal)
   )
 
 
@@ -289,7 +318,15 @@ export function registerChannelCommunicationTools(
       }),
       annotations: { readOnlyHint: false, idempotentHint: false }
     },
-    async ({ channel_id, content, title, groupId, taskId, files }) => {
+    async ({ channel_id, session, content, title, groupId, taskId, files }) => {
+      const verdict = fence(channel_id, session)
+      if (verdict.status === 'retired') {
+        return toolJson({
+          ok: false,
+          code: 'session_retired',
+          message: buildSessionRetiredText({ channelId: channel_id, reason: verdict.reason })
+        }, true)
+      }
       try {
         const service = deps.serviceFor(channel_id)
         const reply = service.recordReply({ channelId: channel_id, content, title, groupId, taskId, files })

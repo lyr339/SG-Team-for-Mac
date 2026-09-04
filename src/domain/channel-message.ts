@@ -107,10 +107,17 @@ export function isProcessingPhase(connectionPhase: string): boolean {
   return phase.includes('process') || phase.includes('need_reply_sync')
 }
 
-/** Cursor 主进程给出的明确终止相位；与“心跳暂时没刷新”严格区分。 */
+/**
+ * 作用域切换（新 TeamRun / 模式切换）时写给全部通道的终止相位：上一轮会话的
+ * 心跳不再代表新席位的活性。新会话的首次工具调用会把它复活为 reviving；携带
+ * 失效 session 令牌的旧会话被围栏拒绝，不触碰 presence，于是保持离线。
+ */
+export const PRESENCE_RETIRED_PHASE = 'retired'
+
+/** 明确终止相位（Cursor 主进程终止 / 工具中止 / 作用域退役）；与“心跳暂时没刷新”严格区分。 */
 export function isExplicitlyStoppedPhase(connectionPhase: string): boolean {
   const phase = connectionPhase.toLowerCase()
-  return phase.includes('cursor_stopped') || phase.includes('tool_aborted')
+  return phase.includes('cursor_stopped') || phase.includes('tool_aborted') || phase === PRESENCE_RETIRED_PHASE
 }
 
 /**

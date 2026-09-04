@@ -58,6 +58,49 @@ html[data-card-transparency="clear"] .configuration-tabs button.is-active { back
 .configuration-panel { min-width: 0; display: grid; }
 .configuration-frame > .v2-empty-team { min-height: 360px; }
 
+/* 独立模式面板：替代整页拦截的显式模式卡（席位状态 + 后果说明 + 三段动作）。 */
+.run-mode-panel { min-height: 360px; display: grid; align-content: start; gap: 14px; padding: 22px 24px; background: var(--surface); border: 1px solid var(--color-border-tertiary); border-radius: 14px; box-shadow: var(--shadow-hairline); }
+.run-mode-panel__head { display: flex; align-items: center; gap: 14px; }
+.run-mode-panel__brand { width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; border-radius: 10px; box-shadow: var(--shadow-brand); }
+.run-mode-panel__brand img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.run-mode-panel__head small { color: var(--accent-deep); font-size: var(--fs-10); font-weight: 650; }
+.run-mode-panel__head h1 { margin: 2px 0; font-size: var(--fs-16); }
+.run-mode-panel__head p { margin: 0; color: var(--muted); font-size: var(--fs-10); }
+.run-mode-panel__seats { margin: 0; padding: 0; display: grid; gap: 6px; list-style: none; }
+.run-mode-panel__seats li { display: flex; align-items: baseline; gap: 9px; padding: 8px 11px; background: var(--canvas); border: 1px solid var(--line); border-radius: 9px; font-size: var(--fs-11); }
+.run-mode-panel__seats b { font: 650 var(--fs-10)/1 var(--mono); }
+.run-mode-panel__seats span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-mode-panel__seats em { margin-left: auto; font-style: normal; font-size: var(--fs-10); font-weight: 650; }
+.run-mode-panel__seats small { color: var(--faint); font-size: var(--fs-10); }
+.run-mode-panel__seats li.is-waiting em { color: var(--color-text-success); }
+.run-mode-panel__seats li.is-working em { color: var(--accent-deep); }
+.run-mode-panel__seats li.is-unconfirmed em { color: var(--color-text-warning); }
+.run-mode-panel__seats li.is-offline em { color: var(--muted); }
+.run-mode-panel__consequence { margin: 0; padding: 9px 12px; color: var(--muted); background: var(--canvas); border: 1px solid var(--line); border-radius: 9px; font-size: var(--fs-10); line-height: 1.55; }
+.run-mode-panel__consequence.is-warning { color: var(--color-text-warning); background: var(--color-background-warning); border-color: var(--color-border-warning); }
+.run-mode-panel__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.run-mode-panel__actions button { min-height: 32px; padding: 0 14px; color: var(--color-text-inverse); background: var(--color-background-inverse); border: 0; border-radius: 9px; font-size: var(--fs-11); font-weight: 600; box-shadow: var(--shadow-sm); }
+.run-mode-panel__actions button.is-secondary { color: var(--text); background: var(--surface); border: var(--border-width-regular) solid var(--line-strong); box-shadow: none; }
+.run-mode-panel__actions button.is-secondary:hover:not(:disabled) { background: var(--canvas); }
+.run-mode-panel__actions button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.run-mode-panel__confirm { display: grid; gap: 10px; padding: 12px 14px; background: var(--color-background-warning); border: 1px solid var(--color-border-warning); border-radius: 10px; }
+.run-mode-panel__confirm p { margin: 0; color: var(--color-text-warning); font-size: var(--fs-11); line-height: 1.55; }
+.run-mode-panel__confirm > div { display: flex; justify-content: flex-end; gap: 8px; }
+.run-mode-panel__confirm button { min-height: 30px; padding: 0 12px; border-radius: 8px; font-size: var(--fs-10); font-weight: 650; }
+.run-mode-panel__confirm button.is-secondary { color: var(--text); background: var(--surface); border: var(--border-width-regular) solid var(--line-strong); }
+.run-mode-panel__confirm button.is-danger { color: var(--color-text-inverse); background: var(--red); border: 0; }
+.run-mode-panel__confirm button:disabled { opacity: .5; cursor: not-allowed; }
+.run-mode-panel__error { color: var(--red); font-size: var(--fs-10); font-style: normal; }
+
+/* 独立页软守卫确认条：语义同 run-mode-panel__confirm，随内容流展示。 */
+.independent-config__confirm { grid-column: 1 / -1; display: grid; gap: 10px; margin: 0; padding: 12px 14px; background: var(--color-background-warning); border: 1px solid var(--color-border-warning); border-radius: 10px; }
+.independent-config__confirm p { margin: 0; color: var(--color-text-warning); font-size: var(--fs-11); line-height: 1.55; }
+.independent-config__confirm > div { display: flex; justify-content: flex-end; gap: 8px; }
+.independent-config__confirm button { min-height: 30px; padding: 0 12px; border-radius: 8px; font-size: var(--fs-10); font-weight: 650; }
+.independent-config__confirm button.is-secondary { color: var(--text); background: var(--surface); border: var(--border-width-regular) solid var(--line-strong); }
+.independent-config__confirm button.is-danger { color: var(--color-text-inverse); background: var(--red); border: 0; }
+.independent-config__confirm button:disabled { opacity: .5; cursor: not-allowed; }
+
 /* 独立会话：复用现有启动卡，只增加模式说明、工程锚点和数量控制。 */
 .independent-config { min-width: 0; display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 12px; align-items: start; }
 .independent-config__intro, .independent-config__workspace, .independent-config__count, .independent-config__status, .independent-config__empty { min-width: 0; background: var(--surface); border: 1px solid var(--color-border-tertiary); border-radius: 14px; box-shadow: var(--shadow-hairline); }

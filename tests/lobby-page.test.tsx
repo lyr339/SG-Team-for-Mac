@@ -54,6 +54,7 @@ const common = {
   onLaunchAgentSessions: async () => ({ id: 'plan:test', state: 'done' as const, items: [], startedAt: 1, finishedAt: 2 }),
   onCreateIndependentSessions: async () => ({ id: 'plan:independent', state: 'done' as const, items: [], startedAt: 1, finishedAt: 2 }),
   onChooseIndependentWorkspace: async () => undefined,
+  onEndActiveRun: async () => {},
   onOpenSessions: () => {},
   cdpAutoHealEnabled: false,
   account
@@ -119,5 +120,84 @@ describe('LobbyPage', () => {
     expect(html).toContain('会话数量')
     expect(html).toContain('批量创建独立会话（3）')
     expect(html).toContain('配置 CH-1 会话')
+  })
+})
+
+/**
+ * 独立模式下团队页不再整页拦截，而是渲染 RunModePanel（会话围栏 + 软守卫）：
+ * 切换/结束不以「旧会话全部离线」为前提，只在仍有在线会话时要一次确认。
+ * 确认交互（点击 → alertdialog → 回调）见 tests/run-mode-panel.test.tsx。
+ */
+describe('LobbyPage 独立模式运行面板（会话围栏软守卫）', () => {
+  function independentTeam(options: { online: boolean }) {
+    const snapshot = structuredClone(teamControlSnapshot)
+    snapshot.activeRun = { ...snapshot.activeRun!, templateId: 'independent-session-v1' }
+    snapshot.members = snapshot.members
+      .filter((member) => member.slot.solo === true)
+      .map((member) => ({
+        ...member,
+        runtime: member.runtime
+          ? {
+              ...member.runtime,
+              online: options.online,
+              waiting: options.online,
+              status: options.online ? 'waiting' : 'offline',
+              connectionPhase: options.online ? 'waiting' : 'offline'
+            }
+          : member.runtime
+      }))
+    return snapshot
+  }
+
+  it('独立会话全部离线时直接开放「切换为团队模式」与「结束独立批次」', () => {
+    const html = renderToStaticMarkup(
+      <LobbyPage
+        {...common}
+        section="team"
+        onSectionChange={() => {}}
+        team={independentTeam({ online: false })}
+      />
+    )
+    expect(html).toContain('aria-label="运行模式"')
+    expect(html).toContain('当前模式 · 独立会话')
+    expect(html).not.toContain('当前正在使用独立会话')
+    expect(html).toContain('所有独立会话已离线，可以直接切换。')
+    expect(html).toContain('离线 1')
+    for (const label of ['切换为团队模式', '结束独立批次', '查看独立会话']) {
+      expect(html).toContain(label)
+      expect(html).not.toMatch(new RegExp(`<button[^>]*disabled[^>]*>[^<]*${label}`))
+    }
+  })
+
+  it('仍有在线独立会话时保持按钮可用，只说明围栏后果（软守卫，不再硬阻）', () => {
+    const html = renderToStaticMarkup(
+      <LobbyPage
+        {...common}
+        section="team"
+        onSectionChange={() => {}}
+        team={independentTeam({ online: true })}
+      />
+    )
+    expect(html).toContain('待命 1')
+    expect(html).toContain('run-mode-panel__consequence is-warning')
+    expect(html).toContain('1 个会话仍在线或待确认')
+    expect(html).toContain('下一次轮询（最长 60 秒）收到结束指令并退出')
+    expect(html).not.toContain('全部离线后即可切换为团队模式')
+    expect(html).not.toMatch(/<button[^>]*disabled[^>]*>[^<]*切换为团队模式/)
+    expect(html).not.toMatch(/<button[^>]*disabled[^>]*>[^<]*结束独立批次/)
+    // 未点击前不渲染确认框
+    expect(html).not.toContain('role="alertdialog"')
+  })
+
+  it('独立批次已结束时禁用「结束独立批次」并提示可直接组建团队', () => {
+    const team = independentTeam({ online: false })
+    team.activeRun = { ...team.activeRun!, status: 'completed' }
+    const html = renderToStaticMarkup(
+      <LobbyPage {...common} section="team" onSectionChange={() => {}} team={team} />
+    )
+    expect(html).toContain('独立批次 · 已结束')
+    expect(html).toContain('本批次已结束：旧会话下一次轮询会收到结束指令并自行退出。')
+    expect(html).toMatch(/<button[^>]*disabled[^>]*>[^<]*结束独立批次/)
+    expect(html).not.toMatch(/<button[^>]*disabled[^>]*>[^<]*切换为团队模式/)
   })
 })

@@ -30,7 +30,8 @@ const CALL_REMINDER = [
   '- Every user-visible reply must be synced once with record_reply({ content: "the same full reply you just showed the user" }) before calling check_messages again, otherwise SG Team cannot restore the session reliably after a disconnect.',
   '- check_messages 返回 keepalive、无未读或已读重复时必须静默续等（keepalive 形如 <sg_team_keepalive/>）：不要向用户输出“继续等待/已读过/继续轮询”等可见回复，也不要 record_reply；直接再次调用 check_messages 静默待命。',
   '- 不要使用终端、Shell、Node 脚本或本地命令来调用 MCP；必须使用 Cursor 原生 MCP 工具调用',
-  '- 这是长连接协议，不是一次性查询；未收到用户「停止/退出」时一律继续轮询'
+  '- 启动指令给出了 session 令牌的话，check_messages / record_reply 每次都附带它；收到「会话围栏」终止指令即停止轮询并结束，不要重试',
+  '- 这是长连接协议，不是一次性查询；未收到用户「停止/退出」或会话围栏终止指令时一律继续轮询'
 ].join('\n')
 
 /**

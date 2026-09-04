@@ -7,6 +7,7 @@ import {
   CHANNEL_OUTBOX_MAX_PENDING,
   CHANNEL_OUTBOUND_DEDUPE_WINDOW_MS,
   CHANNEL_REPLY_DEDUPE_WINDOW_MS,
+  PRESENCE_RETIRED_PHASE,
   PRESENCE_REVIVED_PHASE,
   isExplicitlyStoppedPhase,
   type ChannelInboundReply,
@@ -380,6 +381,9 @@ export class SqliteChannelMessageRepository {
     const boundary = Math.max(0, Math.floor(startedAt))
     this.database.exec('BEGIN IMMEDIATE')
     try {
+      const previousRunId = optionalString((this.database.prepare(
+        'SELECT run_id FROM channel_scope WHERE id = 1'
+      ).get() as SqliteRow | undefined)?.run_id)
       this.database.prepare(`
         INSERT INTO channel_scope (id, run_id, started_at, updated_at)
         VALUES (1, ?, ?, ?)
@@ -406,12 +410,21 @@ export class SqliteChannelMessageRepository {
       const revived = this.database.prepare(`
         UPDATE channel_presence
         SET connection_phase = ?, waiting = 0, updated_at = ?
-        WHERE connection_phase IN ('cursor_stopped', 'tool_aborted')
-      `).run(PRESENCE_REVIVED_PHASE, now)
+        WHERE connection_phase IN ('cursor_stopped', 'tool_aborted', ?)
+      `).run(PRESENCE_REVIVED_PHASE, now, PRESENCE_RETIRED_PHASE)
+      // 真正换了 run（不是重启后同 run 重放）：全部通道的既有心跳都来自上一轮会话，
+      // 不能再代表新席位在线——整体退役。新会话首次调用即复活；携带失效令牌的旧会话
+      // 被围栏挡在 presence 之外，于是新席位不会被幽灵点亮。
+      const retired = previousRunId !== undefined && previousRunId !== normalizedRunId
+        ? this.database.prepare(`
+            UPDATE channel_presence
+            SET connection_phase = ?, waiting = 0, updated_at = ?
+          `).run(PRESENCE_RETIRED_PHASE, now)
+        : { changes: 0 }
       this.database.exec('COMMIT')
       return {
         outbound: numberOf(outbound.changes),
-        presence: numberOf(presence.changes) + numberOf(revived.changes)
+        presence: numberOf(presence.changes) + numberOf(revived.changes) + numberOf(retired.changes)
       }
     } catch (error) {
       if (this.database.isTransaction) this.database.exec('ROLLBACK')
@@ -675,22 +688,24 @@ export class SqliteChannelMessageRepository {
       UPDATE channel_presence
       SET runtime_active_at = ?,
           connection_phase = CASE
-            WHEN connection_phase IN ('cursor_stopped', 'tool_aborted') AND last_seen_at <= ? THEN ?
+            WHEN connection_phase IN ('cursor_stopped', 'tool_aborted', ?) AND last_seen_at <= ? THEN ?
             ELSE connection_phase
           END,
           updated_at = ?
       WHERE channel_id = ?
         AND (
           COALESCE(runtime_active_at, 0) < ?
-          OR (connection_phase IN ('cursor_stopped', 'tool_aborted') AND last_seen_at <= ?)
+          OR (connection_phase IN ('cursor_stopped', 'tool_aborted', ?) AND last_seen_at <= ?)
         )
     `).run(
       observedAt,
+      PRESENCE_RETIRED_PHASE,
       observedAt,
       PRESENCE_REVIVED_PHASE,
       observedAt,
       normalizedChannel,
       observedAt,
+      PRESENCE_RETIRED_PHASE,
       observedAt
     )
     if (numberOf(result.changes) === 0 || !before) return { advanced: false, revived: false }

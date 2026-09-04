@@ -593,6 +593,19 @@ const api: QingtianDesktopApi = {
     pushTeam()
     return structuredClone(state.team)
   },
+  endActiveRun: async () => {
+    state.team = {
+      ...state.team,
+      runs: state.team.runs.map((run) => (
+        run.id === state.team.activeRun?.id ? { ...run, status: 'completed' as const, updatedAt: Date.now() } : run
+      )),
+      activeRun: state.team.activeRun
+        ? { ...state.team.activeRun, status: 'completed' as const, updatedAt: Date.now() }
+        : undefined
+    }
+    pushTeam()
+    return structuredClone(state.team)
+  },
   prepareActiveTeamSetup: async () => structuredClone({
     ...setupDraft,
     draftId: 'preview-team-reconfigure',

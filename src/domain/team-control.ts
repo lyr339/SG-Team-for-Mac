@@ -120,6 +120,11 @@ export interface RuntimeBinding {
   composerId?: string
   composerBoundAt?: number
   composerBindingMethod?: ComposerBindingMethod
+  /**
+   * 会话围栏令牌：签发给该席位当前 Cursor 会话，通信工具携带它以证明「我是这个
+   * 席位的现任会话」。换席重建时轮换；团队 launch 不轮换。缺失 = 未签发（旧会话）。
+   */
+  sessionToken?: string
 }
 
 export interface TeamControlState {
@@ -521,27 +526,51 @@ export function createDefaultTeamBundle(input: {
  * 角色职责/团队目标/协作规范全部经 MCP instructions 与 team_check_in
  * 返回值注入，不再占用会话可见内容。
  */
+/**
+ * 通信工具的调用参数片段：席位已签发会话令牌时附带 session（会话围栏），否则只有
+ * channel_id。所有开场提示/简报/待命指令统一经此生成，保证 Agent 看到的形态一致。
+ */
+export function communicationCallArguments(input: { channelId: string; sessionToken?: string }): string {
+  const session = input.sessionToken?.trim()
+  return session
+    ? `{channel_id:'${input.channelId}', session:'${session}'}`
+    : `{channel_id:'${input.channelId}'}`
+}
+
+/** 会话令牌说明（有令牌时附在开场提示末尾）。 */
+export function sessionTokenInstruction(input: { channelId: string; sessionToken?: string }): string {
+  const session = input.sessionToken?.trim()
+  if (!session) return ''
+  return `本会话令牌（session）：${session}。每次调用 check_messages / record_reply 都必须附带 session:'${session}'；`
+    + '若返回「会话围栏」终止指令，说明本会话已被新会话接管或本轮已结束——立即停止轮询并结束，不要重试。'
+}
+
 export function buildTeamLaunchHint(input: {
   channelId: string
   binding: RuntimeBinding
 }): string {
   const { channelId, binding } = input
+  const session = sessionTokenInstruction({ channelId, sessionToken: binding.sessionToken })
   return [
     `拾光协作通道 CH-${channelId} 已启动。`,
     `请先调用 ${SG_TEAM_MCP_SERVER_ID} 的 team_check_in({channel_id:'${channelId}'}) 领取角色职责与团队目标；`,
     `此后所有团队工具与通信保活均传同一 channel_id，并严格按 check_in 返回的指令工作。`,
-    `本次 Cursor 会话绑定标记：${cursorComposerBindingMarker({ bindingKey: binding.composerBindingKey, channelId })}`
+    `本次 Cursor 会话绑定标记：${cursorComposerBindingMarker({ bindingKey: binding.composerBindingKey, channelId })}`,
+    session ? `\n${session}` : ''
   ].join('')
 }
 
 /** 独立席位开场指令：只保留用户单聊循环，绑定标记由 AgentSessionLauncher 统一追加。 */
-export function buildSoloLaunchHint(input: { channelId: string }): string {
+export function buildSoloLaunchHint(input: { channelId: string; sessionToken?: string }): string {
   const { channelId } = input
+  const call = communicationCallArguments(input)
+  const session = sessionTokenInstruction(input)
   return [
     `拾光协作通道 CH-${channelId} 已启动（独立模式）。`,
     '你是独立执行 Agent，不加入任何团队：不要调用任何 team_* 工具（服务端会拒绝）；直接处理用户消息。',
-    `每次完整回复用户后，先调用 record_reply({channel_id:'${channelId}', content: 完整回复正文})，再调用 check_messages({channel_id:'${channelId}'}) 长轮询等待下一条消息。`,
-    'check_messages 返回 keepalive 或无未读时静默继续调用：不要输出可见回复、不要 record_reply。'
+    `每次完整回复用户后，先调用 record_reply(${call.replace(/\}$/, ', content: 完整回复正文}')})，再调用 check_messages(${call}) 长轮询等待下一条消息。`,
+    'check_messages 返回 keepalive 或无未读时静默继续调用：不要输出可见回复、不要 record_reply。',
+    ...(session ? [session] : [])
   ].join('\n')
 }
 
@@ -559,6 +588,9 @@ export function buildTeamRoleBriefing(input: {
   const channelId = binding.channelId
   const server = SG_TEAM_MCP_SERVER_ID
   const ch = `{channel_id:'${channelId}'}`
+  // 通信工具（check_messages / record_reply）附带会话令牌；团队工具只需 channel_id。
+  const comm = communicationCallArguments({ channelId, sessionToken: binding.sessionToken })
+  const sessionNote = sessionTokenInstruction({ channelId, sessionToken: binding.sessionToken })
   const telemetryMarker = cursorComposerBindingMarker({
     bindingKey: binding.composerBindingKey,
     channelId
@@ -586,6 +618,7 @@ export function buildTeamRoleBriefing(input: {
         : '',
     `稳定身份：${slot.id}；本次可替换运行时：CH-${channelId}；TeamRun：${run.id}。`,
     `本次 Cursor 会话绑定标记：${telemetryMarker}`,
+    ...(sessionNote ? [sessionNote] : []),
     `团队目标：${run.goal}`,
     `核心职责：${role.mission}`,
     `工作边界：${role.instructions}`,
@@ -599,7 +632,7 @@ export function buildTeamRoleBriefing(input: {
     collaborationWorkflow,
     `6. 单点 Agent 间指令与回应使用 team_send_message/team_respond_message，以 messageId 建立回执；禁止使用普通回复或 ${server} 冒充成员已响应。`,
     `7. 发现会影响团队后续工作的决策、约束、风险或经验时，调用 team_memory_propose 并附消息、任务或文件来源；主控与质量角色应在协作过程中处理待确认提案，不要求用户整理记忆。`,
-    `8. 思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件，不要额外上报过程。只有处理真实用户消息并输出完整可见回复后，才调用 ${server} 的 record_reply ${ch} 同步正文，再调用 ${server} 的 check_messages ${ch} 等待下一条消息。内部协作通知只用 team_* 回执处理，不算用户可见回复；${server} 的 check_messages 返回 keepalive、无未读或已读重复时，不要输出可见回复、不要 record_reply，直接静默继续等待。`,
+    `8. 思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件，不要额外上报过程。只有处理真实用户消息并输出完整可见回复后，才调用 ${server} 的 record_reply ${comm} 同步正文，再调用 ${server} 的 check_messages ${comm} 等待下一条消息。内部协作通知只用 team_* 回执处理，不算用户可见回复；${server} 的 check_messages 返回 keepalive、无未读或已读重复时，不要输出可见回复、不要 record_reply，直接静默继续等待。`,
     effectiveLead
       ? '9. 只有任务板已经由用户明确启动/分配后，才主动调度、催办（team_send_message 询问成员）或处理真实上报；空任务板表示等待用户下一条指令，不要自动拆任务。向用户说明现状只用于状态真的变化、出现阻塞或用户询问，禁止重复发送同一进展。'
       : '9. 遇到额度耗尽、工具缺失或无法推进的阻塞：立即向主控 team_send_message 上报阻塞原因并说明已尝试的步骤，禁止沉默卡死。',

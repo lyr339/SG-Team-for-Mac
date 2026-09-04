@@ -5,11 +5,18 @@ import type { DesktopSessionBridge } from '../application/desktop-session-servic
 import { CursorSkillCatalog } from '../infrastructure/cursor/cursor-skill-catalog'
 import type { CursorWorkspaceDetector } from '../infrastructure/cursor/cursor-workspace-detector'
 import { workspaceIdentityOf } from '../infrastructure/cursor/workspace-identity'
-import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES } from '../domain/team-control'
+import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES, workspaceRunMode, type TeamControlSnapshot } from '../domain/team-control'
 import { IPC, type CreateIndependentSessionsInput, type CreateTeamInput, type TeamSetupDraft } from '../shared/desktop-api'
 import type { CursorModelSelection } from '../domain/cursor-model'
 import { resolveIndependentSessionMembers, resolveTeamSetupMembers } from '../application/team-setup'
 import { assertTrustedSender } from './ipc-security'
+
+/** 选中 workspace 是否正是当前独立 run 所在工程（existing 快照会死锁的场景）。 */
+function isActiveIndependentWorkspace(snapshot: TeamControlSnapshot, workspaceId: string): boolean {
+  return Boolean(snapshot.activeRun
+    && snapshot.activeWorkspaceId === workspaceId
+    && workspaceRunMode(snapshot.activeRun) === 'independent')
+}
 
 const DEFAULT_LOCAL_CHANNEL_IDS = ['1', '2', '3']
 
@@ -20,12 +27,23 @@ function requiredString(value: unknown, field: string, maxLength: number): strin
   return value.trim()
 }
 
+export interface TeamControlIpcOptions {
+  /** 一键会话创建是否仍在进行：创建/替换 run 期间换拓扑会让编排器对着错误的席位收尾。 */
+  isSessionLaunchRunning?: () => boolean
+}
+
 export function registerTeamControlIpc(
   service: TeamControlService,
   bridge: Pick<DesktopSessionBridge, 'getSnapshot'>,
   workspaceDetector: CursorWorkspaceDetector,
-  getWindow: () => BrowserWindow | undefined
+  getWindow: () => BrowserWindow | undefined,
+  options: TeamControlIpcOptions = {}
 ): () => void {
+  const assertNoSessionLaunch = (): void => {
+    if (options.isSessionLaunchRunning?.()) {
+      throw new Error('一键会话创建正在进行，请等待其完成后再切换运行模式')
+    }
+  }
   const pendingDrafts = new Map<string, {
     draft: TeamSetupDraft
     expiresAt: number
@@ -122,10 +140,13 @@ export function registerTeamControlIpc(
       throw new Error(detection.detail || '尚未识别到 Cursor 当前工程')
     }
     const workspace = detection.workspace
-    const existing = service.getSnapshot().workspaces.some((item) => item.id === workspace.id)
-    if (existing) {
+    const snapshot = service.getSnapshot()
+    const existing = snapshot.workspaces.some((item) => item.id === workspace.id)
+    if (existing && !isActiveIndependentWorkspace(snapshot, workspace.id)) {
       return { kind: 'existing', snapshot: service.setActiveWorkspace(workspace.id) } as const
     }
+    // 当前独立 run 的 workspace：existing 快照会把用户弹回独立拦截页（死锁），
+    // 走组队草稿——createTeam 时 configureWorkspace 会原子替换独立 run。
     return {
       kind: 'setup',
       draft: prepareDraft(workspace, undefined, workspace.channelIds)
@@ -141,10 +162,12 @@ export function registerTeamControlIpc(
     })
     if (selection.canceled || !selection.filePaths[0]) return { cancelled: true } as const
     const workspace = workspaceIdentityOf(selection.filePaths[0])
-    const existing = service.getSnapshot().workspaces.some((item) => item.id === workspace.id)
-    if (existing) {
+    const snapshot = service.getSnapshot()
+    const existing = snapshot.workspaces.some((item) => item.id === workspace.id)
+    if (existing && !isActiveIndependentWorkspace(snapshot, workspace.id)) {
       return { kind: 'existing', snapshot: service.setActiveWorkspace(workspace.id) } as const
     }
+    // 同上：选中当前独立 run 的 workspace 时必须进组队页，否则永远无法切回团队。
     const draft = prepareDraft(workspace)
     return { kind: 'setup', draft } as const
   })
@@ -179,6 +202,7 @@ export function registerTeamControlIpc(
       pendingDrafts.delete(draftId)
       throw new Error('组队草稿已失效，请重新选择 Cursor 工作区')
     }
+    assertNoSessionLaunch()
     const members = resolveTeamSetupMembers(pending.draft, input as CreateTeamInput)
     const snapshot = service.configureWorkspace({
       workspaceId: pending.draft.workspaceId,
@@ -193,6 +217,7 @@ export function registerTeamControlIpc(
     assertTrustedSender(event, getWindow)
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('独立会话参数无效')
     const input = value as Partial<CreateIndependentSessionsInput>
+    assertNoSessionLaunch()
     const workspacePath = requiredString(input.workspacePath, '工作区路径', 2_000)
     const workspace = workspaceIdentityOf(workspacePath)
     const members = resolveIndependentSessionMembers(
@@ -222,6 +247,11 @@ export function registerTeamControlIpc(
     assertTrustedSender(event, getWindow)
     return service.createNextRun()
   })
+  ipcMain.handle(IPC.teamControlEndRun, (event) => {
+    assertTrustedSender(event, getWindow)
+    assertNoSessionLaunch()
+    return service.endActiveRun()
+  })
   ipcMain.handle(IPC.teamControlUpdateGoal, (event, goal: unknown) => {
     assertTrustedSender(event, getWindow)
     return service.updateGoal(requiredString(goal, '团队目标', 8_000))
@@ -250,6 +280,7 @@ export function registerTeamControlIpc(
     ipcMain.removeHandler(IPC.teamControlCreateIndependent)
     ipcMain.removeHandler(IPC.teamControlChooseIndependentWorkspace)
     ipcMain.removeHandler(IPC.teamControlNextRun)
+    ipcMain.removeHandler(IPC.teamControlEndRun)
     ipcMain.removeHandler(IPC.teamControlPrepareActiveSetup)
     ipcMain.removeHandler(IPC.teamControlUpdateGoal)
     ipcMain.removeHandler(IPC.teamControlLaunch)

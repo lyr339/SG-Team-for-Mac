@@ -25,7 +25,9 @@ export function createTeamAgentLaunchPromptPort(source: TeamAgentLaunchPromptSou
       )
       if (!binding) throw new Error(`CH-${normalizedChannelId} 尚未安装 Team MCP`)
       const slot = team.slots.find((candidate) => candidate.id === binding.slotId)
-      if (slot?.solo === true) return buildSoloLaunchHint({ channelId: normalizedChannelId })
+      if (slot?.solo === true) {
+        return buildSoloLaunchHint({ channelId: normalizedChannelId, sessionToken: binding.sessionToken })
+      }
       // 提示词承诺「已启动」并要求 Agent 立即 team_check_in；
       // 投递前必须让状态机事实进入 launching，否则 check_in 被白名单误拒（team_run_not_launched）。
       if (!run.goal.trim()) throw new Error('请先填写团队目标，再创建 Agent 会话')
