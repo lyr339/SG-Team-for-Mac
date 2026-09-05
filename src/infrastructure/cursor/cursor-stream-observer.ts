@@ -16,10 +16,18 @@ import { parseProcessStream, type CursorProcessStream } from './cursor-cdp-sessi
  * thinking、工具参数/结果、todo 均在写后同一微任务读取，不再经过主进程
  * 二次 evaluate，也不读取 transcript 或 Agent 主动上报的过程。
  *
- * hook 经 Page.addScriptToEvaluateOnNewDocument 注册，页面重载自动重装；
- * binding 由 CDP 自动注入后续 executionContext。连接断开按退避重连。
- * 运行时轮询只承担会话存活与正文状态核验，不承担过程重建；observer 缺席时
- * 明确没有过程帧，避免用低保真来源伪装成 Cursor 原生体验。
+ * hook 的生命周期必须跟随「文档」而不是「socket」：Cursor 窗口原地重载
+ *（Reload Window / 同窗口切换文件夹 / 切号重启后重开工作区）时 CDP target 与
+ * socket 都不变，旧文档里的 hook 却随文档消失；binding 由 Runtime 域自动注入新
+ * 文档，于是出现「binding 在、hook 不在、状态 connected、永远零帧」（2026-09-05
+ * 事故）。因此三重保障：
+ * 1. Page.enable + Page.addScriptToEvaluateOnNewDocument——不启用 Page 域时
+ *    该脚本只登记不执行（Chromium 语义，Electron 43 实测）；
+ * 2. Runtime.executionContextsCleared / executionContextCreated 事件驱动重装；
+ * 3. 低频健康自检（探针只读；hook 缺席才重装），兜住一切未知路径。
+ * 状态 connected 的含义是「hook 已在当前文档验证就位」，不是「socket 开着」。
+ * 连接断开按退避重连。运行时轮询只承担会话存活与正文状态核验，不承担过程
+ * 重建；observer 缺席时明确没有过程帧，避免用低保真来源伪装成 Cursor 原生体验。
  *
  * 用量通道（usage）：bundle 补丁（patch-cursor-usage-hook.ts）在
  * turnEnded 消费点调用 __sgTeamUsage(JSON)——本 observer 注册同名 binding
@@ -29,9 +37,15 @@ import { parseProcessStream, type CursorProcessStream } from './cursor-cdp-sessi
 export const CURSOR_STREAM_BINDING_NAME = 'sgTeamStream'
 export const CURSOR_USAGE_BINDING_NAME = '__sgTeamUsage'
 export const CURSOR_PROCESS_BINDING_NAME = 'sgTeamProcess'
+/** 页面内 hook 版本：不一致时 install 会先还原旧 wrapper 再重装（拾光强退后遗留的旧版）。 */
+export const CURSOR_STREAM_HOOK_VERSION = 20
 const RETRY_BASE_MS = 5_000
 const RETRY_MAX_MS = 60_000
 const ATTACH_TIMEOUT_MS = 8_000
+/** hook 健康自检周期：探针只读一次 evaluate，缺席才重装；成本可忽略。 */
+const HOOK_HEALTH_INTERVAL_MS = 20_000
+/** executionContextCreated 成批到达（主帧 + 各 iframe），合并后再装。 */
+const HOOK_CONTEXT_SETTLE_MS = 300
 
 /**
  * 页面内注入的 hook 源码：幂等守卫（manager 身份 + wrapped 标记双保险）+
@@ -40,7 +54,7 @@ const ATTACH_TIMEOUT_MS = 8_000
  * 自轮询重试（2s 间隔，上限 60 次），保证重载后 hook 自动恢复，不依赖重连。
  */
 export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
-  const HOOK_VERSION = 20
+  const HOOK_VERSION = ${CURSOR_STREAM_HOOK_VERSION}
   let attempts = 0
   const pendingSnapshots = new Set()
   let snapshotQueued = false
@@ -562,6 +576,23 @@ const STREAM_HOOK_RESTORE_EXPRESSION = `(() => {
   return 'restored'
 })()`
 
+/**
+ * hook 存活探针（只读，不安装）：hook 是否在当前文档里以当前版本就位；
+ * scheduler 存在而 hook 缺席 = 页面内 install 自轮询仍在等 manager。
+ */
+export const CURSOR_STREAM_HOOK_PROBE_EXPRESSION = `/* sg-team-hook-probe */ ({
+  hook: globalThis.__sgTeamStreamHook === true,
+  version: globalThis.__sgTeamStreamHookVersion,
+  scheduler: typeof globalThis.__sgTeamProcessSchedule
+})`
+
+interface HookProbe {
+  /** hook 已在当前文档验证就位（版本匹配）。 */
+  alive: boolean
+  /** 页面内 install 链是否仍在自轮询等待 manager。 */
+  pendingInstall: boolean
+}
+
 /** 测试可注入的最小 socket 面（对齐 ws 事件子集）。 */
 export interface StreamObserverSocket {
   send(text: string): void
@@ -632,6 +663,12 @@ export class CursorStreamObserver {
   private attaching = false
   /** 已注册的 new-document 脚本标识：重连前移除旧的，防止 target 上脚本累积。 */
   private newDocumentScriptId?: string
+  /** hook 已在当前文档验证就位；文档重载（executionContextsCleared）即清零。 */
+  private hookVerified = false
+  private ensuringHook = false
+  private hookHealthTimer?: ReturnType<typeof setInterval>
+  private hookSettleTimer?: ReturnType<typeof setTimeout>
+  private lastStatus?: { state: 'connected' | 'reconnecting' | 'unavailable'; detail: string }
 
   constructor(options: CursorStreamObserverOptions = {}) {
     const envPort = Number(process.env.QINGTIAN_CURSOR_CDP_PORT)
@@ -676,6 +713,14 @@ export class CursorStreamObserver {
       await this.call('Runtime.addBinding', { name: CURSOR_STREAM_BINDING_NAME })
       await this.call('Runtime.addBinding', { name: CURSOR_USAGE_BINDING_NAME })
       await this.call('Runtime.addBinding', { name: CURSOR_PROCESS_BINDING_NAME })
+      // Page 域不启用时 addScriptToEvaluateOnNewDocument 只登记不执行（Chromium 语义，
+      // Electron 43 实测）：窗口原地重载后 hook 就此消失而 socket 仍然连着。
+      // 启用失败不阻断 attach——下方的 executionContext 事件重装仍能兜底。
+      try {
+        await this.call('Page.enable', {})
+      } catch (error) {
+        process.stderr.write(`[cursor-stream-observer] Page.enable 失败，仅依赖上下文事件重装 hook：${error instanceof Error ? error.message : String(error)}\n`)
+      }
       // 上一次连接注册的 new-document 脚本在 target 上持久存在——先移除再注册，
       // 防止重连累积（脚本幂等但重复注册浪费且语义模糊）。
       if (this.newDocumentScriptId) {
@@ -687,21 +732,19 @@ export class CursorStreamObserver {
       const added = await this.call('Page.addScriptToEvaluateOnNewDocument', { source: CURSOR_STREAM_HOOK_EXPRESSION })
       const identifier = (added as { identifier?: unknown } | undefined)?.identifier
       this.newDocumentScriptId = typeof identifier === 'string' && identifier ? identifier : undefined
-      // 已加载文档立即安装；后续导航经 addScriptToEvaluateOnNewDocument 重装
-      //（binding 由 CDP 自动注入后续 executionContext）。
-      await this.call('Runtime.evaluate', { expression: CURSOR_STREAM_HOOK_EXPRESSION, returnByValue: true })
-      this.onStatus({ state: 'connected', detail: 'Cursor 原生过程流已连接', updatedAt: Date.now() })
+      // 已加载文档立即安装并验证；脚本异常（exceptionDetails）视为 attach 失败重试，
+      // 不再把「socket 开着」误报成「过程流已连接」。
+      await this.ensureHook('install')
+      this.startHookHealthLoop()
       return true
     } catch (error) {
       // 半途失败必须关闭已建立的 socket，否则泄漏连接且 retry 另建新连接。
       const socket = this.socket
       this.socket = undefined
+      this.hookVerified = false
+      this.stopHookHealthLoop()
       try { socket?.close() } catch { /* 尽力而为 */ }
-      this.onStatus({
-        state: 'reconnecting',
-        detail: error instanceof Error ? error.message.slice(0, 240) : 'Cursor 原生过程流连接失败',
-        updatedAt: Date.now()
-      })
+      this.setStatus('reconnecting', error instanceof Error ? error.message.slice(0, 240) : 'Cursor 原生过程流连接失败')
       this.scheduleRetry()
       return false
     } finally {
@@ -709,10 +752,104 @@ export class CursorStreamObserver {
     }
   }
 
+  /**
+   * 确保 hook 在当前文档就位并据此上报状态。
+   * - install：直接注入（幂等：已装返回 'already'）再探针验证——attach / 文档重载后使用；
+   * - probe：先只读探针，缺席才注入——健康自检使用（注入本身幂等，页面内自轮询链
+   *   等到 manager 后各自收敛为 'already'）。
+   * evaluate 的脚本异常与协议错误向上抛：attach 里转为重连，其余路径由调用方兜住。
+   */
+  private async ensureHook(mode: 'install' | 'probe'): Promise<boolean> {
+    if (!this.socket || this.ensuringHook) return this.hookVerified
+    this.ensuringHook = true
+    try {
+      let probe = mode === 'install' ? await this.installHook() : await this.probeHook()
+      if (!probe.alive && mode === 'probe') probe = await this.installHook()
+      this.hookVerified = probe.alive
+      if (probe.alive) {
+        this.setStatus('connected', 'Cursor 原生过程流已连接')
+      } else {
+        this.setStatus('reconnecting', probe.pendingInstall
+          ? '等待 Cursor 工作台就绪后安装过程 hook'
+          : '过程 hook 未就位，正在重装')
+      }
+      return probe.alive
+    } finally {
+      this.ensuringHook = false
+    }
+  }
+
+  private async installHook(): Promise<HookProbe> {
+    await this.evaluateChecked(CURSOR_STREAM_HOOK_EXPRESSION)
+    return this.probeHook()
+  }
+
+  private async probeHook(): Promise<HookProbe> {
+    const value = await this.evaluateChecked(CURSOR_STREAM_HOOK_PROBE_EXPRESSION)
+    const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+    const alive = raw.hook === true && raw.version === CURSOR_STREAM_HOOK_VERSION
+    return { alive, pendingInstall: !alive && raw.scheduler === 'function' }
+  }
+
+  /** Runtime.evaluate 并把页面脚本异常（exceptionDetails）转成错误，而不是静默当成功。 */
+  private async evaluateChecked(expression: string): Promise<unknown> {
+    const result = await this.call('Runtime.evaluate', { expression, returnByValue: true }) as {
+      result?: { value?: unknown }
+      exceptionDetails?: { text?: unknown; exception?: { description?: unknown } }
+    } | undefined
+    const exception = result?.exceptionDetails
+    if (exception) {
+      const detail = exception.exception?.description ?? exception.text ?? 'unknown'
+      throw new Error(`页面脚本异常：${String(detail).replace(/\s+/g, ' ').slice(0, 200)}`)
+    }
+    return result?.result?.value
+  }
+
+  private startHookHealthLoop(): void {
+    this.stopHookHealthLoop()
+    this.hookHealthTimer = setInterval(() => {
+      if (!this.socket || this.stopped) return
+      void this.ensureHook('probe').catch((error) => {
+        this.setStatus('reconnecting', `过程 hook 自检失败：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`)
+      })
+    }, HOOK_HEALTH_INTERVAL_MS)
+    this.hookHealthTimer.unref?.()
+  }
+
+  private stopHookHealthLoop(): void {
+    if (this.hookHealthTimer) clearInterval(this.hookHealthTimer)
+    this.hookHealthTimer = undefined
+    if (this.hookSettleTimer) clearTimeout(this.hookSettleTimer)
+    this.hookSettleTimer = undefined
+  }
+
+  /** 新文档的执行上下文就位后重装 hook（主帧与 iframe 的事件成批到达，合并一次）。 */
+  private scheduleHookReinstall(): void {
+    if (this.hookSettleTimer || this.stopped) return
+    this.hookSettleTimer = setTimeout(() => {
+      this.hookSettleTimer = undefined
+      if (!this.socket || this.hookVerified) return
+      void this.ensureHook('install').catch((error) => {
+        // 导航中途上下文可能再次销毁：交给下一次 executionContextCreated / 健康自检重试。
+        this.setStatus('reconnecting', `重装过程 hook 失败：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`)
+      })
+    }, HOOK_CONTEXT_SETTLE_MS)
+    this.hookSettleTimer.unref?.()
+  }
+
+  /** 状态去重：同一 (state, detail) 不重复上报，健康自检每拍不制造快照噪音。 */
+  private setStatus(state: 'connected' | 'reconnecting' | 'unavailable', detail: string): void {
+    if (this.lastStatus?.state === state && this.lastStatus.detail === detail) return
+    this.lastStatus = { state, detail }
+    this.onStatus({ state, detail, updatedAt: Date.now() })
+  }
+
   dispose(): void {
     this.stopped = true
     if (this.retryTimer) clearTimeout(this.retryTimer)
     this.retryTimer = undefined
+    this.stopHookHealthLoop()
+    this.hookVerified = false
     const socket = this.socket
     this.socket = undefined
     for (const pending of this.pending.values()) pending.reject(new Error('observer disposed'))
@@ -739,7 +876,7 @@ export class CursorStreamObserver {
     }
     this.newDocumentScriptId = undefined
     try { socket?.close() } catch { /* 尽力而为 */ }
-    this.onStatus({ state: 'unavailable', detail: 'Cursor 原生过程观察器已停止', updatedAt: Date.now() })
+    this.setStatus('unavailable', 'Cursor 原生过程观察器已停止')
   }
 
   private handleMessage(data: unknown): void {
@@ -754,6 +891,19 @@ export class CursorStreamObserver {
       this.pending.delete(message.id)
       if (message.error) pending.reject(new Error(JSON.stringify(message.error)))
       else pending.resolve(message.result)
+      return
+    }
+    if (message.method === 'Runtime.executionContextsCleared') {
+      // 页面原地重载/导航：旧文档连同 hook 一起消失，socket 与 target 却不变。
+      // 立即撤销 connected——在新文档验证就位前，过程流事实上不存在。
+      this.hookVerified = false
+      this.setStatus('reconnecting', 'Cursor 工作台已重载，正在重新安装过程 hook')
+      return
+    }
+    if (message.method === 'Runtime.executionContextCreated') {
+      const context = (message.params as { context?: { auxData?: { isDefault?: unknown } } } | undefined)?.context
+      // 只认主世界（isDefault）：扩展/隔离世界里没有 Cursor 的 composer 服务。
+      if (context?.auxData?.isDefault === true && !this.hookVerified) this.scheduleHookReinstall()
       return
     }
     if (message.method === 'Runtime.bindingCalled') {
@@ -811,9 +961,11 @@ export class CursorStreamObserver {
     // 旧 socket 的迟到 close 不得清掉重连后已就位的新 socket。
     if (this.socket !== source) return
     this.socket = undefined
+    this.hookVerified = false
+    this.stopHookHealthLoop()
     for (const pending of this.pending.values()) pending.reject(new Error('observer disconnected'))
     this.pending.clear()
-    this.onStatus({ state: 'reconnecting', detail: 'Cursor 原生过程流已断开，正在重连', updatedAt: Date.now() })
+    this.setStatus('reconnecting', 'Cursor 原生过程流已断开，正在重连')
     if (!this.stopped) this.scheduleRetry()
   }
 

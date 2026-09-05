@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { runInNewContext } from 'node:vm'
 import {
   CURSOR_STREAM_HOOK_EXPRESSION,
+  CURSOR_STREAM_HOOK_PROBE_EXPRESSION,
+  CURSOR_STREAM_HOOK_VERSION,
   CursorStreamObserver,
   type CursorNativeProcessEvent,
   type StreamObserverSocket
@@ -17,6 +19,12 @@ interface SentCall {
 class FakeSocket implements StreamObserverSocket {
   readonly sent: SentCall[] = []
   closed = false
+  /** 模拟页面文档里的 hook：install 表达式一执行即就位；测试把它清零模拟文档重载/被清除。 */
+  hookAlive = false
+  /** 模拟 Cursor 工作台尚未暴露 composer 服务：install 只挂上自轮询链（'no-manager'），hook 不就位。 */
+  installPending = false
+  /** 自定义 evaluate 应答（返回 undefined 走默认模型）。 */
+  evaluateResponder?: (expression: string) => { value?: unknown; exceptionDetails?: Record<string, unknown> } | undefined
   private listeners = new Map<string, Array<(arg: unknown) => void>>()
 
   send(text: string): void {
@@ -25,8 +33,34 @@ class FakeSocket implements StreamObserverSocket {
     // CDP 调用自动应答（Runtime.enable / addBinding 等无需真实结果）
     const result = call.method === 'Page.addScriptToEvaluateOnNewDocument'
       ? { identifier: `script-${call.id}` }
-      : {}
+      : call.method === 'Runtime.evaluate'
+        ? this.evaluateResult(String(call.params.expression))
+        : {}
     queueMicrotask(() => this.emit('message', JSON.stringify({ id: call.id, result })))
+  }
+
+  /** 按表达式模拟页面 V8 的 Runtime.evaluate 结果（含页面脚本异常形态）。 */
+  private evaluateResult(expression: string): Record<string, unknown> {
+    const custom = this.evaluateResponder?.(expression)
+    if (custom?.exceptionDetails) return { result: { type: 'object', subtype: 'error' }, exceptionDetails: custom.exceptionDetails }
+    if (custom) return { result: { type: typeof custom.value, value: custom.value } }
+    if (expression === CURSOR_STREAM_HOOK_PROBE_EXPRESSION) {
+      return { result: { type: 'object', value: {
+        hook: this.hookAlive,
+        version: this.hookAlive ? CURSOR_STREAM_HOOK_VERSION : undefined,
+        scheduler: this.hookAlive || this.installPending ? 'function' : 'undefined'
+      } } }
+    }
+    if (expression === CURSOR_STREAM_HOOK_EXPRESSION) {
+      if (this.installPending) return { result: { type: 'string', value: 'no-manager' } }
+      this.hookAlive = true
+      return { result: { type: 'number', value: 4 } }
+    }
+    return { result: { type: 'string', value: 'restored' } }
+  }
+
+  installCalls(): SentCall[] {
+    return this.sent.filter((call) => call.method === 'Runtime.evaluate' && call.params.expression === CURSOR_STREAM_HOOK_EXPRESSION)
   }
   close(): void { this.closed = true }
   on(event: never, listener: never): void
@@ -277,6 +311,145 @@ describe('CursorStreamObserver', () => {
     const evaluate = socket.findCall('Runtime.evaluate')
     expect(typeof evaluate?.params.expression).toBe('string')
     observer.dispose()
+  })
+
+  it('enables the Page domain before registering the new-document hook and verifies the install with a read-only probe', async () => {
+    const states: Array<{ state: string; detail: string }> = []
+    const { socket, observer } = buildObserver({ onStatus: (status) => states.push({ state: status.state, detail: status.detail }) })
+    await observer.attach()
+    const methods = socket.sent.map((call) => call.method)
+    // Page 域不启用时 addScriptToEvaluateOnNewDocument 只登记不执行：顺序必须是 enable → add
+    expect(methods).toContain('Page.enable')
+    expect(methods.indexOf('Page.enable')).toBeLessThan(methods.indexOf('Page.addScriptToEvaluateOnNewDocument'))
+    expect(methods.indexOf('Page.enable')).toBeGreaterThan(methods.lastIndexOf('Runtime.addBinding'))
+    // 安装（1 次）之后紧跟一次只读探针；connected 只在探针确认 hook 就位后才上报
+    expect(socket.installCalls()).toHaveLength(1)
+    const probes = socket.sent.filter((call) => call.method === 'Runtime.evaluate' && call.params.expression === CURSOR_STREAM_HOOK_PROBE_EXPRESSION)
+    expect(probes).toHaveLength(1)
+    expect(socket.sent.indexOf(probes[0]!)).toBeGreaterThan(socket.sent.indexOf(socket.installCalls()[0]!))
+    expect(states).toEqual([{ state: 'connected', detail: 'Cursor 原生过程流已连接' }])
+    observer.dispose()
+  })
+
+  it('reinstalls the hook after an in-place page reload and only reports connected again once verified (2026-09-05 事故)', async () => {
+    vi.useFakeTimers()
+    try {
+      const states: Array<{ state: string; detail: string }> = []
+      const { socket, observer } = buildObserver({ onStatus: (status) => states.push({ state: status.state, detail: status.detail }) })
+      await observer.attach()
+      expect(states.at(-1)?.state).toBe('connected')
+      const installsBefore = socket.installCalls().length
+
+      // Cursor 窗口原地重载（Reload Window / 同窗口切换文件夹）：target 与 socket 不变，
+      // 文档换新——hook 随旧文档消失，binding 由 Runtime 域自动注入新文档。
+      socket.hookAlive = false
+      socket.emit('message', JSON.stringify({ method: 'Runtime.executionContextsCleared', params: {} }))
+      expect(states.at(-1)).toEqual({ state: 'reconnecting', detail: 'Cursor 工作台已重载，正在重新安装过程 hook' })
+      expect(observer.connected).toBe(true)
+
+      // 隔离世界的上下文不触发重装；主世界上下文就位后合并一次重装
+      socket.emit('message', JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { id: 8, origin: '', name: '', auxData: { isDefault: false, type: 'isolated' } } }
+      }))
+      socket.emit('message', JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { id: 9, origin: '', name: '', auxData: { isDefault: true, type: 'default' } } }
+      }))
+      socket.emit('message', JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { id: 10, origin: '', name: '', auxData: { isDefault: true, type: 'default' } } }
+      }))
+      expect(socket.installCalls()).toHaveLength(installsBefore)
+      await vi.advanceTimersByTimeAsync(400)
+      expect(socket.installCalls()).toHaveLength(installsBefore + 1)
+      expect(socket.hookAlive).toBe(true)
+      expect(states.at(-1)).toEqual({ state: 'connected', detail: 'Cursor 原生过程流已连接' })
+      // 已验证就位后，后续 iframe 上下文创建不再触发重装
+      socket.emit('message', JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { id: 11, origin: '', name: '', auxData: { isDefault: true, type: 'default' } } }
+      }))
+      await vi.advanceTimersByTimeAsync(400)
+      expect(socket.installCalls()).toHaveLength(installsBefore + 1)
+      observer.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('treats a page-script exception during hook install as an attach failure instead of a false connected', async () => {
+    vi.useFakeTimers()
+    try {
+      const states: Array<{ state: string; detail: string }> = []
+      const { socket, observer } = buildObserver({ onStatus: (status) => states.push({ state: status.state, detail: status.detail }) })
+      socket.evaluateResponder = (expression) => expression === CURSOR_STREAM_HOOK_EXPRESSION
+        ? { exceptionDetails: { text: 'Uncaught', exception: { description: 'ReferenceError: boom is not defined' } } }
+        : undefined
+      const attached = await observer.attach()
+      expect(attached).toBe(false)
+      expect(observer.connected).toBe(false)
+      expect(socket.closed).toBe(true)
+      expect(states).toHaveLength(1)
+      expect(states[0]!.state).toBe('reconnecting')
+      expect(states[0]!.detail).toContain('ReferenceError: boom is not defined')
+      observer.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('health check reinstalls a hook that disappeared without any event, and never repeats identical status', async () => {
+    vi.useFakeTimers()
+    try {
+      const states: Array<{ state: string; detail: string }> = []
+      const { socket, observer } = buildObserver({ onStatus: (status) => states.push({ state: status.state, detail: status.detail }) })
+      await observer.attach()
+      const installsBefore = socket.installCalls().length
+      const probesBefore = socket.sent.filter((call) => call.params.expression === CURSOR_STREAM_HOOK_PROBE_EXPRESSION).length
+
+      // hook 健在：自检只探针、不重装、不重复上报 connected
+      await vi.advanceTimersByTimeAsync(20_500)
+      expect(socket.installCalls()).toHaveLength(installsBefore)
+      expect(socket.sent.filter((call) => call.params.expression === CURSOR_STREAM_HOOK_PROBE_EXPRESSION).length).toBe(probesBefore + 1)
+      expect(states.filter((status) => status.state === 'connected')).toHaveLength(1)
+
+      // 未知路径把 hook 清掉且没有任何 CDP 事件：下一拍自检发现缺席并重装
+      socket.hookAlive = false
+      await vi.advanceTimersByTimeAsync(20_500)
+      expect(socket.installCalls()).toHaveLength(installsBefore + 1)
+      expect(socket.hookAlive).toBe(true)
+      expect(states.at(-1)?.state).toBe('connected')
+
+      // dispose 后自检停止
+      observer.dispose()
+      const sentAfterDispose = socket.sent.length
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(socket.sent.length).toBe(sentAfterDispose)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports reconnecting while the workbench composer service is not ready, then connected once the in-page install chain lands', async () => {
+    vi.useFakeTimers()
+    try {
+      const states: Array<{ state: string; detail: string }> = []
+      const { socket, observer } = buildObserver({ onStatus: (status) => states.push({ state: status.state, detail: status.detail }) })
+      socket.installPending = true
+      expect(await observer.attach()).toBe(true)
+      expect(observer.connected).toBe(true)
+      expect(states.at(-1)).toEqual({ state: 'reconnecting', detail: '等待 Cursor 工作台就绪后安装过程 hook' })
+
+      // 页面内 2s 自轮询链等到 manager 后自行装上（不经拾光再注入）
+      socket.installPending = false
+      socket.hookAlive = true
+      await vi.advanceTimersByTimeAsync(20_500)
+      expect(states.at(-1)).toEqual({ state: 'connected', detail: 'Cursor 原生过程流已连接' })
+      observer.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('dispatches bindingCalled payloads as write signals', async () => {
