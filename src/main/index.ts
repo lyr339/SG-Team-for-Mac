@@ -73,7 +73,7 @@ import { SessionHandoffService } from '../application/session-handoff-service'
 import { RevealPathPolicy } from '../application/reveal-path-policy'
 import { registerSessionHandoffIpc } from './register-session-handoff-ipc'
 import { installLocalImageProtocol, registerLocalImageScheme } from './local-image-protocol'
-import { resolveUserDataDirectory } from './user-data-directory'
+import { legacyUserDataDirectory, resolveUserDataDirectory } from './user-data-directory'
 import { homedir } from 'node:os'
 
 let mainWindow: BrowserWindow | undefined
@@ -247,6 +247,12 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   teamMemoryRepository = new SqliteTeamMemoryRepository(databasePath)
   teamContinuityRepository = new SqliteTeamContinuityRepository(databasePath)
   channelMessageRepository = new SqliteChannelMessageRepository(databasePath)
+  // 数据目录改名后，历史消息附件里的绝对路径跟着改写（幂等，无匹配即无操作）。
+  const remappedAttachments = channelMessageRepository.remapAttachmentRoots(
+    legacyUserDataDirectory(app.getPath('appData'), app.isPackaged),
+    app.getPath('userData')
+  )
+  if (remappedAttachments) process.stderr.write(`[sg-team] 已迁移 ${remappedAttachments} 条消息的附件路径\n`)
   channelMessageRelay = new ChannelMessageRelay(channelMessageRepository)
   channelMessageRelay.start()
   localSessionBridge = new LocalSessionBridge(channelMessageRelay)

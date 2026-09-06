@@ -1,6 +1,15 @@
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { posix, win32 } from 'node:path'
+
+/**
+ * 按目标平台选路径语义，而不是按宿主：这些函数接受 platform 注入，测试在 macOS
+ * 上也会构造 Windows 路径（反之亦然），用宿主的 path.join 会把 `C:\Users\demo`
+ * 拼成 `C:\Users\demo/Programs`。
+ */
+function pathFor(platform: NodeJS.Platform): typeof posix | typeof win32 {
+  return platform === 'win32' ? win32 : posix
+}
 
 /**
  * Cursor 用户数据目录（state.vscdb / settings.json / workspaceStorage 所在）：
@@ -12,6 +21,7 @@ export function cursorUserDataRoot(
   env: NodeJS.ProcessEnv = process.env,
   home: string = homedir()
 ): string {
+  const { join } = pathFor(platform)
   if (platform === 'darwin') return join(home, 'Library', 'Application Support', 'Cursor')
   if (platform === 'win32') return join(env.APPDATA || join(home, 'AppData', 'Roaming'), 'Cursor')
   return join(env.XDG_CONFIG_HOME || join(home, '.config'), 'Cursor')
@@ -27,6 +37,7 @@ export function cursorUserDataRoot(
 export function cursorInstallRoots(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string[] {
   if (platform === 'darwin') return ['/Applications/Cursor.app']
   if (platform !== 'win32') return []
+  const { join } = win32
   const roots: string[] = []
   if (env.LOCALAPPDATA) roots.push(join(env.LOCALAPPDATA, 'Programs', 'Cursor'))
   for (const programFiles of [env.ProgramFiles, env.ProgramW6432, env['ProgramFiles(x86)']]) {
@@ -37,6 +48,7 @@ export function cursorInstallRoots(platform: NodeJS.Platform = process.platform,
 
 /** workbench 主 bundle（用量 hook 补丁 / 运行时换号 Companion 的锚点所在）。 */
 export function cursorWorkbenchBundleCandidates(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string[] {
+  const { join } = pathFor(platform)
   const relative = platform === 'darwin'
     ? ['Contents', 'Resources', 'app', 'out', 'vs', 'workbench', 'workbench.desktop.main.js']
     : ['resources', 'app', 'out', 'vs', 'workbench', 'workbench.desktop.main.js']

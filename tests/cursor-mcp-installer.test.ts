@@ -47,7 +47,8 @@ describe('CursorMcpInstaller', () => {
 
     // 用户自己的工作区配置原样保留：SG Team 只依赖全局原生条目。
     expect(readFileSync(configPath, 'utf8')).toBe(original)
-    expect(result.configPath).toBe(configPath)
+    // workspacePath 经 realpath（macOS 的 /var → /private/var），configPath 随之派生。
+    expect(result.configPath).toBe(join(result.workspacePath, '.cursor', 'mcp.json'))
     expect(result.backupPath).toBeUndefined()
     expect(result.restartRequired).toBe(false)
     expect(result.serverNames).toEqual(['SG Team'])

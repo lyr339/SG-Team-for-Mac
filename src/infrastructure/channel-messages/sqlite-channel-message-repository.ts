@@ -161,6 +161,22 @@ export class SqliteChannelMessageRepository {
     this.migrate()
   }
 
+  /**
+   * 数据目录整体改名后，历史附件行里的绝对路径仍指向旧目录：把 attachments_json 中
+   * 旧根目录前缀改写为新根目录。按 JSON 转义后的字面量匹配（Windows 路径在 JSON 里是
+   * 双反斜杠），幂等，可在每次启动时调用；返回改写的行数。
+   */
+  remapAttachmentRoots(legacyRoot: string, currentRoot: string): number {
+    const encode = (root: string) => JSON.stringify(root).slice(1, -1)
+    const from = encode(legacyRoot)
+    const to = encode(currentRoot)
+    if (!from || from === to) return 0
+    const result = this.database.prepare(
+      'UPDATE channel_outbox SET attachments_json = replace(attachments_json, ?, ?) WHERE attachments_json IS NOT NULL AND instr(attachments_json, ?) > 0'
+    ).run(from, to, from)
+    return Number(result.changes)
+  }
+
   /** 用户 → Agent：入队一条出站消息（可携带附件），返回分配的消息（含通道内单调 seq）。 */
   enqueueOutbound(
     channelId: string,

@@ -1,6 +1,9 @@
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { win32 } from 'node:path'
 import { cursorInstallRoots } from './cursor-install-paths'
+
+// 这里只构造 Windows 路径：显式用 win32 语义，宿主是 macOS（测试）时结果也一致。
+const { join } = win32
 
 /**
  * Windows 版 Cursor 进程操作共享辅助（账号切换器 cursor-account-switcher 与
