@@ -15,7 +15,7 @@
     "smoke:mcp": "tsx scripts/verify-built-mcp.ts",
     "smoke:channel": "tsx scripts/verify-channel-mcp.ts",
     "pack:mac": "npm run build && electron-builder --dir --mac --arm64 --config.electronDist=node_modules/electron/dist",
-    "pack:win": "npm run build && electron-builder --dir --win --x64",
+    "pack:win": "npm run build && electron-builder --dir --win --x64 --config.electronDist=node_modules/electron/dist",
     "smoke:mcp:packaged": "tsx scripts/verify-built-mcp.ts --packaged",
     "verify:mac": "npm run pack:mac && npm run smoke:mcp:packaged",
     "verify:win": "npm run pack:win && npm run smoke:mcp:packaged",

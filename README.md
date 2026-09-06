@@ -18,8 +18,15 @@ npm test
 npm run build
 npm run smoke:mcp       # 团队角色 stdio 冒烟（构建产物）
 npm run smoke:channel   # 通道角色 stdio 冒烟（构建产物）
-npm run verify:mac      # 或 verify:win：打包产物 + 真实三进程冒烟
+npm run verify:mac      # 或 verify:win：打包产物 + 真实多进程冒烟
 ```
+
+Packaged output: `release/mac-arm64/拾光.app` / `release/win-unpacked/拾光.exe`
+(directory targets, unsigned). Both `pack:*` scripts reuse the Electron in
+`node_modules/electron/dist`, so no Electron download is needed at pack time.
+On Windows, electron-builder shells out to `powershell.exe`; make sure
+`C:\Windows\System32\WindowsPowerShell\v1.0` is on `PATH` in the shell you run
+it from.
 
 Design walkthrough (pure-browser preview with a mocked desktop API, plus a
 headless screenshot matrix over the right-hand inspector: panels × light/dark ×
