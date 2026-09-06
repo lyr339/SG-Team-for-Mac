@@ -75,7 +75,7 @@ describe('DesktopShell right workspace dock', () => {
 
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="收起会话列表"]')!.click())
     expect(container.textContent).not.toContain('会话栏')
-    expect(localStorage.getItem('qingtian-team.layout:v1:shell.sessions.v2:collapsed')).toBe('1')
+    expect(localStorage.getItem('sg-team.layout:v1:shell.sessions.v2:collapsed')).toBe('1')
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
     expect(container.textContent).toContain('会话栏')
     expectInspectorCollapsed(true)
@@ -83,7 +83,7 @@ describe('DesktopShell right workspace dock', () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开右侧工作区"]')!.click())
     expectInspectorCollapsed(false)
     expect(visibility.at(-1)).toBe(true)
-    expect(localStorage.getItem('qingtian-team.layout:v1:workspace-inspector:open')).toBe('1')
+    expect(localStorage.getItem('sg-team.layout:v1:workspace-inspector:open')).toBe('1')
     // 开合前后中栏与面板都是同一个 DOM 节点：滚动位置、打字机缓冲、展开态得以保留。
     expect(container.querySelector('[data-testid="stage"]')).toBe(stage)
     expect(container.querySelector('.workspace-inspector-pane > aside')).toBe(panel)
@@ -98,7 +98,7 @@ describe('DesktopShell right workspace dock', () => {
     await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '关闭 Review')!.click())
     expectInspectorCollapsed(true)
     expect(visibility.at(-1)).toBe(false)
-    expect(localStorage.getItem('qingtian-team.layout:v1:workspace-inspector:open')).toBe('0')
+    expect(localStorage.getItem('sg-team.layout:v1:workspace-inspector:open')).toBe('0')
     expect(container.querySelector('[data-testid="stage"]')).toBe(stage)
     expect(container.querySelector('.workspace-inspector-pane > aside')).toBe(panel)
     await act(async () => root.unmount())

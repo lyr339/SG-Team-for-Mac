@@ -60,7 +60,7 @@ const SCOPE_TITLES: Record<ReviewScopeId, string> = {
   turn: '最近一条用户消息之后 Agent 改动过的文件',
   branch: '当前分支相对基线分支的全部变更（含已提交）'
 }
-const SCOPE_STORAGE_KEY = 'qingtian-team.inspector:review-scope'
+const SCOPE_STORAGE_KEY = 'sg-team.inspector:review-scope'
 const DEFAULT_POLL = { live: 15_000, fallback: 2_000 }
 const KEYBOARD_HINT = 'j / k 切换文件 · n / p 切换代码块'
 

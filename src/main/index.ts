@@ -73,6 +73,7 @@ import { SessionHandoffService } from '../application/session-handoff-service'
 import { RevealPathPolicy } from '../application/reveal-path-policy'
 import { registerSessionHandoffIpc } from './register-session-handoff-ipc'
 import { installLocalImageProtocol, registerLocalImageScheme } from './local-image-protocol'
+import { resolveUserDataDirectory } from './user-data-directory'
 import { homedir } from 'node:os'
 
 let mainWindow: BrowserWindow | undefined
@@ -128,11 +129,8 @@ registerLocalImageScheme()
 // safeStorage 的 macOS Keychain 服务名绑定 app name。先固定到首发名称，
 // 待 ready 后加载旧钥匙，再恢复当前品牌名；否则品牌升级会使历史密文全部失效。
 selectSafeStorageNamespace(app)
-app.setPath(
-  'userData',
-  // 保留旧数据目录，确保品牌升级后账号、团队与消息历史原地迁移。
-  join(app.getPath('appData'), app.isPackaged ? 'qingtian-team' : 'qingtian-team-dev')
-)
+// 上一代品牌的数据目录在此原地改名迁移（账号、团队、消息历史随目录一起搬）。
+app.setPath('userData', resolveUserDataDirectory(app.getPath('appData'), app.isPackaged))
 
 function createWindow(): void {
   // 平台分离：mac 用 hiddenInset（红绿灯融入顶栏左侧）；win 用 hidden +
@@ -627,7 +625,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   // 「在 Finder 中显示」白名单：交接记录、Cursor 转录、通道附件（三处都是拾光自己写入/定位的文件）。
   const revealPolicy = new RevealPathPolicy([
     handoffRoot,
-    process.env.QINGTIAN_CURSOR_PROJECTS_ROOT?.trim() || join(homedir(), '.cursor', 'projects'),
+    process.env.SG_TEAM_CURSOR_PROJECTS_ROOT?.trim() || join(homedir(), '.cursor', 'projects'),
     join(app.getPath('userData'), 'channel-attachments')
   ], { allowImageFiles: true })
   disposeSessionHandoffIpc = registerSessionHandoffIpc(

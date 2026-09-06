@@ -165,10 +165,10 @@ function desktopSnapshot(channelIds: string[]): DesktopSnapshot {
   return {
     connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: channelIds.map((channelId) => ({
-      id: `qingtian-channel:${channelId}`,
+      id: `sg-channel:${channelId}`,
       channelId,
       generation: 0,
-      displayName: `QingTian CH-${channelId}`,
+      displayName: `SG Team CH-${channelId}`,
       roleName: '未绑定外置团队',
       status: 'waiting',
       currentTask: '',
@@ -192,7 +192,7 @@ function fixture(
   withSolo = false,
   telemetrySource?: CursorComposerTelemetrySource
 ) {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-failover-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-failover-')), 'team.sqlite3')
   const controlRepository = new SqliteTeamControlRepository(path)
   const taskRepository = new SqliteTaskPoolRepository(path)
   const collaborationRepository = new SqliteTeamCollaborationRepository(path)
@@ -632,7 +632,7 @@ describe('TeamFailoverService', () => {
     }
   })
 
-  it('explicitly transfers lead permissions to an online member via team_transfer_lead', () => {
+  it('explicitly transfers lead permissions to an online member via team_run transfer_lead', () => {
     const data = fixture(true)
     try {
       const lead = data.lead

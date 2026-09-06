@@ -14,7 +14,7 @@ const COMPOSER = '85bb41c4-4815-483a-a7c3-2815aab7f223'
 
 function session(channelId: string, overrides: Partial<AgentSession> = {}): AgentSession {
   return {
-    id: `qingtian-channel:${channelId}`,
+    id: `sg-channel:${channelId}`,
     channelId,
     generation: 0,
     displayName: `独立席 ${channelId}`,
@@ -53,7 +53,7 @@ function team(sessionToken?: string): TeamControlSnapshot {
 }
 
 function harness(options: { sessionToken?: string; transcriptExists?: boolean } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'qingtian-handoff-'))
+  const root = mkdtempSync(join(tmpdir(), 'sg-handoff-'))
   const projectsRoot = join(root, 'projects')
   const transcriptDir = join(projectsRoot, 'Users-lyr-Downloads-20260904', 'agent-transcripts', COMPOSER)
   if (options.transcriptExists !== false) {
@@ -92,13 +92,13 @@ function harness(options: { sessionToken?: string; transcriptExists?: boolean } 
 describe('cursorProjectDirectoryNames', () => {
   it('derives the ASCII-stripped directory Cursor actually uses for non-ASCII workspace names first', () => {
     expect(cursorProjectDirectoryNames('/Users/lyr/Downloads/20260904测试')[0]).toBe('Users-lyr-Downloads-20260904')
-    expect(cursorProjectDirectoryNames('/Users/lyr/Downloads/qingtian/qingtian-team')[0]).toBe('Users-lyr-Downloads-qingtian-qingtian-team')
+    expect(cursorProjectDirectoryNames('/Users/lyr/Downloads/sg/sg-team')[0]).toBe('Users-lyr-Downloads-sg-sg-team')
   })
 
   it('lower-cases the Windows drive letter the way Cursor names project directories', () => {
-    const names = cursorProjectDirectoryNames('C:\\Users\\admin\\Downloads\\ToDesk\\qingtian-team\\qingtian-team')
-    expect(names[0]).toBe('c-Users-admin-Downloads-ToDesk-qingtian-team-qingtian-team')
-    expect(names).toContain('C-Users-admin-Downloads-ToDesk-qingtian-team-qingtian-team')
+    const names = cursorProjectDirectoryNames('C:\\Users\\admin\\Downloads\\sg-team\\sg-team')
+    expect(names[0]).toBe('c-Users-admin-Downloads-sg-team-sg-team')
+    expect(names).toContain('C-Users-admin-Downloads-sg-team-sg-team')
   })
 })
 

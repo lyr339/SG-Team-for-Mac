@@ -6,6 +6,7 @@ import { InMemoryTaskPoolRepository } from '../src/infrastructure/task-pool/in-m
 import { ChannelMessageService } from '../src/application/channel-message-service'
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
 import { createUnifiedChannelServer } from '../src/mcp/unified-channel-server'
+import { TEAM_TOOL_NAMES } from '../src/mcp/team-tools'
 import type { TeamCollaborationAgentService } from '../src/application/team-collaboration-agent-service'
 import type { TeamMemoryAgentService } from '../src/application/team-memory-agent-service'
 import { TaskPoolError } from '../src/domain/task-pool'
@@ -16,7 +17,7 @@ function createTaskMcpServer(
   _communication?: unknown,
   collaboration?: TeamCollaborationAgentService,
   memory?: TeamMemoryAgentService,
-  opts: { exposeAllRoleTools?: boolean; refreshIdentity?: () => void } = {}
+  opts: { refreshIdentity?: () => void } = {}
 ) {
   return createUnifiedChannelServer({
     runtimeFor: () => ({ service, collaboration, memory }),
@@ -82,7 +83,7 @@ describe('SG Team task MCP', () => {
       capabilities: ['planning']
     }, allowAllAgents, { recordAgentCheckIn })
     const server = createTaskMcpServer(service)
-    const client = new Client({ name: 'qingtian-team-test', version: '1.0.0' })
+    const client = new Client({ name: 'sg-team-test', version: '1.0.0' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
     await client.connect(clientTransport)
@@ -117,20 +118,21 @@ describe('SG Team task MCP', () => {
       channelId: '2',
       communicationServerName: 'SG Team'
     })
-    const client = new Client({ name: 'qingtian-team-test', version: '1.0.0' })
+    const client = new Client({ name: 'sg-team-test', version: '1.0.0' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
     await client.connect(clientTransport)
     try {
-      const result = await client.callTool({ name: 'team_list_available', arguments: { channel_id: '1' } })
+      const result = await client.callTool({ name: 'team_tasks', arguments: { channel_id: '1', view: 'available' } })
       expect(result.structuredContent).toMatchObject({
+        view: 'available',
         tasks: [],
         nextAction: {
           type: 'enter_channel_wait',
           communicationServer: 'SG Team'
         }
       })
-      const claim = await client.callTool({ name: 'team_claim_task', arguments: { channel_id: '1' } })
+      const claim = await client.callTool({ name: 'team_task', arguments: { channel_id: '1', action: 'claim' } })
       expect(claim.structuredContent).toMatchObject({
         assignment: null,
         nextAction: { communicationServer: 'SG Team' }
@@ -142,7 +144,7 @@ describe('SG Team task MCP', () => {
     }
   })
 
-  it('exposes independent review tools only to QA and completes the task without leaking review tokens', async () => {
+  it('exposes nine tools in total and completes an independent review without leaking review tokens', async () => {
     const repository = new InMemoryTaskPoolRepository()
     const [task] = transactTaskPool(repository, (pool) => pool.plan('run-1', [{
       key: 'reviewed-work', title: '需要独立验收的实现'
@@ -170,39 +172,37 @@ describe('SG Team task MCP', () => {
     await developer.connect(developerClientTransport)
     await reviewer.connect(reviewerClientTransport)
     try {
-      // S4 单服务器暴露角色超集；权限按每次调用的能力围栏收口
-      expect((await developer.listTools()).tools.map((tool) => tool.name)).toContain('team_claim_review')
-      expect((await reviewer.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-        'team_list_reviews',
-        'team_claim_review',
-        'team_renew_review',
-        'team_submit_review'
-      ]))
+      // 单服务器暴露角色超集（7 个团队工具 + 2 个通信工具）；权限按每次调用的能力围栏收口
+      const toolNames = (await developer.listTools()).tools.map((tool) => tool.name).sort()
+      expect(toolNames).toEqual(['check_messages', 'record_reply', ...TEAM_TOOL_NAMES].sort())
+      expect(toolNames).toHaveLength(9)
+      expect((await reviewer.listTools()).tools.map((tool) => tool.name)).toContain('team_review')
 
-      await developer.callTool({ name: 'team_claim_task', arguments: { channel_id: '1', taskId: task!.id } })
-      await developer.callTool({ name: 'team_start_task', arguments: { channel_id: '1', taskId: task!.id } })
+      await developer.callTool({ name: 'team_task', arguments: { channel_id: '1', action: 'claim', taskId: task!.id } })
+      await developer.callTool({ name: 'team_task', arguments: { channel_id: '1', action: 'start', taskId: task!.id } })
       await developer.callTool({
-        name: 'team_submit_for_review',
-        arguments: { channel_id: '1', taskId: task!.id, output: '实现与测试证据' }
+        name: 'team_task',
+        arguments: { channel_id: '1', action: 'submit', taskId: task!.id, output: '实现与测试证据' }
       })
       const fencedReview = await developer.callTool({
-        name: 'team_claim_review',
-        arguments: { channel_id: '1', taskId: task!.id }
+        name: 'team_review',
+        arguments: { channel_id: '1', action: 'claim', taskId: task!.id }
       })
       expect(fencedReview.isError).toBe(true)
-      const listed = await reviewer.callTool({ name: 'team_list_reviews', arguments: { channel_id: '1' } })
+      const listed = await reviewer.callTool({ name: 'team_tasks', arguments: { channel_id: '1', view: 'reviews' } })
       expect(listed.structuredContent).toMatchObject({
         reviews: [expect.objectContaining({ task: expect.objectContaining({ id: task!.id }) })]
       })
       const claimed = await reviewer.callTool({
-        name: 'team_claim_review',
-        arguments: { channel_id: '1', taskId: task!.id }
+        name: 'team_review',
+        arguments: { channel_id: '1', action: 'claim', taskId: task!.id }
       })
       expect(claimed.isError).not.toBe(true)
       expect(JSON.stringify(claimed)).not.toContain('leaseToken')
       const completed = await reviewer.callTool({
-        name: 'team_submit_review',
-        arguments: { channel_id: '1', 
+        name: 'team_review',
+        arguments: { channel_id: '1',
+          action: 'submit',
           taskId: task!.id,
           decision: 'accept',
           evidence: '重新运行测试并核对失败路径，结果通过'
@@ -225,20 +225,25 @@ describe('SG Team task MCP', () => {
       capabilities: []
     }, allowAllAgents)
     const server = createTaskMcpServer(service)
-    const client = new Client({ name: 'qingtian-team-test', version: '1.0.0' })
+    const client = new Client({ name: 'sg-team-test', version: '1.0.0' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
     await client.connect(clientTransport)
     try {
       const result = await client.callTool({
-        name: 'team_report_progress',
-        arguments: { channel_id: '1',  progress: 50, summary: '没有任务却汇报' }
+        name: 'team_task',
+        arguments: { channel_id: '1', action: 'progress', progress: 50, summary: '没有任务却汇报' }
       })
       expect(result.isError).toBe(true)
       expect(result.structuredContent).toMatchObject({
         ok: false,
         code: 'active_attempt_not_found'
       })
+      // 动作级必填参数缺失：指向具体 action 的结构化错误，而不是协议异常。
+      const missing = await client.callTool({ name: 'team_task', arguments: { channel_id: '1', action: 'submit' } })
+      expect(missing.isError).toBe(true)
+      expect(missing.structuredContent).toMatchObject({ ok: false, code: 'invalid_arguments' })
+      expect(String((missing.structuredContent as { message: string }).message)).toContain('output')
     } finally {
       await client.close()
       await server.close()
@@ -256,15 +261,15 @@ describe('SG Team task MCP', () => {
       capabilities: []
     }, allowAllAgents)
     const server = createTaskMcpServer(service)
-    const client = new Client({ name: 'qingtian-team-test', version: '1.0.0' })
+    const client = new Client({ name: 'sg-team-test', version: '1.0.0' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
     await client.connect(clientTransport)
     try {
       for (const reason of ['第一次失败', '第二次失败']) {
-        await client.callTool({ name: 'team_claim_task', arguments: { channel_id: '1', taskId: task!.id } })
-        await client.callTool({ name: 'team_start_task', arguments: { channel_id: '1', taskId: task!.id } })
-        await client.callTool({ name: 'team_fail_task', arguments: { channel_id: '1', taskId: task!.id, reason } })
+        await client.callTool({ name: 'team_task', arguments: { channel_id: '1', action: 'claim', taskId: task!.id } })
+        await client.callTool({ name: 'team_task', arguments: { channel_id: '1', action: 'start', taskId: task!.id } })
+        await client.callTool({ name: 'team_task', arguments: { channel_id: '1', action: 'fail', taskId: task!.id, reason } })
       }
       expect(repository.load().tasks[task!.id]).toMatchObject({
         status: 'failed',

@@ -29,17 +29,21 @@ export interface TurnResponseTextProps {
  *
  * - 直播中挂载：经共享播放器匀速打字；record_reply 落库只是把目标切到落库正文
  *   并标记 done，尾部继续播完——不再因为行组件替换而瞬间补齐全文；
- * - 挂载即已封口（历史水合 / 切换会话回来）：直接全文并保留长文折叠。
+ * - 挂载即已封口（历史水合 / 切换会话回来）：直接全文并保留长文折叠；
+ * - 挂载时正文已经流出一部分（切换会话进入正在生成的回合）：已有部分直接落位，
+ *   只对之后到达的增量打字——打字机表达「正在发生」，不重放已经发生过的内容。
  */
 export function TurnResponseText({ turnKey, live, reply }: TurnResponseTextProps): React.JSX.Element | null {
   const historical = useRef(reply !== undefined && live === undefined)
   const text = reply ? responseFeedText(reply.text) : live ? responseFeedText(live.text) : ''
   const done = reply !== undefined || live?.status === 'complete'
+  // 观看者到来时已有直播正文 → hydrate；从空白开始看（正文尚未开始）→ 之后到达的才播放。
+  const hydrate = useRef(live !== undefined && live.text.length > 0)
   // firstFrameDoneFull：冷启动/切回会话时直接看到已完成的正文（首帧即 done）；
-  // 直播中挂载（首帧 streaming 或尚无正文）之后到达的 complete 仍走播放器尾部。
+  // 直播中挂载（首帧尚无正文）之后到达的 complete 仍走播放器尾部。
   const visible = useStreamingText(
     { id: turnKey, text, done },
-    { immediate: historical.current, firstFrameDoneFull: true }
+    { immediate: historical.current, firstFrameDoneFull: true, hydrate: hydrate.current }
   )
   if (historical.current) {
     return reply?.text ? <ClampedMessage text={reply.text} /> : null

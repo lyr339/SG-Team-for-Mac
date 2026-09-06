@@ -53,7 +53,7 @@ function sleepWithAbort(signal: AbortSignal | undefined, ms: number): Promise<bo
 
 /**
  * 通道消息服务：承载 check_messages / record_reply 的完整业务语义
- * （对齐 qingtian-v2 插件契约），供内嵌 MCP server 进程调用。
+ * ，供内嵌 MCP server 进程调用。
  * 主进程只使用 repository 直写/轮询，不经过本服务的长轮询。
  */
 export class ChannelMessageService {

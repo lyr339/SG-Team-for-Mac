@@ -182,10 +182,10 @@ function roleRestoreContent(
       : '- 暂无已采纳共享记忆',
     '',
     `${takeover ? '接替' : '恢复'}步骤：`,
-    ...(takeover ? ['1. 先调用 team_check_in，确认新的稳定角色和权限已经生效。'] : []),
-    `${takeover ? '2' : '1'}. 调用 team_get_context 核对当前成员、任务、消息和本轮关键上下文。`,
-    `${takeover ? '3' : '2'}. 对未读消息调用 team_read_message；继续属于你的 leased/running 任务，不要重复创建任务。`,
-    `${takeover ? '4' : '3'}. 使用 team_respond_message 回应本${takeover ? '接替' : '恢复'}消息，写清“已${takeover ? '接替' : '恢复'}”、当前任务和仍存在的阻塞。`,
+    ...(takeover ? ['1. 先调用 team_check_in，确认新的稳定角色和权限已经生效，并读取返回的团队上下文。'] : []),
+    `${takeover ? '2' : '1'}. 用 team_check_in 返回的 context 核对当前成员、消息和本轮关键上下文，再用 team_tasks({view:'mine'}) 核对任务。`,
+    `${takeover ? '3' : '2'}. 对未读消息调用 team_message({action:'read', messageId})；继续属于你的 leased/running 任务，不要重复创建任务。`,
+    `${takeover ? '4' : '3'}. 使用 team_message({action:'respond', messageId, content}) 回应本${takeover ? '接替' : '恢复'}消息，写清“已${takeover ? '接替' : '恢复'}”、当前任务和仍存在的阻塞。`,
     '普通 record_reply 只同步给用户，不能替代恢复回执。'
   ].join('\n')
 }

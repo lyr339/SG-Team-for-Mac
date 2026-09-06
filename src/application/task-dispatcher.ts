@@ -109,7 +109,7 @@ export class TaskDispatcher {
         task.description ? `目标与边界：${task.description}` : '',
         task.acceptance ? `验收标准：${task.acceptance}` : '',
         retry && task.failureReason ? `上次未通过原因：${task.failureReason}` : '',
-        `请调用 team_get_task({ taskId: "${task.id}" }) 核对详情，再调用 team_claim_task({ taskId: "${task.id}" }) 原子领取。`,
+        `请调用 team_tasks({ taskId: "${task.id}" }) 核对详情，再调用 team_task({ action: "claim", taskId: "${task.id}" }) 原子领取。`,
         '领取成功后开始执行并按 Team 流程汇报；不要只回复“收到”。'
       ].filter(Boolean).join('\n'),
       clientMessageId: orchestratorMessageId('task', task.id, task.attemptCount)
@@ -137,7 +137,7 @@ export class TaskDispatcher {
         `验收记录：${review.id}`,
         `验收标准：${task.acceptance || '按任务目标与交付证据独立验证'}`,
         attempt?.output ? `实现方交付摘要：${attempt.output.slice(0, 4_000)}` : '',
-        '请调用 team_claim_review 领取，独立复现并检查失败路径；随后用 team_submit_review 提交证据与通过/打回结论。',
+        '请调用 team_review({action:\'claim\'}) 领取，独立复现并检查失败路径；随后用 team_review({action:\'submit\', decision, evidence, reason}) 提交证据与通过/打回结论。',
         '禁止复述实现方结论，禁止让实现者自审。'
       ].filter(Boolean).join('\n'),
       clientMessageId: orchestratorMessageId('review', review.id, review.leaseCount)

@@ -13,7 +13,7 @@ const crypto: CursorAccountVaultCrypto = {
 
 describe('CursorAccountVault', () => {
   it('persists only ciphertext and returns masked account metadata', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-cursor-accounts-')), 'accounts.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-cursor-accounts-')), 'accounts.json')
     const vault = new CursorAccountVault(path, crypto, () => 123)
     const accounts = vault.save({ label: '工作账号', token: 'cursor-secret-token-1234' })
 
@@ -30,7 +30,7 @@ describe('CursorAccountVault', () => {
   })
 
   it('supports multiple accounts, active selection and recoverable metadata deletion', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-cursor-accounts-')), 'accounts.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-cursor-accounts-')), 'accounts.json')
     const vault = new CursorAccountVault(path, crypto)
     let accounts = vault.save({ label: '账号 A', token: 'cursor-token-aaaa' })
     accounts = vault.save({ label: '账号 B', token: 'cursor-token-bbbb' })
@@ -44,13 +44,13 @@ describe('CursorAccountVault', () => {
   })
 
   it('refuses to persist plaintext when system encryption is unavailable', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-cursor-accounts-')), 'accounts.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-cursor-accounts-')), 'accounts.json')
     const vault = new CursorAccountVault(path, { ...crypto, available: () => false })
     expect(() => vault.save({ label: '账号', token: 'cursor-token-abcd' })).toThrowError(/系统凭据加密/)
   })
 
   it('maps a changed system key to a recoverable import instruction', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-cursor-accounts-')), 'accounts.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-cursor-accounts-')), 'accounts.json')
     const vault = new CursorAccountVault(path, crypto)
     vault.save({ label: '账号', token: 'cursor-token-abcd' })
     const unreadable = new CursorAccountVault(path, {
@@ -62,7 +62,7 @@ describe('CursorAccountVault', () => {
   })
 
   it('binds a machine identity per account and replays it on later switches', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-cursor-accounts-')), 'accounts.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-cursor-accounts-')), 'accounts.json')
     const vault = new CursorAccountVault(path, crypto)
     const [saved] = vault.save({ label: 'a@example.com（网页登录）', token: 'cursor-token-abcd' })
     const accountId = saved!.id
@@ -86,7 +86,7 @@ describe('CursorAccountVault', () => {
   })
 
   it('rejects machine identity binding for unknown accounts or invalid shapes', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-cursor-accounts-')), 'accounts.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-cursor-accounts-')), 'accounts.json')
     const vault = new CursorAccountVault(path, crypto)
     vault.save({ label: '账号', token: 'cursor-token-abcd' })
 

@@ -50,7 +50,7 @@ function installApi(): ApiMock {
     onWorkspaceReviewChanged: vi.fn((listener: () => void) => { changeListener = listener; return () => { changeListener = undefined } }),
     fireChange: () => { revision += 1; changeListener?.() }
   }
-  Object.defineProperty(window, 'qingtianDesktop', { configurable: true, value: api })
+  Object.defineProperty(window, 'sgDesktop', { configurable: true, value: api })
   return api
 }
 
@@ -92,7 +92,7 @@ describe('ReviewPanel', () => {
     expect(container.textContent).toContain('login.tsx')
     expect(container.textContent).not.toContain('theme.ts')
     expect(container.textContent).toContain('1 个文件')
-    expect(localStorage.getItem('qingtian-team.inspector:review-scope')).toBe('turn')
+    expect(localStorage.getItem('sg-team.inspector:review-scope')).toBe('turn')
 
     await act(async () => scopeButtons[2]!.click())
     expect(api.getWorkspaceReview).toHaveBeenLastCalledWith({ scope: 'branch' })

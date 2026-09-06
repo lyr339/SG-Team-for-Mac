@@ -36,7 +36,7 @@ interface ResizableColumnsProps {
   endPaneCollapsed?: boolean
 }
 
-const STORAGE_PREFIX = 'qingtian-team.layout:v1:'
+const STORAGE_PREFIX = 'sg-team.layout:v1:'
 
 function readStoredSizes(storageKey: string, specs: readonly ResizablePaneSpec[]): number[] {
   try {

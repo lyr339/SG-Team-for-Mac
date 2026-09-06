@@ -9,7 +9,7 @@ import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-me
 import { createUnifiedChannelServer } from '../src/mcp/unified-channel-server'
 
 async function fixture(options: { ownershipFor?: (channelId: string) => ChannelSessionOwnership | undefined } = {}) {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-mcp-')), 'channel.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-mcp-')), 'channel.sqlite3')
   const repository = new SqliteChannelMessageRepository(path)
   const service = new ChannelMessageService(repository)
   const server = createUnifiedChannelServer({
@@ -19,7 +19,7 @@ async function fixture(options: { ownershipFor?: (channelId: string) => ChannelS
     workspacePath: '/workspace/alpha',
     keepaliveTimeoutMs: 1_200
   })
-  const client = new Client({ name: 'qingtian-channel-test', version: '1.0.0' })
+  const client = new Client({ name: 'sg-channel-test', version: '1.0.0' })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   await client.connect(clientTransport)
@@ -102,9 +102,8 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
       expect(first.isError).not.toBe(true)
       const text = textOf(first)
       expect(text).toContain('内部协作通知协议')
-      expect(text).toContain('team_read_message')
+      expect(text).toContain("team_message({action:'read', messageId})")
       expect(text).not.toContain('持续对话协议')
-      expect(text).not.toContain('真实用户消息处理完后进入 qingtian 待命')
       expect(repository.getPresence('1')?.pendingReplySyncSince).toBeUndefined()
 
       repository.enqueueOutbound('1', '【拾光内部协作通知】消息 ID：team-message:2', 2_000, undefined, true)
@@ -124,7 +123,7 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
     const { repository, client, close } = await fixture()
     try {
       repository.enqueueOutbound('1', '看下这两个附件', 1_000, [
-        { id: 'a1', name: '设计稿.png', mimeType: 'image/png', size: 820_000, path: '/tmp/qingtian/设计稿.png' },
+        { id: 'a1', name: '设计稿.png', mimeType: 'image/png', size: 820_000, path: '/tmp/sg-team/设计稿.png' },
         { id: 'a2', name: '日志.txt', mimeType: 'text/plain', size: 3_100_000, path: '/var/log/app.log' }
       ])
       const result = await client.callTool({ name: 'check_messages', arguments: { ...ch } })
@@ -133,7 +132,7 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
       expect(text).toContain('看下这两个附件')
       expect(text).toContain('2 个附件')
       expect(text).toContain('设计稿.png（image/png · 800.8 KB）')
-      expect(text).toContain('/tmp/qingtian/设计稿.png')
+      expect(text).toContain('/tmp/sg-team/设计稿.png')
       expect(text).toContain('/var/log/app.log')
       // 路径不可读时只保留核对清单，不伪造内容。
       expect(text).not.toContain('base64,')
@@ -146,7 +145,7 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
     const { repository, client, close } = await fixture()
     try {
       const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
-      const imagePath = join(mkdtempSync(join(tmpdir(), 'qingtian-mcp-image-')), 'shot.png')
+      const imagePath = join(mkdtempSync(join(tmpdir(), 'sg-mcp-image-')), 'shot.png')
       writeFileSync(imagePath, Buffer.from(pngBase64, 'base64'))
       repository.enqueueOutbound('1', '请识别这张截图', 1_000, [
         { id: 'a1', name: 'shot.png', mimeType: 'image/png', size: Buffer.byteLength(pngBase64, 'base64'), path: imagePath }
@@ -157,7 +156,7 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
       const content = result.content as ToolContentBlock[]
       const image = content.find((block) => block.type === 'image')
       const text = textOf(result)
-      // 投递形态对齐 qingtian-v2 插件：全部文本合并为单个前导块，图片固定末尾
+      // 投递形态：全部文本合并为单个前导块，图片固定末尾
       expect(content[0]?.type).toBe('text')
       expect(content[0]?.text).toContain('请识别这张截图')
       expect(content[0]?.text).toContain('1 个图片附件作为本次 MCP image 内容块直接附加')
@@ -173,10 +172,10 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
     }
   })
 
-  it('delivers text and small binary files inline like qingtian-v2 plugin check_messages', async () => {
+  it('delivers text and small binary files inline in check_messages', async () => {
     const { repository, client, close } = await fixture()
     try {
-      const directory = mkdtempSync(join(tmpdir(), 'qingtian-mcp-files-'))
+      const directory = mkdtempSync(join(tmpdir(), 'sg-mcp-files-'))
       const notePath = join(directory, 'note.txt')
       const pdfPath = join(directory, 'sample.pdf')
       writeFileSync(notePath, 'hello file\n第二行')
@@ -203,7 +202,7 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
     const { repository, client, close } = await fixture()
     try {
       repository.enqueueOutbound('1', '', 1_000, [
-        { id: 'a1', name: '截图.png', mimeType: 'image/png', size: 15_360, path: '/tmp/qingtian/截图.png' }
+        { id: 'a1', name: '截图.png', mimeType: 'image/png', size: 15_360, path: '/tmp/sg-team/截图.png' }
       ])
       const result = await client.callTool({ name: 'check_messages', arguments: { ...ch } })
       expect(result.isError).not.toBe(true)
@@ -211,7 +210,7 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
       // 正文为空时投递文本仍完整：附件清单 + 系统后缀
       expect(text).toContain('1 个附件')
       expect(text).toContain('截图.png（image/png · 15.0 KB）')
-      expect(text).toContain('/tmp/qingtian/截图.png')
+      expect(text).toContain('/tmp/sg-team/截图.png')
       expect(text).toContain('持续对话协议')
     } finally {
       await close()

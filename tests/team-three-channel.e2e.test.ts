@@ -47,7 +47,7 @@ interface ConnectedAgent {
 
 describe('three-channel autonomous team end to end', () => {
   it('launches, plans, implements, independently reviews, and governs memory across CH-1/2/3', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-three-channel-')), 'team.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-three-channel-')), 'team.sqlite3')
     const controlRepository = new SqliteTeamControlRepository(path)
     const bundle = createDefaultTeamBundle({
       workspaceId: 'alpha',
@@ -175,8 +175,8 @@ describe('three-channel autonomous team end to end', () => {
       })
       messageDispatcher.dispatchPending()
       await waitFor(() => outboxTexts('1').some((text) => text.includes(planningMessage.id)))
-      await leadCall('team_read_message', { messageId: planningMessage.id })
-      const planned = await leadCall('team_plan_tasks', {
+      await leadCall('team_message', { action: 'read', messageId: planningMessage.id })
+      const planned = await leadCall('team_task', { action: 'plan',
         tasks: [{
           key: 'feature',
           title: '实现可靠功能',
@@ -188,7 +188,7 @@ describe('three-channel autonomous team end to end', () => {
       })
       const taskId = (planned.structuredContent as { tasks?: Array<{ id?: string }> }).tasks?.[0]?.id
       expect(taskId).toMatch(/^task-/)
-      await leadCall('team_respond_message', {
+      await leadCall('team_message', { action: 'respond',
         messageId: planningMessage.id,
         content: '已建立 1 条实现任务，完成后交给质量席独立验收。',
         clientMessageId: 'lead-planning-response-01'
@@ -201,19 +201,19 @@ describe('three-channel autonomous team end to end', () => {
         .find((message) => message.clientMessageId.includes(':task:'))!
       await waitFor(() => implementationMessage
         && outboxTexts('2').some((text) => text.includes(implementationMessage.id)))
-      await builderCall('team_read_message', { messageId: implementationMessage.id })
-      await builderCall('team_claim_task', { taskId })
-      await builderCall('team_start_task', { taskId })
-      await builderCall('team_report_progress', {
+      await builderCall('team_message', { action: 'read', messageId: implementationMessage.id })
+      await builderCall('team_task', { action: 'claim', taskId })
+      await builderCall('team_task', { action: 'start', taskId })
+      await builderCall('team_task', { action: 'progress',
         taskId,
         progress: 90,
         summary: '实现与测试完成'
       })
-      await builderCall('team_submit_for_review', {
+      await builderCall('team_task', { action: 'submit',
         taskId,
         output: '生产构建成功；单元测试与错误路径测试全部通过。'
       })
-      await builderCall('team_respond_message', {
+      await builderCall('team_message', { action: 'respond',
         messageId: implementationMessage.id,
         content: '实现已完成并提交独立验收。',
         clientMessageId: 'builder-task-response-01'
@@ -226,22 +226,21 @@ describe('three-channel autonomous team end to end', () => {
         .find((message) => message.clientMessageId.includes(':review:'))!
       await waitFor(() => reviewMessage
         && outboxTexts('3').some((text) => text.includes(reviewMessage.id)))
-      await reviewerCall('team_read_message', { messageId: reviewMessage.id })
-      await reviewerCall('team_claim_review', { taskId })
-      await reviewerCall('team_submit_review', {
+      await reviewerCall('team_message', { action: 'read', messageId: reviewMessage.id })
+      await reviewerCall('team_review', { action: 'claim', taskId })
+      await reviewerCall('team_review', { action: 'submit',
         taskId,
         decision: 'accept',
         evidence: '重新运行构建、单测和失败路径检查，所有验收标准通过。'
       })
-      await reviewerCall('team_respond_message', {
+      await reviewerCall('team_message', { action: 'respond',
         messageId: reviewMessage.id,
         content: '独立验收通过，证据已写入 Review。',
         clientMessageId: 'reviewer-task-response-01'
       })
       expect(taskRepository.load().tasks[taskId!]).toMatchObject({ status: 'done' })
 
-      const proposal = await builderCall('team_memory_propose', {
-        scope: 'run',
+      const proposal = await builderCall('team_memory', { action: 'propose',
         kind: 'lesson',
         title: '独立验收必须保留证据',
         content: '实现结论不能直接作为完成依据，必须由质量角色复跑并提交证据。',
@@ -256,13 +255,13 @@ describe('three-channel autonomous team end to end', () => {
         .find((message) => message.clientMessageId.includes(':memory:'))!
       await waitFor(() => memoryMessage
         && outboxTexts('1').some((text) => text.includes(memoryMessage.id)))
-      await leadCall('team_read_message', { messageId: memoryMessage.id })
-      await leadCall('team_memory_review', {
+      await leadCall('team_message', { action: 'read', messageId: memoryMessage.id })
+      await leadCall('team_memory', { action: 'review',
         memoryId,
         decision: 'accept',
         note: '任务和独立验收证据完整'
       })
-      await leadCall('team_respond_message', {
+      await leadCall('team_message', { action: 'respond',
         messageId: memoryMessage.id,
         content: '运行级经验已审核采纳。',
         clientMessageId: 'lead-memory-response-01'
@@ -270,7 +269,7 @@ describe('three-channel autonomous team end to end', () => {
 
       expect(memoryRepository.load(bundle.workspace.id, bundle.run.id).items[memoryId!])
         .toMatchObject({ status: 'accepted', reviewedBy: { type: 'agent', slotId: slot('lead').id } })
-      const builderContext = await builderCall('team_get_context')
+      const builderContext = await builderCall('team_check_in')
       expect(builderContext.structuredContent).toMatchObject({
         context: { memory: { itemCount: 1 } }
       })

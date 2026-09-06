@@ -8,7 +8,7 @@ import type { AccountAutomationRun } from '../../../domain/account-automation'
 import type { ConversationEntry } from '../../../domain/conversation-entry'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES, createConfiguredTeamBundle, emptyTeamControlSnapshot } from '../../../domain/team-control'
 import type { TeamRunStatus } from '../../../domain/team-control'
-import type { QingtianDesktopApi, TeamSetupDraft } from '../../../shared/desktop-api'
+import type { SgDesktopApi, TeamSetupDraft } from '../../../shared/desktop-api'
 import type { WorkspaceReviewSummary } from '../../../domain/workspace-review'
 import { estimateUsageFromReference, priceForModel } from '../../../domain/cursor-usage'
 import { App } from '../App'
@@ -286,7 +286,7 @@ function pushTeam(): void {
   for (const listener of teamListeners) listener(structuredClone(state.team))
 }
 
-const api: QingtianDesktopApi = {
+const api: SgDesktopApi = {
   listCursorAccounts: async () => structuredClone(previewCursorAccounts),
   saveCursorAccount: async ({ label, token }) => {
     const at = Date.now()
@@ -495,7 +495,7 @@ const api: QingtianDesktopApi = {
       targetChannelId,
       held,
       transcriptPath: '/Users/preview/.cursor/projects/Users-preview-workspace/agent-transcripts/preview/preview.jsonl',
-      recordPath: '/Users/preview/Library/Application Support/qingtian-team/handoff/CH-1-preview-20260904-200000.md',
+      recordPath: '/Users/preview/Library/Application Support/sg-team/handoff/CH-1-preview-20260904-200000.md',
       commandId: entry.id,
       issuedAt: entry.timestamp
     }
@@ -916,7 +916,7 @@ const api: QingtianDesktopApi = {
   onTeamCollaborationSnapshot: () => () => {}
 }
 
-window.qingtianDesktop = api
+window.sgDesktop = api
 applyAppearancePreferences(readAppearancePreferences())
 
 createRoot(document.getElementById('root')!).render(

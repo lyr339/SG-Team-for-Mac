@@ -10,7 +10,7 @@ export const COMPOSER_TEXTAREA_MIN_HEIGHT = 58
 export const COMPOSER_TEXTAREA_MAX_RATIO = 0.45
 export const COMPOSER_TEXTAREA_MAX_FLOOR = 160
 export const COMPOSER_TEXTAREA_MAX_CEILING = 560
-export const COMPOSER_HEIGHT_STORAGE_KEY = 'qingtian-team.layout:v1:composer-height'
+export const COMPOSER_HEIGHT_STORAGE_KEY = 'sg-team.layout:v1:composer-height'
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, Math.round(value)))

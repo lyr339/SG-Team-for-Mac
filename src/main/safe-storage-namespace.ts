@@ -2,7 +2,7 @@
  * Electron safeStorage 的后端按平台自动选择：macOS = Keychain（服务名由
  * app.getName() 派生）；Windows = DPAPI（绑定当前用户，无命名空间概念，
  * app.setName 无副作用）。品牌切换到「拾光」后凭据允许重录（token / 卡密），
- * Keychain 直接使用拾光命名空间；旧「群枢 Safe Storage」条目成为孤儿，
+ * Keychain 直接使用拾光命名空间；旧品牌的 Safe Storage 条目成为孤儿，
  * 无引用方，可在钥匙串访问中手动清理。
  */
 export const SAFE_STORAGE_NAMESPACE_APP_NAME = '拾光'

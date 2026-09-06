@@ -12,7 +12,7 @@ function writeSkill(root: string, relativePath: string, frontmatter: string): vo
 
 describe('CursorSkillCatalog', () => {
   it('discovers nested project and user skills across every Cursor-compatible directory', () => {
-    const root = mkdtempSync(join(tmpdir(), 'qingtian-skill-catalog-'))
+    const root = mkdtempSync(join(tmpdir(), 'sg-skill-catalog-'))
     const workspace = join(root, 'workspace')
     const userHome = join(root, 'home')
     mkdirSync(workspace, { recursive: true })
@@ -36,7 +36,7 @@ describe('CursorSkillCatalog', () => {
   })
 
   it('lets an installed project skill override the same recommendation', () => {
-    const root = mkdtempSync(join(tmpdir(), 'qingtian-skill-override-'))
+    const root = mkdtempSync(join(tmpdir(), 'sg-skill-override-'))
     const workspace = join(root, 'workspace')
     mkdirSync(workspace, { recursive: true })
     writeSkill(workspace, '.cursor/skills/mcp-builder', 'name: mcp-builder\ndescription: Project-specific MCP conventions.')
@@ -47,7 +47,7 @@ describe('CursorSkillCatalog', () => {
   })
 
   it('parses large skills with YAML block chomping indicators', () => {
-    const root = mkdtempSync(join(tmpdir(), 'qingtian-skill-large-'))
+    const root = mkdtempSync(join(tmpdir(), 'sg-skill-large-'))
     const workspace = join(root, 'workspace')
     const userHome = join(root, 'home')
     mkdirSync(workspace, { recursive: true })

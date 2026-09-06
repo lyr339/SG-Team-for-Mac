@@ -7,8 +7,9 @@ import { transactTaskPool } from '../src/application/task-pool-transaction'
 import { SqliteTaskPoolRepository } from '../src/infrastructure/task-pool/sqlite-task-pool-repository'
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 import { createDefaultTeamBundle } from '../src/domain/team-control'
+import { TEAM_TOOL_NAMES } from '../src/mcp/team-tools'
 
-const directory = mkdtempSync(join(tmpdir(), 'qingtian-team-mcp-smoke-'))
+const directory = mkdtempSync(join(tmpdir(), 'sg-team-mcp-smoke-'))
 const databasePath = join(directory, 'task-pool.sqlite3')
 const bundle = createDefaultTeamBundle({
   workspaceId: 'smoke',
@@ -57,8 +58,8 @@ const readyLogs: boolean[] = []
 // --packaged 旗标跨平台（npm script 里 VAR=1 前缀语法在 Windows cmd/PowerShell 下不可用）；
 // 环境变量保留向后兼容（老调用方式 / 手动执行）。
 const packaged = process.argv.includes('--packaged')
-  || process.env.QINGTIAN_MCP_SMOKE_PACKAGED === '1'
-const explicitPackagedAppDirectory = process.env.QINGTIAN_PACKAGED_APP_DIRECTORY?.trim()
+  || process.env.SG_TEAM_MCP_SMOKE_PACKAGED === '1'
+const explicitPackagedAppDirectory = process.env.SG_TEAM_PACKAGED_APP_DIRECTORY?.trim()
 // 平台分离：mac 找 .app bundle；win 找 win-unpacked 目录（exe 与 resources 平铺）
 const windowsPackagedCandidates = [
   resolve('release/win-unpacked')
@@ -112,7 +113,7 @@ async function openClient(input: {
   transport.stderr?.on('data', (chunk) => {
     stderr += chunk.toString()
   })
-  const client = new Client({ name: 'qingtian-team-smoke', version: '1.0.0' })
+  const client = new Client({ name: 'sg-team-smoke', version: '1.0.0' })
   await client.connect(transport)
   return {
     client,
@@ -142,27 +143,29 @@ function runtime(key: string, id = agentSessionId(key)) {
 
 const leadProcess = await openClient(runtime('lead'))
 const leadTools = await leadProcess.client.listTools()
-if (!leadTools.tools.some((tool) => tool.name === 'team_plan_tasks')) {
-  throw new Error('lead process is missing planning tools')
+const EXPECTED_TOOLS = ['check_messages', 'record_reply', ...TEAM_TOOL_NAMES].sort()
+const exposed = leadTools.tools.map((tool) => tool.name).sort()
+if (JSON.stringify(exposed) !== JSON.stringify(EXPECTED_TOOLS)) {
+  throw new Error(`unexpected tool surface: ${exposed.join(', ')}`)
 }
 await leadProcess.close()
 
 const firstProcess = await openClient(runtime('builder'))
 const tools = await firstProcess.client.listTools()
-const claim = await firstProcess.call('team_claim_task', { taskId: task!.id })
+const claim = await firstProcess.call('team_task', { action: 'claim', taskId: task!.id })
 if (claim.isError) throw new Error(`claim failed: ${JSON.stringify(claim)}`)
 if (JSON.stringify(claim).includes('leaseToken')) throw new Error('lease token leaked through MCP response')
 // S4 单服务器为通道信任语义：未注册通道的调用必须被围栏拒绝
-const unauthorized = await firstProcess.call('team_start_task', { channel_id: '99', taskId: task!.id })
+const unauthorized = await firstProcess.call('team_task', { channel_id: '99', action: 'start', taskId: task!.id })
 if (!unauthorized.isError || unauthorized.structuredContent?.code !== 'agent_not_authorized') {
   throw new Error(`unregistered channel was not fenced: ${JSON.stringify(unauthorized)}`)
 }
 await firstProcess.close()
 
 const resumedProcess = await openClient(runtime('builder', ownerId))
-await resumedProcess.call('team_start_task', { taskId: task!.id })
-await resumedProcess.call('team_report_progress', { taskId: task!.id, progress: 80, summary: 'stdio 跨进程恢复正常' })
-const submitted = await resumedProcess.call('team_submit_for_review', { taskId: task!.id, output: '真实 StdioClientTransport + 进程重启 + SQLite 证据' })
+await resumedProcess.call('team_task', { action: 'start', taskId: task!.id })
+await resumedProcess.call('team_task', { action: 'progress', taskId: task!.id, progress: 80, summary: 'stdio 跨进程恢复正常' })
+const submitted = await resumedProcess.call('team_task', { action: 'submit', taskId: task!.id, output: '真实 StdioClientTransport + 进程重启 + SQLite 证据' })
 if (submitted.structuredContent?.nextAction?.communicationServer !== 'SG Team') {
   throw new Error(`missing paired wait action: ${JSON.stringify(submitted)}`)
 }
@@ -170,15 +173,14 @@ await resumedProcess.close()
 
 const reviewerProcess = await openClient(runtime('reviewer', reviewerId))
 const reviewerTools = await reviewerProcess.client.listTools()
-for (const name of ['team_list_reviews', 'team_claim_review', 'team_renew_review', 'team_submit_review']) {
-  if (!reviewerTools.tools.some((tool) => tool.name === name)) {
-    throw new Error(`reviewer process is missing ${name}`)
-  }
+if (!reviewerTools.tools.some((tool) => tool.name === 'team_review')) {
+  throw new Error('reviewer process is missing team_review')
 }
-const reviewClaim = await reviewerProcess.call('team_claim_review', { taskId: task!.id })
+const reviewClaim = await reviewerProcess.call('team_review', { action: 'claim', taskId: task!.id })
 if (reviewClaim.isError) throw new Error(`review claim failed: ${JSON.stringify(reviewClaim)}`)
 if (JSON.stringify(reviewClaim).includes('leaseToken')) throw new Error('review lease token leaked through MCP response')
-const reviewed = await reviewerProcess.call('team_submit_review', {
+const reviewed = await reviewerProcess.call('team_review', {
+  action: 'submit',
   taskId: task!.id,
   decision: 'accept',
   evidence: '独立质量进程复跑构建与测试，验收标准全部通过'

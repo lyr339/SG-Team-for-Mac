@@ -8,7 +8,7 @@ import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/
 import { SqliteTaskPoolRepository } from '../src/infrastructure/task-pool/sqlite-task-pool-repository'
 
 function repositoryFixture() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-control-')), 'control.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-control-')), 'control.sqlite3')
   return new SqliteTeamControlRepository(path)
 }
 
@@ -750,7 +750,7 @@ describe('SqliteTeamControlRepository', () => {
   })
 
   it('migrates a version-1 runtime binding table without discarding the database', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-control-v1-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-control-v1-')), 'control.sqlite3')
     const old = new DatabaseSync(path)
     old.exec(`
       CREATE TABLE team_control_meta (
@@ -795,7 +795,7 @@ describe('SqliteTeamControlRepository', () => {
   })
 
   it('migrates schema v3 roles and slots to configurable skills and avatars', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-control-v3-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-control-v3-')), 'control.sqlite3')
     const initial = new SqliteTeamControlRepository(path)
     initial.upsertWorkspaceTeam(bundle('legacy-v3', ['1', '2', '3']))
     initial.close()
@@ -833,7 +833,7 @@ describe('SqliteTeamControlRepository', () => {
   })
 
   it('migrates schema v6 by adding is_solo with a default of zero', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-control-v6-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-control-v6-')), 'control.sqlite3')
     const current = new SqliteTeamControlRepository(path)
     current.upsertWorkspaceTeam(bundle('legacy-v6', ['1', '2']))
     current.close()
@@ -1024,7 +1024,7 @@ describe('SqliteTeamControlRepository 会话围栏令牌', () => {
   })
 
   it('adds the session_token column to a pre-fence database and treats existing bindings as legacy', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-control-fence-migrate-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-control-fence-migrate-')), 'control.sqlite3')
     const seeded = new SqliteTeamControlRepository(path)
     const team = installed(seeded, 'legacy', ['1'])
     seeded.close()

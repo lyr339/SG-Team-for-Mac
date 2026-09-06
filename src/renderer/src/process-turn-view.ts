@@ -11,6 +11,8 @@ export interface ProcessStepDetail {
 
 export interface ProcessTurnStep {
   id: string
+  /** 原生过程块 id（step id 是它加 `block:` 前缀与去重下标后的视图键）。 */
+  blockId: string
   kind: ProcessStepKind
   action: string
   target?: string
@@ -70,9 +72,11 @@ function clean(value?: string): string | undefined {
  */
 function blockStep(raw: ProcessBlock, id: string): ProcessTurnStep {
   const block = normalizeProcessBlockText(raw)
+  const blockId = raw.id
   if (block.kind === 'thinking') {
     return {
       id,
+      blockId,
       kind: 'thinking',
       action: ACTIONS.thinking,
       body: clean(block.text),
@@ -87,6 +91,7 @@ function blockStep(raw: ProcessBlock, id: string): ProcessTurnStep {
   if (block.kind === 'message') {
     return {
       id,
+      blockId,
       kind: 'message',
       action: ACTIONS.message,
       body: clean(block.text),
@@ -100,6 +105,7 @@ function blockStep(raw: ProcessBlock, id: string): ProcessTurnStep {
   if (block.kind === 'command') {
     return {
       id,
+      blockId,
       kind: 'command',
       action: ACTIONS.command,
       target: clean(block.command),
@@ -119,6 +125,7 @@ function blockStep(raw: ProcessBlock, id: string): ProcessTurnStep {
   if (block.error) details.push({ label: '错误', value: block.error, kind: 'code' })
   return {
     id,
+    blockId,
     kind,
     action: kind === 'mcp' || kind === 'other' ? block.toolName || ACTIONS[kind] : ACTIONS[kind],
     target: clean(block.summary),

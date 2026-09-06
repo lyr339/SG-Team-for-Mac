@@ -224,7 +224,7 @@ export class TeamFailoverService {
     const effectiveLeadSlotId = actingLeadSlotId ?? lead.slot.id
     const effectiveLead = snapshot.members.find((member) => member.slot.id === effectiveLeadSlotId)
     if (!effectiveLead?.binding || !effectiveLead.runtime) return
-    // 忙碌主控可能数分钟不碰 MCP，也无法及时处理 team_ping；只要仍持有执行租约
+    // 忙碌主控可能数分钟不碰 MCP，也无法及时处理活性验证 ping；只要仍持有执行租约
     // 且没有 cursor_stopped 正面终止证据，就绝不触发自动主控转移。
     if (effectiveLead.runtime.online || hasInFlightExecution(effectiveLead.runtime)) {
       this.suspectedSince.delete(effectiveLead.slot.id)
@@ -266,7 +266,7 @@ export class TeamFailoverService {
         subject: '自动接管主控权限',
         content: `【系统自动】主控 ${effectiveLead.role.name} 已离线超过宽限期，您已被自动指定为临时主控。` +
           `${recoveredTaskIds.length ? `已迁移/重排任务：${recoveredTaskIds.join('、')}。` : '原主控没有活动任务需要迁移。'}` +
-          '请立即调用 team_check_in 确认，再调用 team_list_board 核对全局任务，并使用 team_transfer_lead 或 team_clear_acting_lead 管理主控权限。',
+          '请立即调用 team_check_in 确认并读取上下文，再调用 team_tasks({view:\'board\'}) 核对全局任务，并使用 team_run 的 transfer_lead 或 clear_acting_lead 管理主控权限。',
         clientMessageId: `auto-lead-failover:${run.id}:${now}`
       })
       this.suspectedSince.delete(effectiveLead.slot.id)

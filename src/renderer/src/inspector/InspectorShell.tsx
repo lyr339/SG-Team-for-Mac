@@ -21,7 +21,7 @@ interface InspectorShellProps {
   children: ReactNode
 }
 
-export const INSPECTOR_TAB_STORAGE_KEY = 'qingtian-team.inspector:active-tab'
+export const INSPECTOR_TAB_STORAGE_KEY = 'sg-team.inspector:active-tab'
 export const INSPECTOR_TAB_IDS: readonly InspectorTabId[] = ['review', 'plan', 'activity', 'artifacts']
 
 /** 读取持久化标签；兼容旧值 `todos`（Plan 面板的前身）。 */

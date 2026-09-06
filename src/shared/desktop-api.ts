@@ -192,7 +192,7 @@ export type McpInstallationResult =
     }
   | { ok: false; cancelled: true }
 
-export interface QingtianDesktopApi {
+export interface SgDesktopApi {
   listCursorAccounts(): Promise<CursorAccountMetadata[]>
   saveCursorAccount(input: { label: string; token: string; makeActive?: boolean }): Promise<CursorAccountMetadata[]>
   selectCursorAccount(accountId: string): Promise<CursorAccountMetadata[]>

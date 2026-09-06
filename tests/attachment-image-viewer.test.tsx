@@ -12,7 +12,7 @@ const attachment: MessageAttachment = {
   mimeType: 'image/png',
   size: 76_288,
   previewUrl: 'data:image/png;base64,iVBORw0KGgo=',
-  path: '/Users/x/Library/Application Support/qingtian-team/channel-attachments/m1/screen.png'
+  path: '/Users/x/Library/Application Support/sg-team/channel-attachments/m1/screen.png'
 }
 
 describe('AttachmentThumbnail', () => {
@@ -29,7 +29,7 @@ describe('AttachmentThumbnail', () => {
   afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
-    delete (window as unknown as { qingtianDesktop?: unknown }).qingtianDesktop
+    delete (window as unknown as { sgDesktop?: unknown }).sgDesktop
   })
 
   it('renders a zoomable button and nothing when the attachment has no image source', () => {
@@ -41,7 +41,7 @@ describe('AttachmentThumbnail', () => {
 
   it('opens the lightbox on click, copies through the desktop API and closes on Escape', async () => {
     const copyImageToClipboard = vi.fn(async () => true)
-    ;(window as unknown as { qingtianDesktop?: unknown }).qingtianDesktop = { copyImageToClipboard, saveImageAs: vi.fn(), revealPathInFolder: vi.fn() }
+    ;(window as unknown as { sgDesktop?: unknown }).sgDesktop = { copyImageToClipboard, saveImageAs: vi.fn(), revealPathInFolder: vi.fn() }
     await act(async () => root.render(<AttachmentThumbnail attachment={attachment} />))
     await act(async () => { container.querySelector<HTMLButtonElement>('.attachment-thumb')!.click() })
     const lightbox = document.querySelector('.attachment-lightbox')

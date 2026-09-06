@@ -1,44 +1,36 @@
 # 拾光 Agent MCP
 
-The built server is `out/mcp/index.mjs`. Tools are role-scoped instead of exposing every mutation to every Agent.
+The built server is `out/mcp/index.mjs`. Cursor sees a single native entry, `SG Team`, that exposes **nine tools**: two communication tools and seven team tools. Every call carries `channel_id`; role permissions are enforced per call by the service layer (the surface is a superset, the fence is at call time).
 
-All Agents receive the execution tools:
+## Tool surface
 
-- `team_check_in`
-- `team_list_available`
-- `team_list_mine`
-- `team_get_task`
-- `team_claim_task`
-- `team_start_task`
-- `team_renew_lease`
-- `team_report_progress`
-- `team_submit_for_review`
-- `team_fail_task`
+| Tool | Kind | Purpose |
+| --- | --- | --- |
+| `check_messages` | communication | Long-poll for the next user message (keepalive → stay silent). |
+| `record_reply` | communication | Archive the complete user-visible reply after every real reply. |
+| `team_check_in` | team | Acknowledge launch and return the role briefing **plus** the run context snapshot (members with real capabilities, unread / awaiting counts, confirmed run memory). Call again whenever the context needs refreshing (takeover, permission change). |
+| `team_tasks` | team, read-only | `view=mine \| available \| reviews \| board`; pass `taskId` to read one task in full. |
+| `team_task` | team | `action=claim \| start \| renew \| progress \| submit \| fail \| plan` — everything that mutates a task. `plan` is lead-only and creates 1–30 tasks with dependencies and target slots. |
+| `team_review` | team | `action=claim \| renew \| submit` for independent acceptance (quality roles; implementers cannot review their own work). |
+| `team_message` | team | `action=inbox \| read \| send \| respond \| broadcast \| collect` — durable team messages with read / response receipts. `broadcast` / `collect` are lead-only. |
+| `team_memory` | team | `action=search \| propose \| review` for run-scoped decisions, constraints, facts, risks and lessons. `review` is lead / quality only and never self-approving. |
+| `team_run` | team | `action=start \| transfer_lead \| claim_lead \| clear_acting_lead \| ping \| pong \| liveness` — run launch, lead authority and liveness probes. |
 
-All Agents also receive durable collaboration and memory tools:
+Schemas are flat objects with optional fields; a missing action-specific argument returns `{ ok: false, code: 'invalid_arguments', message }` naming the field, never a protocol error. Every response is JSON in both `content` and `structuredContent`; idle-oriented responses carry `nextAction: { type: 'enter_channel_wait', … }` so the Agent returns to `check_messages`.
 
-- `team_get_context`
-- `team_list_inbox`
-- `team_read_message`
-- `team_send_message`
-- `team_respond_message`
-- `team_memory_search`
-- `team_memory_propose`
+### Why nine instead of one tool per service method
 
-The lead additionally receives `team_list_board` and `team_plan_tasks`. Lead/reviewer runtimes receive `team_memory_review`; project-long memory still requires an independent reviewer and cannot be self-approved. User-facing team continuity is automatic: the desktop app captures deduplicated checkpoints and restores each stable AgentSlot through correlated collaboration messages.
+The previous surface exposed 35 tools — one per service method (`team_list_mine`, `team_list_available`, `team_list_reviews`, `team_list_board`, `team_get_task` were five ways to "look at tasks"). Models pick tools by name; near-synonyms cost tokens and cause misfires. Grouping by object (tasks / task / review / message / memory / run) keeps each tool's `action` enum as the complete list of what that object can do, and keeps `readOnlyHint` meaningful (`team_tasks` is the only read-only team tool).
 
 ## Install from the desktop app
 
 Open the lobby and press **安装团队 MCP**, then explicitly choose the Cursor workspace. The installer:
 
-- preserves unrelated keys and MCP servers in `.cursor/mcp.json`;
-- removes dual-entry-era legacy entries (`qingtian-team-ch-N`, `qt-ch-N`, `qtwx-mcp-N`, `qunshu-ch-N`) from the workspace config;
-- registers a fresh generation in SQLite and revokes the previous generation;
-- restores the original config if generation activation fails.
+- registers a fresh agent generation in SQLite and revokes the previous generation;
+- does not write the workspace `.cursor/mcp.json` at all — the only MCP entry is the global one below;
+- rolls nothing back on failure because it writes nothing to disk besides SQLite.
 
 The single native `SG Team` entry in the global `~/.cursor/mcp.json` is registered at app startup; the production bundle lives outside `app.asar` so Cursor can execute it with `ELECTRON_RUN_AS_NODE=1`.
-
-Restart Cursor after installation. A cancelled folder picker performs no write.
 
 ## Process-bound identity
 
@@ -60,9 +52,9 @@ The model never supplies its identity or a lease token. One unified server proce
 }
 ```
 
-The legacy QingTian bridge does not expose Cursor `composerId`, so the current compatibility identity is `workspace hash + channel + install generation`. It is intentionally not treated as a permanent conversation identity. Every MCP tool call checks the active SQLite registration; reinstalling revokes older generations, so a stale Cursor MCP process cannot claim or mutate tasks.
+On Windows `command` is the installed `拾光.exe` and `args` points at `resources/mcp/index.mjs`.
 
-Bridge v1 will upgrade this to `workspaceId + composerId + runtime generation` without changing the task protocol.
+The Agent identity is `workspace hash + channel + install generation`. It is intentionally not treated as a permanent conversation identity. Every MCP tool call checks the active SQLite registration; reinstalling revokes older generations, so a stale Cursor MCP process cannot claim or mutate tasks.
 
 ## Communication tools and the session fence
 
@@ -86,23 +78,20 @@ Presence phases seen by the desktop: `waiting` / `keepalive` / `processing` / `n
 ## Workflow contract
 
 ```text
-list -> claim -> start -> renew/report* -> submit_for_review
-                                      \-> fail -> queued or failed
+team_tasks(view) -> team_task(claim) -> team_task(start) -> team_task(renew | progress)* -> team_task(submit)
+                                                                                        \-> team_task(fail) -> queued or failed
+team_tasks(view: 'reviews') -> team_review(claim) -> team_review(renew)* -> team_review(submit: accept | reject)
 ```
 
 Claim, start and submit are retry-safe. The lease token remains inside SQLite and the process-bound service. A process with a different generation cannot operate the attempt.
 
-Run the packaged stdio smoke with:
+Run the stdio smoke with:
 
 ```bash
 npm run build:mcp
 npm run smoke:mcp
 ```
 
-The smoke spawns three real MCP subprocesses: owner, wrong generation and resumed owner.
+The smoke spawns real MCP subprocesses (owner, wrong generation, resumed owner, reviewer) and asserts the exact nine-tool surface.
 
-The packaged-app path is separately verified with:
-
-```bash
-npm run verify:mac
-```
+The packaged-app path is separately verified with `npm run verify:mac` / `npm run verify:win`.

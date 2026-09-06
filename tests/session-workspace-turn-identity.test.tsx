@@ -74,6 +74,9 @@ describe('Agent 回合行身份贯穿 responding → sealed（阶段 F/G，§8.5
       turn: 'cursor:t1', startedAt: 1_000_100, updatedAt: 1_000_400, generating: true,
       blocks: [{ kind: 'thinking', id: 'cursor-th:1', text: thoughtText, status: 'done', startedAt: 1_000_100 }]
     }
+    // 观看者先到：消息已投递、尚无产物（占位行）。之后到达的过程/正文才是"正在发生"。
+    render(root, { entries: [user] })
+    expect(agentRow()).not.toBeNull()
     // responding：正文流式到达一半
     render(root, {
       entries: [user],

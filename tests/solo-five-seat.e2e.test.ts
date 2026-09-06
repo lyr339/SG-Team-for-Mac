@@ -33,7 +33,7 @@ class Bridge implements TeamControlBridge {
 
 describe('solo five-seat end-to-end composition', () => {
   it('persists an independent-only run and gives every channel the isolated long-poll prompt', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-independent-e2e-')), 'team.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-independent-e2e-')), 'team.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bridge = new Bridge({
       connection: { state: 'connected', endpoint: 'local', attempt: 0, lastError: '' },
@@ -78,7 +78,7 @@ describe('solo five-seat end-to-end composition', () => {
   })
 
   it('installs all five, launches/checks in only the three-person team, and keeps two solo prompts independent', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-solo-e2e-')), 'team.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-solo-e2e-')), 'team.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const collaboration = new SqliteTeamCollaborationRepository(path)
     const bundle = createConfiguredTeamBundle({

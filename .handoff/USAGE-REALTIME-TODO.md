@@ -10,9 +10,9 @@
 > **性质：只读调查产出，业务代码零变更。** 本文档由 CH-3 独立席位于 2026-09-03 完成端到端调查后编写，
 > 供任意接手 Agent 自包含理解任务，无需重新侦察。
 >
-> 项目：拾光 `qingtian-team`
+> 项目：拾光 / SG Team（`shiguang-team`）
 >
-> 工作区：`/Users/lyr/Downloads/qingtian/qingtian-team`
+> 工作区：仓库根目录（macOS / Windows 均可）
 >
 > 调查基线：`0c296e6 Harden virtual turn persistence and process lifecycle`（另有 33 文件未提交改动，属 P0 过程流修复，见下）
 >
@@ -64,14 +64,14 @@
 - `collecting` 门禁已解耦：`src/main/index.ts` 约 545 行 `cursorUsageTracker.setCollecting(true)` 恒真，
   只有 run 切换才 `reset()`（2026-09-01 实证教训：run 被误判结束期间事件被 `collecting=false` 丢弃过）。
 - tracker 通知节流 `DEFAULT_NOTIFY_DELAY_MS = 800ms`，持久化与通知同拍（防抖合并高频采样）。
-- 持久化：`CursorUsageStore`（`~/Library/Application Support/qingtian-team/cursor-usage.json`，
+- 持久化：`CursorUsageStore`（`~/Library/Application Support/sg-team/cursor-usage.json`，
   version 2，按 runId 绑定，上限 1000 会话）。
 - UI：`SessionUsageStat.tsx` 以 `usage.turns > 0` 判定就绪，未就绪渲染 ghost「—」（提交 `cac7c4f` 故意保持挂载，
   不得改回条件卸载——会违反 hooks 数量规则）。
 
 ## 2. 实证证据（2026-09-03 采集）
 
-正式软件用量文件 `~/Library/Application Support/qingtian-team/cursor-usage.json`（17:35 更新）唯一一条账：
+正式软件用量文件 `~/Library/Application Support/sg-team/cursor-usage.json`（17:35 更新）唯一一条账：
 
 ```json
 {
@@ -229,5 +229,5 @@ Claude（opus 15/75、haiku 0.8/4、sonnet 3/15、泛化）、GPT（gpt-5 1.25/1
 
 ### 实机数据位置
 
-- 正式库：`~/Library/Application Support/qingtian-team/cursor-usage.json`（用量）、同目录 `task-pool.sqlite3`（通道/任务）
+- 正式库：`~/Library/Application Support/sg-team/cursor-usage.json`（用量）、同目录 `task-pool.sqlite3`（通道/任务）
 - Cursor 遥测源：工作区对应 `state.vscdb` 的 `cursorDiskKV` 表 `composerData:<composerId>` 键

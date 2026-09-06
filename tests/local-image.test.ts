@@ -34,7 +34,7 @@ describe('local image resolution (会话正文里的 ![…](/path.png))', () => 
   })
 
   it('round-trips the protocol URL and rejects foreign URLs', () => {
-    const path = '/Users/lyr/Library/Application Support/qingtian-team/handoff/图 1.png'
+    const path = '/Users/lyr/Library/Application Support/sg-team/handoff/图 1.png'
     expect(localImagePathFromUrl(localImageUrl(path))).toBe(path)
     expect(localImagePathFromUrl('sg-image://local/%2Ftmp%2Fnotes.txt')).toBeUndefined()
     expect(localImagePathFromUrl('https://evil/%2Ftmp%2Fa.png')).toBeUndefined()
@@ -43,7 +43,7 @@ describe('local image resolution (会话正文里的 ![…](/path.png))', () => 
 })
 
 describe('main-side image input and reveal policy for message images', () => {
-  const root = mkdtempSync(join(tmpdir(), 'qingtian-local-image-'))
+  const root = mkdtempSync(join(tmpdir(), 'sg-local-image-'))
   const png = join(root, 'shot.png')
   writeFileSync(png, Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'))
   writeFileSync(join(root, 'notes.txt'), 'x')

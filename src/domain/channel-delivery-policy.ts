@@ -5,8 +5,7 @@ import type { MessageAttachment } from './conversation-entry'
  * 通道投递协议文本（一体化 S1）。
  *
  * check_messages 投递时拼接的系统后缀：Agent 侧保活行为与该协议文本
- * 形成稳定契约；2026-08 起工具名统一为 check_messages（旧 qingtian /
- * wait_messages 别名已移除，依赖旧别名的会话需重开后生效新协议）。
+ * 形成稳定契约；工具名只有 check_messages / record_reply 两个，不再提供别名。
  */
 
 export interface ChannelDeliveryContext {
@@ -79,7 +78,7 @@ export function buildSilentDeliverySuffix(context: Pick<ChannelDeliveryContext, 
     '---',
     '【内部协作通知协议】',
     `- 这是 CH-${context.channelId} 的团队内部调度通知，不是用户可见对话。`,
-    '- 按通知里的 messageId 调用 team_read_message；directive/question 处理后用 team_respond_message 建立关联回应。',
+    '- 按通知里的 messageId 调用 team_message({action:\'read\', messageId})；directive/question 处理后用 team_message({action:\'respond\', messageId, content}) 建立关联回应。',
     '- 不要向用户输出可见文字，不要调用 record_reply；处理完直接调用 check_messages 静默待命。',
     '- 只有 check_messages 明确投递真实用户消息，或服务端返回 need_reply_sync 时，才进入用户可见回复同步流程。'
   ].join('\n')

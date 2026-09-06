@@ -26,7 +26,7 @@ const entries: ConversationEntry[] = [
 ]
 
 function installDesktopApi(): void {
-  Object.defineProperty(window, 'qingtianDesktop', {
+  Object.defineProperty(window, 'sgDesktop', {
     configurable: true,
     value: {
       getWorkspaceReview: vi.fn(async () => ({
@@ -112,7 +112,7 @@ describe('WorkspaceInspector shell', () => {
     await act(async () => root.render(
       <WorkspaceInspector session={session} entries={entries} workspaceId="ws" onClose={() => {}} />
     ))
-    const api = window.qingtianDesktop as unknown as { getWorkspaceReview: ReturnType<typeof vi.fn>; onWorkspaceReviewChanged: ReturnType<typeof vi.fn> }
+    const api = window.sgDesktop as unknown as { getWorkspaceReview: ReturnType<typeof vi.fn>; onWorkspaceReviewChanged: ReturnType<typeof vi.fn> }
     expect(api.getWorkspaceReview).toHaveBeenCalled()
     expect(api.onWorkspaceReviewChanged).toHaveBeenCalledTimes(1)
     const hidden = container.querySelector('.inspector-panel.is-hidden')

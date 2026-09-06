@@ -57,7 +57,7 @@ interface Fixture {
 let fixture: Fixture
 
 beforeEach(() => {
-  const root = mkdtempSync(join(tmpdir(), 'qingtian-account-switcher-'))
+  const root = mkdtempSync(join(tmpdir(), 'sg-account-switcher-'))
   const stateDbPath = join(root, 'state.vscdb')
   const storageJsonPath = join(root, 'storage.json')
   const machineIdPath = join(root, 'machineid')
@@ -599,7 +599,7 @@ describe('CursorAccountSwitcher', () => {
 
   it('relaunches Cursor after a mid-switch write failure so the editor is not left dead', async () => {
     // 预置一个存在但非 SQLite 的「数据库」：kill 链正常执行，事务开启即失败
-    const root = mkdtempSync(join(tmpdir(), 'qingtian-account-switcher-corrupt-'))
+    const root = mkdtempSync(join(tmpdir(), 'sg-account-switcher-corrupt-'))
     const corruptDbPath = join(root, 'state.vscdb')
     writeFileSync(corruptDbPath, 'this is definitely not a sqlite database', 'utf8')
 

@@ -99,7 +99,7 @@ function installDesktopMock(desktopSnapshot: DesktopSnapshot = snapshot): void {
       return async () => undefined
     }
   })
-  ;(window as unknown as { qingtianDesktop: unknown }).qingtianDesktop = api
+  ;(window as unknown as { sgDesktop: unknown }).sgDesktop = api
 }
 
 let container: HTMLDivElement

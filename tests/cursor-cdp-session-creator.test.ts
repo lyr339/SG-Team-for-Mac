@@ -55,7 +55,7 @@ function createCreator(windows: Record<string, FakeWindow>, options: { failTarge
   return { creator, evaluatedExpressions }
 }
 
-const WS_PATH = '/Users/example/Projects/qingtian'
+const WS_PATH = '/Users/example/Projects/demo-app'
 const WS_SCOPE = createHash('sha256').update(WS_PATH).digest('hex').slice(0, 16)
 
 describe('cursorWorkspaceScopeId', () => {
@@ -76,11 +76,11 @@ describe('CursorCdpSessionCreator.probe', () => {
 
   it('端口可用时列出各窗口的桥接状态', async () => {
     const { creator } = createCreator({
-      a: { title: 'qingtian-team — Cursor', bridgeReady: true, scope: WS_SCOPE }
+      a: { title: 'sg-team — Cursor', bridgeReady: true, scope: WS_SCOPE }
     })
     const result = await creator.probe()
     expect(result.available).toBe(true)
-    expect(result.windows).toEqual([{ title: 'qingtian-team — Cursor', bridgeReady: true, workspaceScope: WS_SCOPE }])
+    expect(result.windows).toEqual([{ title: 'sg-team — Cursor', bridgeReady: true, workspaceScope: WS_SCOPE }])
   })
 })
 
@@ -137,7 +137,7 @@ describe('CursorCdpSessionCreator.createAgentSession', () => {
   it('多窗口按工作区 scope 精确匹配', async () => {
     const { creator } = createCreator({
       a: { title: 'other — Cursor', bridgeReady: true, scope: 'deadbeefdeadbeef' },
-      b: { title: 'qingtian — Cursor', bridgeReady: true, scope: WS_SCOPE, createResult: { ok: true, composerId: 'composer-b' } }
+      b: { title: 'demo-app — Cursor', bridgeReady: true, scope: WS_SCOPE, createResult: { ok: true, composerId: 'composer-b' } }
     })
     const result = await creator.createAgentSession({ channelId: '1', name: 'n', prompt: 'p', workspacePath: WS_PATH })
     expect(result.ok).toBe(true)
@@ -165,7 +165,7 @@ describe('CursorCdpSessionCreator.createAgentSession', () => {
   it('scope 缺失时按窗口标题中的工作区名匹配', async () => {
     const { creator } = createCreator({
       a: { title: 'unrelated — Cursor', bridgeReady: true, scope: '' },
-      b: { title: 'agent-launcher.ts — qingtian — Cursor', bridgeReady: true, scope: '', createResult: { ok: true, composerId: 'composer-title' } }
+      b: { title: 'agent-launcher.ts — demo-app — Cursor', bridgeReady: true, scope: '', createResult: { ok: true, composerId: 'composer-title' } }
     })
     const result = await creator.createAgentSession({ channelId: '1', name: 'n', prompt: 'p', workspacePath: WS_PATH })
     expect(result.composerId).toBe('composer-title')
@@ -295,7 +295,7 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
       items: [
         { kind: 'tool', id: 'cursor:p1', toolName: 'mcpToolCall', toolKind: 'mcp', status: 'running' },
         { kind: 'tool', id: 'cursor:p2', toolName: 'MCPToolCall', toolKind: 'mcp', status: 'running' },
-        { kind: 'tool', id: 'cursor:biz', toolName: 'mcp-SG Team-team_claim_task', toolKind: 'mcp', status: 'done' }
+        { kind: 'tool', id: 'cursor:biz', toolName: 'mcp-SG Team-team_task', toolKind: 'mcp', status: 'done' }
       ]
     })
     expect(parsed?.items.map((item) => item.id)).toEqual(['cursor:biz'])
@@ -416,7 +416,7 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
           ],
           conversationMap: {
             'interim-1': { text: '我先领取任务。' },
-            'tool-team': { toolFormerData: { name: 'mcp-SG Team-team_claim_task' } },
+            'tool-team': { toolFormerData: { name: 'mcp-SG Team-team_task' } },
             'final-1': { text: '任务已领取，开始执行。' }
           }
         })
@@ -442,7 +442,7 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
   it('returns exact stopped evidence from the live Cursor bridge', async () => {
     const { creator, evaluatedExpressions } = createCreator({
       only: {
-        title: 'qingtian — Cursor',
+        title: 'demo-app — Cursor',
         bridgeReady: true,
         scope: WS_SCOPE,
         runtimeResult: {
@@ -474,7 +474,7 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
   it('只过滤轮询噪音并保留改变业务状态的团队工具', async () => {
     const { creator } = createCreator({
       only: {
-        title: 'qingtian — Cursor',
+        title: 'demo-app — Cursor',
         bridgeReady: true,
         scope: WS_SCOPE,
         runtimeResult: {
@@ -538,7 +538,7 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
     }))
     const { creator } = createCreator({
       only: {
-        title: 'qingtian — Cursor', bridgeReady: true, scope: WS_SCOPE,
+        title: 'demo-app — Cursor', bridgeReady: true, scope: WS_SCOPE,
         runtimeResult: {
           ok: true,
           rows: [{
@@ -557,7 +557,7 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
   it('纯内部协议调用回合 → process 为 undefined（不产生噪音卡）', async () => {
     const { creator } = createCreator({
       only: {
-        title: 'qingtian — Cursor',
+        title: 'demo-app — Cursor',
         bridgeReady: true,
         scope: WS_SCOPE,
         runtimeResult: {

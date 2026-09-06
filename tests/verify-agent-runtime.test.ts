@@ -8,7 +8,7 @@ function bridgeSnapshot(): DesktopSnapshot {
   return {
     connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: [{
-      id: 'qingtian-channel:1',
+      id: 'sg-channel:1',
       channelId: '1',
       generation: 0,
       displayName: 'CH-1',
@@ -91,7 +91,7 @@ function telemetry(state: 'waiting' | 'stopped' | 'unknown', channelId = '1'): C
 }
 
 describe('verified Agent runtime projection', () => {
-  it('overrides a stale QingTian waiting flag when the bound Cursor Agent has stopped', () => {
+  it('overrides a stale transport waiting flag when the bound Cursor Agent has stopped', () => {
     const snapshot = verifyAgentRuntime(bridgeSnapshot(), team(), telemetry('stopped'))
 
     expect(snapshot.sessions[0]).toMatchObject({

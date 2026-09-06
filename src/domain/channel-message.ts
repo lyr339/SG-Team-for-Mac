@@ -1,7 +1,7 @@
 /**
  * 拾光通道消息领域模型（一体化 S1）。
  *
- * 通道消息队列替代原 qingtian-v2 插件的文件队列（messages.json）：
+ * 通道消息队列替代旧版桥接插件的文件队列（messages.json）：
  * - 出站（用户 → Agent）：拾光主进程 enqueue，内嵌 MCP server 长轮询取出投递
  * - 入站（Agent → 用户）：Agent 调 record_reply 归档，拾光主进程消费进会话时间线
  * - 活性：MCP server 每次调用刷新 presence，主进程据此投影会话状态
@@ -176,7 +176,7 @@ export function isPresenceOnline(presence: ChannelPresence | undefined, now: num
  * 已取走真实消息的执行租约。
  *
  * processing / need_reply_sync 期间 Agent 正在推理、跑命令或生成回复，协议上本来
- * 就不会持续调用 check_messages，也可能暂时处理不了 team_ping。只要没有
+ * 就不会持续调用 check_messages，也可能暂时处理不了活性验证 ping。只要没有
  * cursor_stopped/tool_aborted 这类正面终止证据，这个相位就必须受保护，不能仅凭
  * lastSeenAt 超时触发主控接管、角色交接或整轮结束。
  */

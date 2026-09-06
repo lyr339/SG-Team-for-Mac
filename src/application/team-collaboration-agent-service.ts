@@ -50,10 +50,10 @@ export class TeamCollaborationAgentService {
     const runId = identity.runId.trim()
     const slotId = identity.slotId.trim()
     if (!/^[a-zA-Z0-9:_-]{3,200}$/.test(agentSessionId)) {
-      throw new Error('QINGTIAN_AGENT_SESSION_ID 无效')
+      throw new Error('agentSessionId 无效')
     }
-    if (!/^[a-zA-Z0-9:_-]{3,200}$/.test(runId)) throw new Error('QINGTIAN_TEAM_RUN_ID 无效')
-    if (!/^[a-zA-Z0-9:_-]{3,240}$/.test(slotId)) throw new Error('QINGTIAN_AGENT_SLOT_ID 无效')
+    if (!/^[a-zA-Z0-9:_-]{3,200}$/.test(runId)) throw new Error('runId 无效')
+    if (!/^[a-zA-Z0-9:_-]{3,240}$/.test(slotId)) throw new Error('slotId 无效')
     this.identity = {
       agentSessionId,
       runId,
@@ -96,7 +96,7 @@ export class TeamCollaborationAgentService {
       unreadMessages: unread,
       awaitingResponses,
       instructions: unread > 0
-        ? '先调用 team_list_inbox，再对需要处理的消息调用 team_read_message。'
+        ? '先调用 team_message({action:\'inbox\'})，再对需要处理的消息调用 team_message({action:\'read\', messageId})。'
         : '当前没有未读团队消息。'
     }
   }
@@ -293,7 +293,7 @@ export class TeamCollaborationAgentService {
 
   /**
    * 发送活性验证 ping 到指定通道。
-   * 目标通道应在 5 秒内调用 team_pong 响应。
+   * 目标通道应在 5 秒内调用 team_run({action:'pong', pingId}) 响应。
    */
   ping(input: { targetChannelId: string; timeoutMs?: number }): { pingId: string; sentAt: number } {
     const agent = this.currentAgent()
@@ -308,7 +308,7 @@ export class TeamCollaborationAgentService {
       recipient: { type: 'agent', slotId: target.slotId },
       kind: 'question',
       subject: '活性验证 ping',
-      content: `【活性验证】请立即调用 team_pong 响应。pingId: ${pingId}`,
+      content: `【活性验证】请立即调用 team_run({action:'pong', pingId:'${pingId}'}) 响应。pingId: ${pingId}`,
       clientMessageId: pingId
     })
     this.repository.recordLiveness({
@@ -357,7 +357,7 @@ export class TeamCollaborationAgentService {
         if (missing.length) {
           throw new TaskPoolError(
             'target_capability_mismatch',
-            `${target.roleName} 不具备能力 ${missing.join('、')}；请从 team_get_context 返回的 capabilities 中选择，或省略 requiredCapabilities`
+            `${target.roleName} 不具备能力 ${missing.join('、')}；请从 team_check_in 返回的 context.members capabilities 中选择，或省略 requiredCapabilities`
           )
         }
       } else if (required.length && !members.some((member) => (
@@ -424,7 +424,7 @@ export class TeamCollaborationAgentService {
           ? pending.map((message) => `- ${message.id}｜${message.kind}｜${message.content.slice(0, 500)}`).join('\n')
           : '- 无',
         '',
-        '先调用 team_read_message 阅读本消息，再用 team_list_board 核对任务；需要重新领取的任务按正常 claim 流程处理。'
+        '先调用 team_message({action:\'read\', messageId}) 阅读本消息，再用 team_tasks({view:\'board\'}) 核对任务；需要重新领取的任务按正常 team_task claim 流程处理。'
       ].filter((line, index, values) => line !== '' || values[index - 1] !== '').join('\n'),
       clientMessageId: generatedClientMessageId('lead-takeover-context', [
         agent.runId,

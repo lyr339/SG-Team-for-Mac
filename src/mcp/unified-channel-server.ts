@@ -27,8 +27,8 @@ export interface UnifiedChannelServerOptions {
 }
 
 /**
- * 拾光单一 MCP 服务器（S4）：Cursor 面板只出现一条原生条目「SG Team」，
- * 团队工具与通信保活工具同服，全部以 channel_id 参数区分通道；
+ * 拾光单一 MCP 服务器：Cursor 面板只出现一条原生条目「SG Team」，
+ * 7 个团队工具 + 2 个通信工具同服，全部以 channel_id 参数区分通道；
  * 角色权限按每次调用的通道身份围栏校验（暴露超集、调用时收口）。
  */
 export function createUnifiedChannelServer(options: UnifiedChannelServerOptions): McpServer {
@@ -39,8 +39,7 @@ export function createUnifiedChannelServer(options: UnifiedChannelServerOptions)
   registerTeamTools(server, {
     runtimeFor: options.runtimeFor,
     refreshIdentity: options.refreshIdentity,
-    briefingFor: options.briefingFor,
-    exposeAllRoleTools: true
+    briefingFor: options.briefingFor
   })
   registerChannelCommunicationTools(server, {
     serviceFor: options.channelServiceFor,

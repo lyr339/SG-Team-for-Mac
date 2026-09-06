@@ -8,9 +8,8 @@ import { resolveTaskMcpServerPath } from './task-mcp-runtime'
 import type { SqliteChannelMessageRepository } from '../infrastructure/channel-messages/sqlite-channel-message-repository'
 
 /**
- * 团队 MCP 接入 IPC（S3-2 global 模式）：
- * 通道服务器条目由启动时的全局 ~/.cursor/mcp.json 注册器承载，
- * 这里只负责「按当前 TeamRun 登记 Agent 注册表 + 清理工作区遗留静态条目」。
+ * 团队 MCP 接入 IPC：通道服务器条目由启动时的全局 ~/.cursor/mcp.json 注册器承载，
+ * 这里只负责按当前 TeamRun 登记 Agent 注册表并接管内嵌通道。
  */
 export function registerMcpInstallerIpc(
   teamService: TeamControlService,
@@ -47,7 +46,6 @@ export function registerMcpInstallerIpc(
       }),
       databasePath: repository.path,
       runId: run.id,
-      registrationMode: 'global',
       activateAgents: (batch) => teamService.recordInstallation(batch)
     })
     // 一体化接管落成：SG Team 统一条目已指向拾光内嵌 server，

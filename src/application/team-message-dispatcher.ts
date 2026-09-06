@@ -38,10 +38,10 @@ function notificationEnvelope(input: {
     '【拾光内部协作通知】',
     `消息 ID：${input.messageId}`,
     `发送者：${input.senderLabel}；类型：${input.kind}。`,
-    `请调用当前 CH-${input.channelId} 的 SG Team MCP team_read_message（channel_id:'${input.channelId}'），使用上面的 messageId 读取持久化正文。`,
+    `请调用当前 CH-${input.channelId} 的 SG Team MCP team_message({channel_id:'${input.channelId}', action:'read', messageId})，使用上面的 messageId 读取持久化正文。`,
     requiresResponse
-      ? '处理后必须调用 team_respond_message 建立明确关联回应；不要只在普通回复中声称已处理。'
-      : '读取并纳入当前工作上下文即可；如需回复，再调用 team_respond_message 建立关联。'
+      ? '处理后必须调用 team_message({action:\'respond\', messageId, content}) 建立明确关联回应；不要只在普通回复中声称已处理。'
+      : '读取并纳入当前工作上下文即可；如需回复，再调用 team_message({action:\'respond\', messageId, content}) 建立关联。'
   ].join('\n')
 }
 

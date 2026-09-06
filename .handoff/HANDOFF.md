@@ -2,9 +2,9 @@
 
 > **唯一权威交接文档。** 旧版判活交接书与账号“切换并重启”交接书均已移除。
 >
-> 项目：拾光 `qingtian-team`
+> 项目：拾光 / SG Team（`shiguang-team`）
 >
-> 工作区：`/Users/lyr/Downloads/qingtian/qingtian-team`
+> 工作区：仓库根目录（macOS / Windows 均可）
 >
 > 当前基线：`0c296e6 Harden virtual turn persistence and process lifecycle`
 >
@@ -156,7 +156,7 @@ ComposerWorkbench.onPaste
 数据库：
 
 ```text
-~/Library/Application Support/qingtian-team/task-pool.sqlite3
+~/Library/Application Support/sg-team/task-pool.sqlite3
 ```
 
 ### 3.1 事故时间线
@@ -371,10 +371,6 @@ reply.replyToEntryId / reply.timestamp
 - `check_messages`
 
 - `record_reply`
-
-- `wait_messages`
-
-- `qingtian`
 
 同一内部协议阶段伴随的这些块仍会进入过程：
 
@@ -684,6 +680,11 @@ key = turn:<outboundId>
 5. 文本回退或 block identity 改变时按来源语义重置。
 6. `prefers-reduced-motion` 直接完整显示。
 7. 工具行按生命周期出现，不模拟逐字工具名。
+8. 打字机只表达观看者到来之后发生的事：会话视图挂载（切换会话）时已存在的过程块与
+   已流出的正文直接落位（`hydrate`），之后到达的增量与新块才播放——不论此刻来源是
+   streaming 还是 done。分界由会话视图挂载时的块集合决定（`hydratedBlockIds`），
+   不是由过程卡自身挂载决定：直播卡在首个块到达时才挂载，若以卡片挂载为界，观看者
+   眼前到达的第一帧会被误判成历史。
 
 ### 阶段 H：修正建议与消息分组
 
@@ -779,7 +780,7 @@ key = turn:<outboundId>
 ### 9.1 验收前
 
 ```bash
-cd /Users/lyr/Downloads/qingtian/qingtian-team
+cd <仓库根目录>
 git status --short
 npm run typecheck
 npm test
@@ -802,7 +803,7 @@ npm test
 ### 9.3 数据库检查
 
 ```bash
-DB="$HOME/Library/Application Support/qingtian-team/task-pool.sqlite3"
+DB="$HOME/Library/Application Support/sg-team/task-pool.sqlite3"
 
 sqlite3 -readonly "$DB" '
 SELECT id, channel_id, visible, outbound_id, created_at,

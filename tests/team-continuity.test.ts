@@ -29,7 +29,7 @@ class MutableSource<T> {
 }
 
 function fixture() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-continuity-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-continuity-')), 'team.sqlite3')
   const teamRepository = new SqliteTeamControlRepository(path)
   const bundle = createDefaultTeamBundle({
     workspaceId: 'alpha',

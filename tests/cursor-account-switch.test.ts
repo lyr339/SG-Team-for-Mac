@@ -46,7 +46,7 @@ function switchSpy(result: () => CursorAccountSwitchResult): SwitchSpy {
 }
 
 function vaultWithTwoAccounts(): { vault: CursorAccountVault; firstId: string; secondId: string } {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-account-switch-orchestration-')), 'accounts.json')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-account-switch-orchestration-')), 'accounts.json')
   const vault = new CursorAccountVault(path, crypto)
   // save 返回全账号列表；按备注定位，避免下标歧义
   const firstId = vault.save({ label: 'a@example.com（网页登录）', token: 'token-account-a-000000' })[0]!.id
@@ -153,7 +153,7 @@ describe('switchCursorAccountWithVault（vault 与 switcher 时序契约）', ()
   })
 
   it('omits the email for labels that are not plain addresses', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-account-switch-orchestration-')), 'accounts.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-account-switch-orchestration-')), 'accounts.json')
     const vault = new CursorAccountVault(path, crypto)
     const [account] = vault.save({ label: 'user_01ABC（浏览器导入）', token: 'user_01ABC::token-value-0000' })
     const spy = switchSpy(successResult)

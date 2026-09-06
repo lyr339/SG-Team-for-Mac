@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MessageAttachment } from '../../domain/conversation-entry'
-import type { QingtianDesktopApi } from '../../shared/desktop-api'
+import type { SgDesktopApi } from '../../shared/desktop-api'
 import { formatFileSize } from '../../shared/format-file-size'
 import { resolveMessageImageSource } from '../../shared/local-image'
 
@@ -11,12 +11,12 @@ import { resolveMessageImageSource } from '../../shared/local-image'
  * - 复制与另存经主进程 IPC（Electron clipboard / 保存对话框），渲染层只传 data URL。
  */
 
-type Desktop = Pick<QingtianDesktopApi, 'copyImageToClipboard' | 'saveImageAs' | 'revealPathInFolder'>
+type Desktop = Pick<SgDesktopApi, 'copyImageToClipboard' | 'saveImageAs' | 'revealPathInFolder'>
 
 /** 静态渲染 / 测试环境没有 preload 注入的 API：操作按钮退化为提示，不抛错。 */
 function desktopApi(): Desktop | undefined {
   if (typeof window === 'undefined') return undefined
-  return (window as Window & { qingtianDesktop?: QingtianDesktopApi }).qingtianDesktop
+  return (window as Window & { sgDesktop?: SgDesktopApi }).sgDesktop
 }
 
 function imageSource(attachment: MessageAttachment): string | undefined {

@@ -166,6 +166,14 @@ export function SessionWorkspace({
   ), [session.deliveryMode, visibleEntries])
   const latestAssistantId = [...visibleEntries].reverse().find((entry) => entry.role === 'assistant')?.id
   const seenCount = useRef(visibleEntries.length)
+  /**
+   * 观看者到来（本视图按 channelId 挂载）时已存在的实时过程块：切换会话进入正在
+   * 生成的回合，这些块的正文已经"呈现过"，落位不重播；之后新出现的块才打字。
+   */
+  const hydratedBlockIds = useRef<ReadonlySet<string> | null>(null)
+  if (hydratedBlockIds.current === null) {
+    hydratedBlockIds.current = new Set((liveProcess?.blocks ?? []).map((block) => block.id))
+  }
   const agentOffline = !session.online
   const lastEntry = visibleEntries.at(-1)
   const lastEntryKey = lastEntry
@@ -501,6 +509,7 @@ export function SessionWorkspace({
                 defaultOpen={responding || reply?.id === latestAssistantId}
                 compact
                 live={liveActive}
+                hydratedBlockIds={hydratedBlockIds.current ?? undefined}
               />
             ) : null}
             <TurnResponseText turnKey={turnKey} live={response} reply={reply} />

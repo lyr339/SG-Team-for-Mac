@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { CursorUpdatePreferencesStore } from '../src/infrastructure/cursor/cursor-update-preferences'
 
 function tempSettingsPath(): string {
-  return join(mkdtempSync(join(tmpdir(), 'qingtian-cursor-update-')), 'settings.json')
+  return join(mkdtempSync(join(tmpdir(), 'sg-cursor-update-')), 'settings.json')
 }
 
 describe('CursorUpdatePreferencesStore', () => {

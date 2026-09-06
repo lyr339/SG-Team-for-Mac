@@ -80,7 +80,7 @@ class FakeTeam implements TeamMessageDispatcherTeamSource {
 }
 
 function fixture() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-dispatcher-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-dispatcher-')), 'team.sqlite3')
   const teamRepository = new SqliteTeamControlRepository(path)
   const bundle = createDefaultTeamBundle({
     workspaceId: 'alpha',
@@ -145,7 +145,7 @@ function fixture() {
 }
 
 describe('TeamMessageDispatcher', () => {
-  it('queues a notification for any verified online recipient and records the real QingTian submit receipt', () => {
+  it('queues a notification for any verified online recipient and records the real Cursor submit receipt', () => {
     const data = fixture()
     const bridge = new FakeBridge()
     const team = new FakeTeam(data.snapshot)

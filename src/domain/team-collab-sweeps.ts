@@ -11,7 +11,7 @@ import type { AgentSessionStatus } from './agent-session'
  *
  * 背景：任务/评审租约已有 task-pool 清扫器回收，但协作域（消息、主控心跳）
  * 此前没有任何回收与提醒机制——directive/question 发出无人回应即永久挂起，
- * 主控掉线也只有等成员自己发现后手动 team_claim_lead。
+ * 主控掉线也只有等成员自己发现后手动 team_run claim_lead。
  */
 
 /** directive/question 未获回应的超龄阈值（默认 30 分钟）。 */

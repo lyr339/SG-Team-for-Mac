@@ -123,7 +123,7 @@ export class TeamCollaborationSweeper {
     return sent
   }
 
-  /** 有效主控失联：幂等广播一次「可 team_claim_lead 接管」的提醒，恢复后自动复位。 */
+  /** 有效主控失联：幂等广播一次「可 team_run claim_lead 接管」的提醒，恢复后自动复位。 */
   private sweepLeadHeartbeat(runId: string, now: number): number {
     const snapshot = this.controlSnapshot()
     const leadSlotId = this.effectiveLeadSlotId(snapshot, runId)
@@ -173,8 +173,8 @@ export class TeamCollaborationSweeper {
         recipient: { type: 'agent', slotId: member.slotId },
         kind: 'notice',
         content: `【主控失联提醒】有效主控心跳异常：${evidence}。` +
-          '若确认其已掉线，任何已绑定成员可调用 team_claim_lead 自荐接管临时主控；' +
-          '原主控恢复后可经 team_transfer_lead / team_clear_acting_lead 复位。',
+          '若确认其已掉线，任何已绑定成员可调用 team_run({action:\'claim_lead\'}) 自荐接管临时主控；' +
+          '原主控恢复后可经 team_run 的 transfer_lead / clear_acting_lead 复位。',
         clientMessageId: alertKey
       })
       existingClientIds.add(alertKey)
@@ -184,7 +184,7 @@ export class TeamCollaborationSweeper {
     return sent
   }
 
-  /** 有效主控席位：临时主控优先于 lead 角色席位（与 team_claim_lead 解析口径一致）。 */
+  /** 有效主控席位：临时主控优先于 lead 角色席位（与 team_run claim_lead 解析口径一致）。 */
   private effectiveLeadSlotId(snapshot: TeamControlSnapshot, runId: string): string | undefined {
     const run = snapshot.runs.find((candidate) => candidate.id === runId)
     if (!run) return undefined

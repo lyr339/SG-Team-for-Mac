@@ -64,7 +64,7 @@ function unverifiedSession(session: AgentSession, detail: string): AgentSession 
 }
 
 /**
- * Verifies QingTian transport state against the exact bound Cursor Composer.
+ * Verifies SG Team transport state against the exact bound Cursor Composer.
  * A live MCP process is not sufficient evidence that its Cursor Agent still
  * exists; this is the single projection used by both Team and Session views.
  *

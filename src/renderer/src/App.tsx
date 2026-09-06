@@ -178,7 +178,7 @@ export function App(): React.JSX.Element {
     const syncChromeColorMode = (): void => {
       const dark = appearance.colorMode === 'dark'
         || (appearance.colorMode === 'system' && media.matches)
-      void window.qingtianDesktop.setWindowChromeColorMode(dark ? 'dark' : 'light').catch(() => {})
+      void window.sgDesktop.setWindowChromeColorMode(dark ? 'dark' : 'light').catch(() => {})
     }
     syncChromeColorMode()
     if (appearance.colorMode !== 'system') return
@@ -223,19 +223,19 @@ export function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    const unsubscribe = window.qingtianDesktop.onSnapshot(acceptSnapshot)
-    const unsubscribeTasks = window.qingtianDesktop.onTaskPoolSnapshot(acceptTaskPool)
-    const unsubscribeTeamControl = window.qingtianDesktop.onTeamControlSnapshot(acceptTeamControl)
-    const unsubscribeCollaboration = window.qingtianDesktop.onTeamCollaborationSnapshot(acceptCollaboration)
-    const unsubscribeUsage = window.qingtianDesktop.onCursorUsageSnapshot(setCursorUsage)
-    void window.qingtianDesktop.getSnapshot().then(acceptSnapshot)
-    void window.qingtianDesktop.getTaskPoolSnapshot().then(acceptTaskPool)
-    void window.qingtianDesktop.getTeamControlSnapshot().then((incoming) => {
+    const unsubscribe = window.sgDesktop.onSnapshot(acceptSnapshot)
+    const unsubscribeTasks = window.sgDesktop.onTaskPoolSnapshot(acceptTaskPool)
+    const unsubscribeTeamControl = window.sgDesktop.onTeamControlSnapshot(acceptTeamControl)
+    const unsubscribeCollaboration = window.sgDesktop.onTeamCollaborationSnapshot(acceptCollaboration)
+    const unsubscribeUsage = window.sgDesktop.onCursorUsageSnapshot(setCursorUsage)
+    void window.sgDesktop.getSnapshot().then(acceptSnapshot)
+    void window.sgDesktop.getTaskPoolSnapshot().then(acceptTaskPool)
+    void window.sgDesktop.getTeamControlSnapshot().then((incoming) => {
       acceptTeamControl(incoming)
       setTeamControlLoaded(true)
     })
-    void window.qingtianDesktop.getTeamCollaborationSnapshot().then(acceptCollaboration)
-    void window.qingtianDesktop.getCursorUsageSnapshot().then(setCursorUsage)
+    void window.sgDesktop.getTeamCollaborationSnapshot().then(acceptCollaboration)
+    void window.sgDesktop.getCursorUsageSnapshot().then(setCursorUsage)
     return () => {
       unsubscribe()
       unsubscribeTasks()
@@ -249,7 +249,7 @@ export function App(): React.JSX.Element {
   const [runtimeMatch, setRuntimeMatch] = useState<CursorRuntimeAccountMatch | undefined>()
   const refreshRuntimeMatch = useCallback(async (): Promise<CursorRuntimeAccountMatch | undefined> => {
     try {
-      const match = await window.qingtianDesktop.verifyCursorRuntimeAccount()
+      const match = await window.sgDesktop.verifyCursorRuntimeAccount()
       setRuntimeMatch(match)
       return match
     } catch {
@@ -263,7 +263,7 @@ export function App(): React.JSX.Element {
   const [accountMemberships, setAccountMemberships] = useState<Record<string, CursorMembershipStatus>>({})
   const refreshMembership = useCallback(async (): Promise<CursorMembershipStatus> => {
     // IPC 按契约不 throw（错误以 error 状态返回）；catch 为纵深防御。
-    const status = await window.qingtianDesktop.refreshCursorMembership().catch((reason: unknown): CursorMembershipStatus => ({
+    const status = await window.sgDesktop.refreshCursorMembership().catch((reason: unknown): CursorMembershipStatus => ({
       state: 'error',
       detail: reason instanceof Error ? reason.message.slice(0, 120) : String(reason).slice(0, 120)
     }))
@@ -272,31 +272,31 @@ export function App(): React.JSX.Element {
   }, [])
 
   const refreshAccountMemberships = useCallback(async (accountIds?: string[]): Promise<Record<string, CursorMembershipStatus>> => {
-    const statuses = await window.qingtianDesktop.refreshCursorAccountMemberships(accountIds).catch(() => ({}))
+    const statuses = await window.sgDesktop.refreshCursorAccountMemberships(accountIds).catch(() => ({}))
     setAccountMemberships((current) => accountIds ? { ...current, ...statuses } : statuses)
     return statuses
   }, [])
 
   useEffect(() => {
-    void window.qingtianDesktop.listCursorAccounts()
+    void window.sgDesktop.listCursorAccounts()
       .then((accounts) => {
         setCursorAccounts(accounts)
         void refreshAccountMemberships()
       })
       .catch((reason: unknown) => setCursorAccountError(reason instanceof Error ? reason.message : String(reason)))
-    void window.qingtianDesktop.getAozaiCardStatus()
+    void window.sgDesktop.getAozaiCardStatus()
       .then(setAozaiStatus)
       .catch(() => {})
-    void window.qingtianDesktop.getAgentLaunchPlan()
+    void window.sgDesktop.getAgentLaunchPlan()
       .then((plan) => { if (plan) setAgentLaunchPlan(plan) })
       .catch(() => {})
-    void window.qingtianDesktop.getAccountAutomationSettings()
+    void window.sgDesktop.getAccountAutomationSettings()
       .then(setAccountAutomationSettings)
       .catch(() => {})
-    void window.qingtianDesktop.getAccountAutomationRun()
+    void window.sgDesktop.getAccountAutomationRun()
       .then((run) => { if (run.phase !== 'idle') setAccountAutomationRun(run) })
       .catch(() => {})
-    void window.qingtianDesktop.listAccountAutomationBitProfiles()
+    void window.sgDesktop.listAccountAutomationBitProfiles()
       .then((result) => {
         if (result.ok) {
           setBitProfiles(result.profiles ?? [])
@@ -306,12 +306,12 @@ export function App(): React.JSX.Element {
         }
       })
       .catch(() => { setBitProfilesMessage('指纹浏览器窗口列表获取失败') })
-    void window.qingtianDesktop.getAccountAutomationRoxyApiKey()
+    void window.sgDesktop.getAccountAutomationRoxyApiKey()
       .then(setRoxyApiKeyStatus)
       .catch(() => {})
-    const unsubscribeAozai = window.qingtianDesktop.onAozaiProgress(setAozaiProgress)
-    const unsubscribeAgentLaunch = window.qingtianDesktop.onAgentLaunchProgress(setAgentLaunchPlan)
-    const unsubscribeCdpAutoHeal = window.qingtianDesktop.onCdpAutoHealEvent((event) => {
+    const unsubscribeAozai = window.sgDesktop.onAozaiProgress(setAozaiProgress)
+    const unsubscribeAgentLaunch = window.sgDesktop.onAgentLaunchProgress(setAgentLaunchPlan)
+    const unsubscribeCdpAutoHeal = window.sgDesktop.onCdpAutoHealEvent((event) => {
       if (event.phase === 'done') {
         setCdpAutoHealEvent(undefined)
         setTeamNotice(event.ok ? event.message : `自动重启未成功：${event.message}`)
@@ -324,19 +324,19 @@ export function App(): React.JSX.Element {
       }
       setCdpAutoHealEvent(event)
     })
-    void window.qingtianDesktop.getCursorCdpSettings()
+    void window.sgDesktop.getCursorCdpSettings()
       .then((settings) => setCdpAutoHealEnabled(settings.autoHealEnabled))
       .catch(() => {})
-    void window.qingtianDesktop.getCursorUpdatePreferences()
+    void window.sgDesktop.getCursorUpdatePreferences()
       .then(setCursorUpdatePreferences)
       .catch((reason: unknown) => setCursorUpdateError(userFacingErrorMessage(reason)))
-    const unsubscribeAccountAutomation = window.qingtianDesktop.onAccountAutomationProgress((run) => {
+    const unsubscribeAccountAutomation = window.sgDesktop.onAccountAutomationProgress((run) => {
       setAccountAutomationRun(run)
       if (run.phase === 'done' || run.phase === 'failed') {
         // 自动化会改动账号列表（新 token 入库 / 移除本地记录），终态后刷新
-        void window.qingtianDesktop.listCursorAccounts().then(setCursorAccounts).catch(() => {})
+        void window.sgDesktop.listCursorAccounts().then(setCursorAccounts).catch(() => {})
         // 链内为提速跳过了余额刷新，这里链外异步补齐
-        void window.qingtianDesktop.refreshAozaiBalance().then(setAozaiStatus).catch(() => {})
+        void window.sgDesktop.refreshAozaiBalance().then(setAozaiStatus).catch(() => {})
         // 活跃账号可能已被移除/换发，一致性指示立即重算（不等 30s 轮询）
         void refreshRuntimeMatch()
         // 奥仔处理会改变账号档位，档位行同样立即重查
@@ -390,14 +390,14 @@ export function App(): React.JSX.Element {
   }, [refreshRuntimeMatch, refreshMembership])
 
   const performAgentLaunch = useCallback(async (requests: AgentLaunchRequest[]): Promise<AgentLaunchPlan> => {
-    const plan = await window.qingtianDesktop.launchAgentSessions(requests)
+    const plan = await window.sgDesktop.launchAgentSessions(requests)
     setAgentLaunchPlan(plan)
     return plan
   }, [])
 
   const launchAgentSessions = useCallback(async (requests: AgentLaunchRequest[]): Promise<AgentLaunchPlan> => {
     // 闸门一（身份）在真正创建会话之前：Cursor 登录 ≠ 活跃账号时拦截（防删错官网账号/僵尸会话）。
-    const verify = await window.qingtianDesktop.verifyCursorRuntimeAccount().catch(() => undefined)
+    const verify = await window.sgDesktop.verifyCursorRuntimeAccount().catch(() => undefined)
     const gate = resolveRuntimeLaunchGate({
       verify,
       automationEnabled: accountAutomationSettings.enabled,
@@ -449,18 +449,18 @@ export function App(): React.JSX.Element {
   const createIndependentSessions = useCallback(async (
     input: CreateIndependentSessionsInput
   ): Promise<AgentLaunchPlan> => {
-    const created = await window.qingtianDesktop.createIndependentSessions(input)
+    const created = await window.sgDesktop.createIndependentSessions(input)
     acceptTeamControl(created)
     mcpReconcileRunRef.current = reconcileKeyOf(created)
-    const installation = await window.qingtianDesktop.installTaskMcp()
+    const installation = await window.sgDesktop.installTaskMcp()
     if (!installation.ok) throw new Error('独立会话 MCP 安装已取消')
     if (installation.restartRequired) {
       setTeamMcpReloadRequired(true)
       throw new Error('SG Team MCP 已更新，请重载 Cursor 后再次补齐独立会话')
     }
     const [latest, desktop] = await Promise.all([
-      window.qingtianDesktop.getTeamControlSnapshot(),
-      window.qingtianDesktop.getSnapshot()
+      window.sgDesktop.getTeamControlSnapshot(),
+      window.sgDesktop.getSnapshot()
     ])
     acceptTeamControl(latest)
     acceptSnapshot(desktop)
@@ -496,7 +496,7 @@ export function App(): React.JSX.Element {
     setRuntimeGuardError('')
     setRuntimeGuardBusy(true)
     try {
-      const result = await window.qingtianDesktop.restartCursorWithAccount(active.id)
+      const result = await window.sgDesktop.restartCursorWithAccount(active.id)
       if (!result.switched) {
         setRuntimeGuardError('切换未能完成，请重试。')
         return
@@ -550,7 +550,7 @@ export function App(): React.JSX.Element {
       setAozaiError('')
     }
     try {
-      setAozaiStatus(await window.qingtianDesktop.refreshAozaiBalance())
+      setAozaiStatus(await window.sgDesktop.refreshAozaiBalance())
     } catch (reason) {
       if (!options.silent) setAozaiError(userFacingErrorMessage(reason))
     } finally {
@@ -563,7 +563,7 @@ export function App(): React.JSX.Element {
     setAozaiError('')
     setAozaiFeedback(null)
     try {
-      setAozaiStatus(await window.qingtianDesktop.saveAozaiCard(cardCode))
+      setAozaiStatus(await window.sgDesktop.saveAozaiCard(cardCode))
     } catch (reason) {
       setAozaiError(userFacingErrorMessage(reason))
       throw reason
@@ -577,7 +577,7 @@ export function App(): React.JSX.Element {
     setAozaiError('')
     setAozaiFeedback(null)
     try {
-      setAozaiStatus(await window.qingtianDesktop.clearAozaiCard())
+      setAozaiStatus(await window.sgDesktop.clearAozaiCard())
     } catch (reason) {
       setAozaiError(userFacingErrorMessage(reason))
     } finally {
@@ -591,7 +591,7 @@ export function App(): React.JSX.Element {
     setAozaiFeedback(null)
     setAozaiProgress(null)
     try {
-      const result = await window.qingtianDesktop.processAozaiAccount({ accountId, requestId: crypto.randomUUID() })
+      const result = await window.sgDesktop.processAozaiAccount({ accountId, requestId: crypto.randomUUID() })
       setAozaiFeedback({ ok: result.ok, message: result.message })
       setAozaiStatus((previous) => ({
         ...previous,
@@ -614,7 +614,7 @@ export function App(): React.JSX.Element {
       if (polling) return
       polling = true
       try {
-        const detection = await window.qingtianDesktop.detectCursorWorkspace()
+        const detection = await window.sgDesktop.detectCursorWorkspace()
         if (!disposed) {
           setCursorWorkspace((previous) => (
             cursorWorkspaceFingerprint(previous) === cursorWorkspaceFingerprint(detection)
@@ -651,7 +651,7 @@ export function App(): React.JSX.Element {
     const topologyKey = `${run.id}:${memberChannelKey}`
     if (mcpReconcileRunRef.current === topologyKey) return
     mcpReconcileRunRef.current = topologyKey
-    void window.qingtianDesktop.installTaskMcp()
+    void window.sgDesktop.installTaskMcp()
       .then(async (installation) => {
         if (installation.ok) {
           setTeamMcpReloadRequired(installation.restartRequired)
@@ -659,7 +659,7 @@ export function App(): React.JSX.Element {
             ? '已自动升级为稳定通道 MCP；请重载 Cursor 一次，之后新一轮无需重复重载。'
             : '本轮通道已自动接入，无需重载 Cursor。')
         }
-        acceptTeamControl(await window.qingtianDesktop.getTeamControlSnapshot())
+        acceptTeamControl(await window.sgDesktop.getTeamControlSnapshot())
       })
       .catch((reason: unknown) => {
         setTeamMcpReloadRequired(true)
@@ -684,7 +684,7 @@ export function App(): React.JSX.Element {
       }
       return previous
     })
-    void window.qingtianDesktop.getTeamCollaborationSnapshot()
+    void window.sgDesktop.getTeamCollaborationSnapshot()
       .then(acceptCollaboration)
       .catch(() => {})
   }, [acceptCollaboration, teamControl.activeRun?.id, teamControl.activeRun?.status, teamControlLoaded])
@@ -742,12 +742,12 @@ export function App(): React.JSX.Element {
     : (selectedHandoffSlotId ? '把离线职责交给其他在线空闲 Agent' : undefined)
   const [contextHandoffChannel, setContextHandoffChannel] = useState<string>()
   const loadHandoffContext = useCallback((channelId: string) => (
-    window.qingtianDesktop.getSessionHandoffContext({ channelId })
+    window.sgDesktop.getSessionHandoffContext({ channelId })
   ), [])
-  const deliverHandoff = useCallback((input: Parameters<typeof window.qingtianDesktop.deliverSessionHandoff>[0]) => (
-    window.qingtianDesktop.deliverSessionHandoff(input)
+  const deliverHandoff = useCallback((input: Parameters<typeof window.sgDesktop.deliverSessionHandoff>[0]) => (
+    window.sgDesktop.deliverSessionHandoff(input)
   ), [])
-  const revealHandoffPath = useCallback((path: string) => window.qingtianDesktop.revealPathInFolder({ path }), [])
+  const revealHandoffPath = useCallback((path: string) => window.sgDesktop.revealPathInFolder({ path }), [])
   const contextHandoffSession = contextHandoffChannel
     ? visibleSnapshot.sessions.find((session) => session.channelId === contextHandoffChannel)
     : undefined
@@ -779,7 +779,7 @@ export function App(): React.JSX.Element {
     setHandoffBusy(true)
     setHandoffError('')
     try {
-      setHandoffOptions(await window.qingtianDesktop.getManualHandoffOptions(slotId))
+      setHandoffOptions(await window.sgDesktop.getManualHandoffOptions(slotId))
     } catch (reason) {
       setHandoffError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -792,15 +792,15 @@ export function App(): React.JSX.Element {
     setHandoffBusy(true)
     setHandoffError('')
     try {
-      const result = await window.qingtianDesktop.manualHandoff({
+      const result = await window.sgDesktop.manualHandoff({
         sourceSlotId: handoffOptions.sourceSlotId,
         replacementAgentSessionId: agentSessionId
       })
       acceptTeamControl(result.team)
       const [tasks, messages, desktop] = await Promise.all([
-        window.qingtianDesktop.getTaskPoolSnapshot(),
-        window.qingtianDesktop.getTeamCollaborationSnapshot(),
-        window.qingtianDesktop.getSnapshot()
+        window.sgDesktop.getTaskPoolSnapshot(),
+        window.sgDesktop.getTeamCollaborationSnapshot(),
+        window.sgDesktop.getSnapshot()
       ])
       acceptTaskPool(tasks)
       acceptCollaboration(messages)
@@ -831,9 +831,9 @@ export function App(): React.JSX.Element {
     setTeamSetup(undefined)
     acceptTeamControl(result.snapshot)
     const [tasks, messages, desktop] = await Promise.all([
-      window.qingtianDesktop.getTaskPoolSnapshot(),
-      window.qingtianDesktop.getTeamCollaborationSnapshot(),
-      window.qingtianDesktop.getSnapshot()
+      window.sgDesktop.getTaskPoolSnapshot(),
+      window.sgDesktop.getTeamCollaborationSnapshot(),
+      window.sgDesktop.getSnapshot()
     ])
     acceptTaskPool(tasks)
     acceptCollaboration(messages)
@@ -843,7 +843,7 @@ export function App(): React.JSX.Element {
   }, [acceptCollaboration, acceptSnapshot, acceptTaskPool, acceptTeamControl])
 
   const chooseWorkspace = useCallback(async (): Promise<void> => {
-    await applyWorkspaceSelection(await window.qingtianDesktop.chooseTeamWorkspace(), false)
+    await applyWorkspaceSelection(await window.sgDesktop.chooseTeamWorkspace(), false)
   }, [applyWorkspaceSelection])
 
 
@@ -901,11 +901,11 @@ export function App(): React.JSX.Element {
             setTeamNotice('')
           }}
           onCreate={async (input) => {
-            const result = await window.qingtianDesktop.createTeam(input)
+            const result = await window.sgDesktop.createTeam(input)
             acceptTeamControl(result)
             mcpReconcileRunRef.current = reconcileKeyOf(result)
             try {
-              const installation = await window.qingtianDesktop.installTaskMcp()
+              const installation = await window.sgDesktop.installTaskMcp()
               setTeamMcpReloadRequired(installation.ok && installation.restartRequired)
               if (!installation.ok) {
                 setTeamNotice('团队已创建；团队 MCP 尚未安装。请安装后在 Cursor 手动启动 Agent 会话。')
@@ -919,10 +919,10 @@ export function App(): React.JSX.Element {
               setTeamNotice(`团队已创建；MCP 自动接入失败：${reason instanceof Error ? reason.message : String(reason)}`)
             }
             const [desktop, latestTeam, tasks, messages] = await Promise.all([
-              window.qingtianDesktop.getSnapshot(),
-              window.qingtianDesktop.getTeamControlSnapshot(),
-              window.qingtianDesktop.getTaskPoolSnapshot(),
-              window.qingtianDesktop.getTeamCollaborationSnapshot()
+              window.sgDesktop.getSnapshot(),
+              window.sgDesktop.getTeamControlSnapshot(),
+              window.sgDesktop.getTaskPoolSnapshot(),
+              window.sgDesktop.getTeamCollaborationSnapshot()
             ])
             acceptSnapshot(desktop)
             acceptTeamControl(latestTeam)
@@ -943,22 +943,22 @@ export function App(): React.JSX.Element {
           mcpReloadRequired={teamMcpReloadRequired}
           onChooseWorkspace={chooseWorkspace}
           onReconfigure={async () => {
-            setTeamSetup(await window.qingtianDesktop.prepareActiveTeamSetup())
+            setTeamSetup(await window.sgDesktop.prepareActiveTeamSetup())
           }}
           onUpdateGoal={async (goal) => {
-            const result = await window.qingtianDesktop.updateTeamGoal(goal)
+            const result = await window.sgDesktop.updateTeamGoal(goal)
             acceptTeamControl(result)
             return result
           }}
           onInstallMcp={async () => {
-            const installation = await window.qingtianDesktop.installTaskMcp()
+            const installation = await window.sgDesktop.installTaskMcp()
             if (installation.ok) setTeamMcpReloadRequired(installation.restartRequired)
-            const snapshot = await window.qingtianDesktop.getTeamControlSnapshot()
+            const snapshot = await window.sgDesktop.getTeamControlSnapshot()
             acceptTeamControl(snapshot)
             return { installation, snapshot }
           }}
           onLaunch={async () => {
-            const result = await window.qingtianDesktop.launchTeam()
+            const result = await window.sgDesktop.launchTeam()
             acceptTeamControl(result)
             return result
           }}
@@ -966,25 +966,25 @@ export function App(): React.JSX.Element {
           cursorModels={visibleSnapshot.cursorModels ?? []}
           onLaunchAgentSessions={launchAgentSessions}
           onCreateIndependentSessions={createIndependentSessions}
-          onChooseIndependentWorkspace={() => window.qingtianDesktop.chooseIndependentWorkspace()}
+          onChooseIndependentWorkspace={() => window.sgDesktop.chooseIndependentWorkspace()}
           onEndActiveRun={async () => {
-            acceptTeamControl(await window.qingtianDesktop.endActiveRun())
+            acceptTeamControl(await window.sgDesktop.endActiveRun())
           }}
           onOpenSessions={() => setActiveModule('sessions')}
           onPersistModelSelection={async (channelId, selection) => {
-            const result = await window.qingtianDesktop.setSlotModelSelection(channelId, selection)
+            const result = await window.sgDesktop.setSlotModelSelection(channelId, selection)
             acceptTeamControl(result)
             return result
           }}
-          onEnableCursorCdp={() => window.qingtianDesktop.enableCursorCdp()}
+          onEnableCursorCdp={() => window.sgDesktop.enableCursorCdp()}
           cdpAutoHealEnabled={cdpAutoHealEnabled}
           cdpAutoHealEvent={cdpAutoHealEvent}
           onToggleCdpAutoHeal={async (enabled) => {
-            const saved = await window.qingtianDesktop.saveCursorCdpSettings({ autoHealEnabled: enabled })
+            const saved = await window.sgDesktop.saveCursorCdpSettings({ autoHealEnabled: enabled })
             setCdpAutoHealEnabled(saved.autoHealEnabled)
           }}
           onCancelCdpAutoHealCountdown={async () => {
-            await window.qingtianDesktop.cancelCdpAutoHealCountdown()
+            await window.sgDesktop.cancelCdpAutoHealCountdown()
           }}
           account={{
             accounts: cursorAccounts,
@@ -993,7 +993,7 @@ export function App(): React.JSX.Element {
             onSave: async (input) => {
               setCursorAccountBusy(true); setCursorAccountError('')
               try {
-                setCursorAccounts(await window.qingtianDesktop.saveCursorAccount(input))
+                setCursorAccounts(await window.sgDesktop.saveCursorAccount(input))
                 // 新账号默认设为活跃（makeActive），一致性锚点变化 → 立即重算指示
                 void refreshRuntimeMatch()
                 // 新活跃账号档位未知，档位行同步重查
@@ -1005,7 +1005,7 @@ export function App(): React.JSX.Element {
             },
             onSelect: async (accountId) => {
               setCursorAccountBusy(true); setCursorAccountError('')
-              try { setCursorAccounts(await window.qingtianDesktop.selectCursorAccount(accountId)) }
+              try { setCursorAccounts(await window.sgDesktop.selectCursorAccount(accountId)) }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
               // 换活跃账号会改变劈叉判定（Cursor 登录没变、锚点变了），立即刷新状态行
@@ -1016,7 +1016,7 @@ export function App(): React.JSX.Element {
             onRemove: async (accountId) => {
               setCursorAccountBusy(true); setCursorAccountError('')
               try {
-                setCursorAccounts(await window.qingtianDesktop.removeCursorAccount(accountId))
+                setCursorAccounts(await window.sgDesktop.removeCursorAccount(accountId))
                 // 删除活跃账号时 vault 会顺延活跃位，一致性锚点变化 → 立即重算指示
                 void refreshRuntimeMatch()
                 // 活跃位顺延后档位未知，同步重查
@@ -1029,7 +1029,7 @@ export function App(): React.JSX.Element {
             onImportFromLocal: async () => {
               setCursorAccountBusy(true); setCursorAccountError('')
               try {
-                setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromLocalCursor())
+                setCursorAccounts(await window.sgDesktop.importCursorAccountFromLocalCursor())
                 void refreshRuntimeMatch()
                 void refreshMembership()
                 void refreshAccountMemberships()
@@ -1040,7 +1040,7 @@ export function App(): React.JSX.Element {
             onImportFromBrowser: async () => {
               setCursorAccountBusy(true); setCursorAccountError('')
               try {
-                setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromBrowser())
+                setCursorAccounts(await window.sgDesktop.importCursorAccountFromBrowser())
                 void refreshRuntimeMatch()
                 void refreshMembership()
                 void refreshAccountMemberships()
@@ -1051,7 +1051,7 @@ export function App(): React.JSX.Element {
             onImportFromFingerprint: async () => {
               setCursorAccountBusy(true); setCursorAccountError('')
               try {
-                setCursorAccounts(await window.qingtianDesktop.importCursorAccountFromFingerprint())
+                setCursorAccounts(await window.sgDesktop.importCursorAccountFromFingerprint())
                 void refreshRuntimeMatch()
                 void refreshMembership()
                 void refreshAccountMemberships()
@@ -1062,18 +1062,18 @@ export function App(): React.JSX.Element {
             // 提前登录：开窗导航 cursor.com（不关窗；失败提示走账号区错误条）
             onOpenFingerprintLogin: async () => {
               setCursorAccountBusy(true); setCursorAccountError('')
-              try { await window.qingtianDesktop.openFingerprintLoginPage() }
+              try { await window.sgDesktop.openFingerprintLoginPage() }
               catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
               finally { setCursorAccountBusy(false) }
             },
             onCleanupFingerprintEnvironment: async () => {
               // 清理只影响指纹浏览器 profile，不锁账号操作（面板内自有 busy/反馈态）。
-              await window.qingtianDesktop.cleanupFingerprintEnvironment()
+              await window.sgDesktop.cleanupFingerprintEnvironment()
             },
             onRestartWithAccount: async (accountId) => {
               setCursorAccountBusy(true); setCursorAccountError('')
               try {
-                const result = await window.qingtianDesktop.restartCursorWithAccount(accountId)
+                const result = await window.sgDesktop.restartCursorWithAccount(accountId)
                 if (!result.switched) return
                 if (!result.runtimeVerified) {
                   setCursorAccountError('⚠️ Cursor 已重启，但运行时登录态尚未完成确认。')
@@ -1123,10 +1123,10 @@ export function App(): React.JSX.Element {
             bitProfilesMessage,
             roxyApiKeyStatus,
             onSaveRoxyApiKey: async (key) => {
-              const status = await window.qingtianDesktop.saveAccountAutomationRoxyApiKey(key)
+              const status = await window.sgDesktop.saveAccountAutomationRoxyApiKey(key)
               setRoxyApiKeyStatus(status)
               // Key 就绪后 Roxy 窗口列表立即可拉（此前缺 Key 时列表必失败）
-              void window.qingtianDesktop.listAccountAutomationBitProfiles()
+              void window.sgDesktop.listAccountAutomationBitProfiles()
                 .then((result) => {
                   if (result.ok) {
                     setBitProfiles(result.profiles ?? [])
@@ -1136,7 +1136,7 @@ export function App(): React.JSX.Element {
                 .catch(() => {})
             },
             onRefreshBitProfiles: () => {
-              void window.qingtianDesktop.listAccountAutomationBitProfiles()
+              void window.sgDesktop.listAccountAutomationBitProfiles()
                 .then((result) => {
                   if (result.ok) {
                     setBitProfiles(result.profiles ?? [])
@@ -1153,7 +1153,7 @@ export function App(): React.JSX.Element {
             onSetCursorAutoUpdateDisabled: async (disabled) => {
               setCursorUpdateBusy(true); setCursorUpdateError('')
               try {
-                const result = await window.qingtianDesktop.setCursorAutoUpdateDisabled(disabled)
+                const result = await window.sgDesktop.setCursorAutoUpdateDisabled(disabled)
                 setCursorUpdatePreferences(result)
               } catch (reason) {
                 setCursorUpdateError(userFacingErrorMessage(reason))
@@ -1164,12 +1164,12 @@ export function App(): React.JSX.Element {
             onSetModelDataPolicyAutoAcknowledge: async (enabled) => {
               let message = '已关闭自动确认；官网已有确认保持不变'
               if (enabled) {
-                const result = await window.qingtianDesktop.acknowledgeCursorModelDataPolicies()
+                const result = await window.sgDesktop.acknowledgeCursorModelDataPolicies()
                 // 政策导航若换发了 token，主进程已对同一活跃账号原地入库。
-                if (result.tokenUpdated) setCursorAccounts(await window.qingtianDesktop.listCursorAccounts())
+                if (result.tokenUpdated) setCursorAccounts(await window.sgDesktop.listCursorAccounts())
                 message = `${result.message}；后续新账号将自动检查`
               }
-              const saved = await window.qingtianDesktop.saveAccountAutomationSettings({
+              const saved = await window.sgDesktop.saveAccountAutomationSettings({
                 ...accountAutomationSettings,
                 autoAcknowledgeModelDataPolicies: enabled
               })
@@ -1177,23 +1177,23 @@ export function App(): React.JSX.Element {
               return { message }
             },
             onSaveAutomationSettings: (settings) => {
-              void window.qingtianDesktop.saveAccountAutomationSettings(settings)
+              void window.sgDesktop.saveAccountAutomationSettings(settings)
                 .then((saved) => setAccountAutomationSettings(saved))
                 .catch((reason: unknown) => setAozaiError(userFacingErrorMessage(reason)))
             },
             onCancelAutomation: () => {
-              void window.qingtianDesktop.cancelAccountAutomation().catch(() => {})
+              void window.sgDesktop.cancelAccountAutomation().catch(() => {})
             }
           }}
           onCreateNextRun={async () => {
-            const created = await window.qingtianDesktop.createNextTeamRun()
+            const created = await window.sgDesktop.createNextTeamRun()
             acceptTeamControl(created)
             acceptCollaboration(emptyTeamCollaborationSnapshot(created.activeRun?.id))
             mcpReconcileRunRef.current = reconcileKeyOf(created)
             let restartRequired = false
             let issue: string | undefined
             try {
-              const installation = await window.qingtianDesktop.installTaskMcp()
+              const installation = await window.sgDesktop.installTaskMcp()
               restartRequired = installation.ok ? installation.restartRequired : false
               if (!installation.ok) {
                 issue = '团队 MCP 安装已取消，请安装后再在 Cursor 手动启动 Agent 会话。'
@@ -1202,9 +1202,9 @@ export function App(): React.JSX.Element {
               issue = `MCP 自动接入失败：${reason instanceof Error ? reason.message : String(reason)}`
             }
             const [snapshot, desktop, messages] = await Promise.all([
-              window.qingtianDesktop.getTeamControlSnapshot(),
-              window.qingtianDesktop.getSnapshot(),
-              window.qingtianDesktop.getTeamCollaborationSnapshot()
+              window.sgDesktop.getTeamControlSnapshot(),
+              window.sgDesktop.getSnapshot(),
+              window.sgDesktop.getTeamCollaborationSnapshot()
             ])
             acceptTeamControl(snapshot)
             acceptSnapshot(desktop)
@@ -1234,15 +1234,15 @@ export function App(): React.JSX.Element {
             : (selectedHandoffSlotId ? () => void openManualHandoff(selectedHandoffSlotId) : undefined)}
           handoffTitle={handoffTitle}
           onWithdrawQueued={async (entryId) => {
-            const ok = await window.qingtianDesktop.withdrawQueuedMessage({ channelId: selectedSession.channelId, entryId })
+            const ok = await window.sgDesktop.withdrawQueuedMessage({ channelId: selectedSession.channelId, entryId })
             if (!ok) throw new Error('这条消息已被 Agent 取走，无法撤回')
-            acceptSnapshot(await window.qingtianDesktop.getSnapshot())
+            acceptSnapshot(await window.sgDesktop.getSnapshot())
             return ok
           }}
           onReleaseQueued={async (entryId) => {
-            const ok = await window.qingtianDesktop.releaseQueuedMessage({ channelId: selectedSession.channelId, entryId })
+            const ok = await window.sgDesktop.releaseQueuedMessage({ channelId: selectedSession.channelId, entryId })
             if (!ok) throw new Error('这条消息已不在等待状态')
-            acceptSnapshot(await window.qingtianDesktop.getSnapshot())
+            acceptSnapshot(await window.sgDesktop.getSnapshot())
             return ok
           }}
           draft={composerDrafts[selectedSession.channelId] ?? ''}
@@ -1253,7 +1253,7 @@ export function App(): React.JSX.Element {
           liveAgentResponse={snapshot.liveAgentResponses?.[selectedSession.channelId]}
           nativeProcessStream={snapshot.nativeProcessStream}
           onSend={async (text, attachments) => {
-            await window.qingtianDesktop.sendMessage({ channelId: selectedSession.channelId, text, attachments })
+            await window.sgDesktop.sendMessage({ channelId: selectedSession.channelId, text, attachments })
           }}
         />
       ) : (
@@ -1285,7 +1285,7 @@ export function App(): React.JSX.Element {
         loadContext={loadHandoffContext}
         deliver={async (input) => {
           const result = await deliverHandoff(input)
-          acceptSnapshot(await window.qingtianDesktop.getSnapshot())
+          acceptSnapshot(await window.sgDesktop.getSnapshot())
           return result
         }}
         revealPath={revealHandoffPath}

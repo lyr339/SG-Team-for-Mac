@@ -169,7 +169,7 @@ export class TeamHandoffService {
         checkpoint ? `连续性检查点：${checkpoint.id}` : '',
         recoveredTaskIds.length ? `已迁移/重排任务：${recoveredTaskIds.join('、')}` : '原主控没有活动任务需要迁移。',
         pending.length ? `原主控待处理消息：\n${pending.map((item) => `- ${item!.id}｜${item!.content.slice(0, 500)}`).join('\n')}` : '原主控没有待处理消息。',
-        '请调用 team_check_in 刷新权限，再调用 team_get_context 与 team_list_board 核对接管状态。'
+        '请调用 team_check_in 刷新权限并读取团队上下文，再调用 team_tasks({view:\'board\'}) 核对接管状态。'
       ].filter(Boolean).join('\n'),
       clientMessageId: `manual-lead-authority:${binding.runId}:${targetSlotId}:${at}`
     })

@@ -15,7 +15,7 @@ import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-me
 import { createUnifiedChannelServer } from '../src/mcp/unified-channel-server'
 
 function setup() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-claim-lead-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-claim-lead-')), 'team.sqlite3')
   const team = new SqliteTeamControlRepository(path)
   const bundle = createDefaultTeamBundle({
     workspaceId: 'alpha',
@@ -105,7 +105,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('team_claim_lead（主控离线接管）', () => {
+describe('team_run claim_lead（主控离线接管）', () => {
   it('rejects the claim when the lead answers the liveness ping with a pong', async () => {
     const data = setup()
     const builder = await data.connect('builder')
@@ -115,8 +115,8 @@ describe('team_claim_lead（主控离线接管）', () => {
         data.collaboration.recordLiveness({ channelId: '1', runId: data.bundle.run.id, verified: true, at: Date.now() })
       }, 500)
       const result = await builder.client.callTool({
-        name: 'team_claim_lead',
-        arguments: { channel_id: '2', reason: '主控疑似掉线', pongTimeoutMs: 2_000 }
+        name: 'team_run',
+        arguments: { channel_id: '2', action: 'claim_lead', reason: '主控疑似掉线', timeoutMs: 2_000 }
       })
       clearTimeout(pong)
       expect(result.isError).toBe(true)
@@ -158,8 +158,8 @@ describe('team_claim_lead（主控离线接管）', () => {
       })
 
       const result = await builder.client.callTool({
-        name: 'team_claim_lead',
-        arguments: { channel_id: '2', reason: 'CH-1 已掉线，用户指定接管', pongTimeoutMs: 2_000 }
+        name: 'team_run',
+        arguments: { channel_id: '2', action: 'claim_lead', reason: 'CH-1 已掉线，用户指定接管', timeoutMs: 2_000 }
       })
       expect(result.isError).not.toBe(true)
       expect(result.structuredContent).toMatchObject({
@@ -198,29 +198,30 @@ describe('team_claim_lead（主控离线接管）', () => {
 
       // 真权限迁移：临时主控可立即使用任务板/拆任务，原主控同时失去这些权限。
       const board = await builder.client.callTool({
-        name: 'team_list_board', arguments: { channel_id: '2' }
+        name: 'team_tasks', arguments: { channel_id: '2', view: 'board' }
       })
       expect(board.isError).not.toBe(true)
       const planned = await builder.client.callTool({
-        name: 'team_plan_tasks',
+        name: 'team_task',
         arguments: {
           channel_id: '2',
+          action: 'plan',
           tasks: [{ key: 'acting-lead-task', title: '临时主控创建的任务' }]
         }
       })
       expect(planned.isError).not.toBe(true)
 
       const oldLeadBoard = await originalLead.client.callTool({
-        name: 'team_list_board', arguments: { channel_id: '1' }
+        name: 'team_tasks', arguments: { channel_id: '1', view: 'board' }
       })
       expect(oldLeadBoard.isError).toBe(true)
       expect(oldLeadBoard.structuredContent).toMatchObject({ ok: false, code: 'coordinator_only' })
       const actingLiveness = await builder.client.callTool({
-        name: 'team_check_liveness', arguments: { channel_id: '2', targetChannelId: '1' }
+        name: 'team_run', arguments: { channel_id: '2', action: 'liveness', targetChannelId: '1' }
       })
       expect(actingLiveness.isError).not.toBe(true)
       const demotedLiveness = await originalLead.client.callTool({
-        name: 'team_check_liveness', arguments: { channel_id: '1', targetChannelId: '2' }
+        name: 'team_run', arguments: { channel_id: '1', action: 'liveness', targetChannelId: '2' }
       })
       expect(demotedLiveness.isError).toBe(true)
       expect(demotedLiveness.structuredContent).toMatchObject({ code: 'lead_only_liveness' })
@@ -239,12 +240,12 @@ describe('team_claim_lead（主控离线接管）', () => {
         lastSeenAt: Date.now(), waiting: false, connectionPhase: 'cursor_stopped'
       })
       await builder.client.callTool({
-        name: 'team_claim_lead',
-        arguments: { channel_id: '2', pongTimeoutMs: 2_000 }
+        name: 'team_run',
+        arguments: { channel_id: '2', action: 'claim_lead', timeoutMs: 2_000 }
       })
       const again = await builder.client.callTool({
-        name: 'team_claim_lead',
-        arguments: { channel_id: '2' }
+        name: 'team_run',
+        arguments: { channel_id: '2', action: 'claim_lead' }
       })
       expect(again.isError).not.toBe(true)
       expect(again.structuredContent).toMatchObject({ ok: true, alreadyLead: true })
@@ -265,11 +266,11 @@ describe('team_claim_lead（主控离线接管）', () => {
     const restartedLead = await data.connect('lead')
     try {
       const builderBoard = await restartedBuilder.client.callTool({
-        name: 'team_list_board', arguments: { channel_id: '2' }
+        name: 'team_tasks', arguments: { channel_id: '2', view: 'board' }
       })
       expect(builderBoard.isError).not.toBe(true)
       const originalLeadBoard = await restartedLead.client.callTool({
-        name: 'team_list_board', arguments: { channel_id: '1' }
+        name: 'team_tasks', arguments: { channel_id: '1', view: 'board' }
       })
       expect(originalLeadBoard.isError).toBe(true)
       expect(originalLeadBoard.structuredContent).toMatchObject({ code: 'coordinator_only' })
@@ -285,8 +286,8 @@ describe('team_claim_lead（主控离线接管）', () => {
     const builder = await data.connect('builder')
     try {
       const result = await builder.client.callTool({
-        name: 'team_claim_lead',
-        arguments: { channel_id: '2', reason: '心跳超时接管', pongTimeoutMs: 2_000 }
+        name: 'team_run',
+        arguments: { channel_id: '2', action: 'claim_lead', reason: '心跳超时接管', timeoutMs: 2_000 }
       })
       expect(result.isError).toBe(true)
       expect(result.structuredContent).toMatchObject({ ok: false, code: 'lead_liveness_unproven' })
@@ -308,8 +309,8 @@ describe('team_claim_lead（主控离线接管）', () => {
         connectionPhase: 'processing'
       })
       const result = await builder.client.callTool({
-        name: 'team_claim_lead',
-        arguments: { channel_id: '2', reason: '主控很久没 pong', pongTimeoutMs: 2_000 }
+        name: 'team_run',
+        arguments: { channel_id: '2', action: 'claim_lead', reason: '主控很久没 pong', timeoutMs: 2_000 }
       })
       expect(result.isError).toBe(true)
       expect(result.structuredContent).toMatchObject({ ok: false, code: 'lead_busy' })
@@ -331,8 +332,8 @@ describe('team_claim_lead（主控离线接管）', () => {
         connectionPhase: 'waiting'
       })
       const result = await builder.client.callTool({
-        name: 'team_claim_lead',
-        arguments: { channel_id: '2', pongTimeoutMs: 2_000 }
+        name: 'team_run',
+        arguments: { channel_id: '2', action: 'claim_lead', timeoutMs: 2_000 }
       })
       expect(result.isError).toBe(true)
       expect(result.structuredContent).toMatchObject({ ok: false, code: 'lead_liveness_unproven' })
@@ -350,8 +351,8 @@ describe('team_claim_lead（主控离线接管）', () => {
     try {
       data.team.completeRun(data.bundle.run.id, Date.now())
       const result = await builder.client.callTool({
-        name: 'team_claim_lead',
-        arguments: { channel_id: '2' }
+        name: 'team_run',
+        arguments: { channel_id: '2', action: 'claim_lead' }
       })
       expect(result.isError).toBe(true)
       // run 收尾撤销注册是轮次归档而非授权故障：模型必须得到「本轮已结束 +

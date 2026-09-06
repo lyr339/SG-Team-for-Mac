@@ -8,9 +8,9 @@ describe('resolveTaskMcpServerPath', () => {
   it('uses the build output while developing', () => {
     expect(resolveTaskMcpServerPath({
       isPackaged: false,
-      appPath: '/workspace/qingtian-team',
+      appPath: '/workspace/sg-team',
       resourcesPath: '/ignored'
-    })).toBe(join('/workspace/qingtian-team', 'out', 'mcp', 'index.mjs'))
+    })).toBe(join('/workspace/sg-team', 'out', 'mcp', 'index.mjs'))
   })
 
   it('uses an unpacked resource in a packaged app', () => {

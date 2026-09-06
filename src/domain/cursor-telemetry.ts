@@ -76,12 +76,10 @@ export interface CursorTelemetrySnapshot {
 
 const SAFE_GENERATION = /^[a-zA-Z0-9_-]{1,128}$/
 const SAFE_CHANNEL_ID = /^\d{1,12}$/
-/** 当前品牌绑定标记标签；旧标签仅用于解析品牌升级前产生的转录。 */
 const BINDING_MARKER_TAG = 'SG_TEAM_BIND'
-const LEGACY_BINDING_MARKER_TAG = 'QINGTIAN_TEAM_BIND'
-/** 从 Composer 转录提取绑定标记，兼容新旧两种品牌格式。 */
+/** 从 Composer 转录提取绑定标记。 */
 export const BINDING_MARKER_PATTERN = new RegExp(
-  `\\[\\[(?:${BINDING_MARKER_TAG}|${LEGACY_BINDING_MARKER_TAG}):[a-zA-Z0-9_-]{1,128}:CH-\\d{1,12}\\]\\]`,
+  `\\[\\[${BINDING_MARKER_TAG}:[a-zA-Z0-9_-]{1,128}:CH-\\d{1,12}\\]\\]`,
   'g'
 )
 
@@ -99,11 +97,6 @@ export function cursorComposerBindingMarker(input: {
   if (!SAFE_GENERATION.test(bindingKey)) throw new Error('Cursor 会话绑定键无效')
   if (!SAFE_CHANNEL_ID.test(channelId)) throw new Error('通道号无法用于 Cursor 会话绑定')
   return `[[${BINDING_MARKER_TAG}:${bindingKey}:CH-${channelId}]]`
-}
-
-/** 旧品牌标记规范化为现行格式，保证品牌升级前产生的老转录绑定匹配不失配。 */
-export function canonicalBindingMarker(marker: string): string {
-  return marker.replace(`[[${LEGACY_BINDING_MARKER_TAG}:`, `[[${BINDING_MARKER_TAG}:`)
 }
 
 export function emptyCursorTelemetrySnapshot(

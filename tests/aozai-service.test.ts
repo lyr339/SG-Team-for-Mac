@@ -47,7 +47,7 @@ function createFetch(queue: StubResponse[], calls: RecordedCall[]): AozaiFetch {
 
 function createContext(queue: StubResponse[]) {
   const calls: RecordedCall[] = []
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-aozai-')), 'card.json')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-aozai-')), 'card.json')
   const vault = new AozaiCardVault(path, crypto, () => 123)
   const service = new AozaiService(vault, createFetch(queue, calls), { pollIntervalMs: 0, sleep: async () => {} })
   return { calls, path, vault, service }
@@ -61,7 +61,7 @@ const LOGIN_OK: StubResponse = {
 
 describe('AozaiCardVault', () => {
   it('加密落盘且可读取明文，权限 0o600', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-aozai-card-')), 'card.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-aozai-card-')), 'card.json')
     const vault = new AozaiCardVault(path, crypto, () => 123)
     expect(vault.maskedCode()).toBeUndefined()
     expect(vault.save('CARD-SECRET-6l8Q')).toBe('••••6l8Q')
@@ -78,13 +78,13 @@ describe('AozaiCardVault', () => {
   })
 
   it('拒绝过短卡密', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-aozai-card-')), 'card.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-aozai-card-')), 'card.json')
     const vault = new AozaiCardVault(path, crypto)
     expect(() => vault.save('abc')).toThrowError(/卡密长度无效/)
   })
 
   it('系统钥匙变化时返回可操作提示而不是暴露 safeStorage 底层异常', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-aozai-card-')), 'card.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-aozai-card-')), 'card.json')
     const vault = new AozaiCardVault(path, crypto)
     vault.save('CARD-SECRET-6l8Q')
     const unreadable = new AozaiCardVault(path, {
@@ -183,7 +183,7 @@ describe('AozaiService', () => {
       ...Array.from({ length: 5 }, () => ({ status: 0, ok: false }) as StubResponse)
     ]
     const calls: RecordedCall[] = []
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-aozai-')), 'card.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-aozai-')), 'card.json')
     const vault = new AozaiCardVault(path, crypto)
     vault.save('CARD-XXXX-6l8Q')
     const failingFetch: AozaiFetch = async (url, init) => {

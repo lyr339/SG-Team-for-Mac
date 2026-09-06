@@ -29,7 +29,7 @@ describe('session handoff message', () => {
       target: { kind: 'self' },
       issuedAt,
       transcript,
-      recordPath: '/Users/lyr/Library/Application Support/qingtian-team/handoff/CH-1-85bb41c4-20260904-200500.md',
+      recordPath: '/Users/lyr/Library/Application Support/sg-team/handoff/CH-1-85bb41c4-20260904-200500.md',
       note: '接着把队列弹层收尾。'
     })
     expect(text.startsWith(`${SESSION_HANDOFF_MARKER}CH-1（独立席 1 · Claude Opus） 上一段会话的上下文 · 2026-09-04 20:05`)).toBe(true)

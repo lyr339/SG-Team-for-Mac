@@ -75,7 +75,7 @@ const CURSOR_ORIGIN = 'https://cursor.com'
 const SITE_DATA_ORIGINS = ['https://cursor.com', 'https://authentication.cursor.sh']
 const REFRESH_URL = 'https://cursor.com/dashboard'
 const READINESS_JS = 'JSON.stringify({h:location.hostname,p:location.pathname,s:document.readyState})'
-const POLL_RESULT_JS = "window.__qtDel||''"
+const POLL_RESULT_JS = "window.__sgDel||''"
 const CDP_CALL_TIMEOUT_MS = 20_000
 
 class CdpConnection {

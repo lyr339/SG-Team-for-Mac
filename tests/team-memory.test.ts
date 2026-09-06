@@ -12,7 +12,7 @@ import { SqliteTeamMemoryRepository } from '../src/infrastructure/team-memory/sq
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 
 function fixture() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-memory-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-memory-')), 'team.sqlite3')
   const team = new SqliteTeamControlRepository(path)
   const bundle = createDefaultTeamBundle({
     workspaceId: 'alpha',

@@ -10,7 +10,7 @@ import { SqliteTeamCollaborationRepository } from '../src/infrastructure/team-co
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 
 function fixture() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-agent-coordination-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-agent-coordination-')), 'team.sqlite3')
   const team = new SqliteTeamControlRepository(path)
   const bundle = createDefaultTeamBundle({
     workspaceId: 'alpha',
@@ -54,7 +54,7 @@ function fixture() {
 
 describe('TeamCollaborationAgentService', () => {
   it('hides solo seats from lead context and rejects plans targeting them', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-agent-solo-')), 'team.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-agent-solo-')), 'team.sqlite3')
     const team = new SqliteTeamControlRepository(path)
     const bundle = createConfiguredTeamBundle({
       workspaceId: 'solo-plan', workspaceName: 'solo-plan', workspacePath: '/workspace/solo-plan', now: 100,

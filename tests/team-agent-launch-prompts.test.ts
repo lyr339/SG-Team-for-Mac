@@ -67,7 +67,6 @@ describe('team agent launch prompts', () => {
     expect(prompt).toContain('CH-2')
     expect(prompt).toContain('team_check_in')
     expect(prompt).toContain('SG Team')
-    expect(prompt).not.toContain('qtwx-mcp-2')
     expect(prompt).not.toContain('核心职责')
     // 升级前的绑定没有会话令牌：提示词不得凭空要求 Agent 附带 session。
     expect(prompt).not.toContain('session')

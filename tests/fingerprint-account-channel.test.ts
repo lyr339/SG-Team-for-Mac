@@ -88,7 +88,7 @@ class FakeCdpSocket {
           respond({ result: { value } })
           return
         }
-        if (expression.includes('__qtModelDataPolicy')) {
+        if (expression.includes('__sgModelDataPolicy')) {
           const value = this.policyResultQueue.length > 1
             ? this.policyResultQueue.shift()
             : this.policyResultQueue[0] ?? {
@@ -103,7 +103,7 @@ class FakeCdpSocket {
           respond({ result: { value: this.fireResult } })
           return
         }
-        if (expression.includes('__qtDel')) {
+        if (expression.includes('__sgDel')) {
           const value = this.pollResultQueue.length > 1 ? this.pollResultQueue.shift() : this.pollResultQueue[0] ?? ''
           respond({ result: { value } })
           return
@@ -212,7 +212,7 @@ describe('FingerprintAccountChannel', () => {
     expect(second.changed).toBe(false)
     expect(harness.socket.sent.filter((entry) => (
       entry.method === 'Runtime.evaluate'
-      && String(entry.params.expression ?? '').includes('__qtModelDataPolicy')
+      && String(entry.params.expression ?? '').includes('__sgModelDataPolicy')
     ))).toHaveLength(1)
   })
 
@@ -233,7 +233,7 @@ describe('FingerprintAccountChannel', () => {
     expect(harness.socket.methodCount('Page.navigate')).toBe(0)
     expect(harness.socket.sent.some((entry) => (
       entry.method === 'Runtime.evaluate'
-      && String(entry.params.expression ?? '').includes('__qtModelDataPolicy')
+      && String(entry.params.expression ?? '').includes('__sgModelDataPolicy')
     ))).toBe(false)
   })
 

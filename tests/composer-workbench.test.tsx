@@ -123,7 +123,7 @@ describe('ComposerWorkbench', () => {
     const html = renderToStaticMarkup(
       <ComposerWorkbench
         session={{ ...session, online: false, connected: false, status: 'offline', deliveryMode: 'queued' }}
-        currentProjectName="qingtian"
+        currentProjectName="demo-app"
         draft=""
         canSend
         notWaiting={false}
@@ -134,7 +134,7 @@ describe('ComposerWorkbench', () => {
       />
     )
 
-    expect(html).toContain('<strong>qingtian</strong>')
+    expect(html).toContain('<strong>demo-app</strong>')
     expect(html).toContain('Agent 离线')
     expect(html).not.toContain('<strong>Agent 离线</strong>')
   })

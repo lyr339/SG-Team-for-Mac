@@ -22,7 +22,7 @@ function bridgeSnapshot(): DesktopSnapshot {
   return {
     connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: [{
-      id: 'qingtian-channel:1',
+      id: 'sg-channel:1',
       channelId: '1',
       generation: 0,
       displayName: '主控协调 · CH-1',
@@ -218,7 +218,7 @@ describe('desktop Cursor session enrichment', () => {
     }]
     active.activeRun = active.runs[0]
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-transcript-gate-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-transcript-gate-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     try {
@@ -268,7 +268,7 @@ describe('desktop Cursor session enrichment', () => {
     }]
     active.activeRun = active.runs[0]
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-run-completion-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-run-completion-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     const channelService = new ChannelMessageService(repository)
@@ -1126,7 +1126,7 @@ describe('desktop Cursor session enrichment', () => {
     }]
     active.activeRun = active.runs[0]
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-p01-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-p01-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     try {
@@ -1573,7 +1573,7 @@ describe('虚拟回合封口（阶段 B：outboundId 精确关闭边界）', () 
     }]
     active.activeRun = active.runs[0]
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-turn-seal-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-turn-seal-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     const channelService = new ChannelMessageService(repository)
@@ -1867,7 +1867,7 @@ describe('过程帧契约（阶段 C：snapshotComplete 权威合并）', () => 
     }]
     active.activeRun = active.runs[0]
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-reply-refresh-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-reply-refresh-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     const channelService = new ChannelMessageService(repository)
@@ -1970,7 +1970,7 @@ describe('事件驱动封口与持久化（阶段 E：RC-7）', () => {
     }]
     active.activeRun = active.runs[0]
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-stage-e-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-stage-e-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     const channelService = new ChannelMessageService(repository)
@@ -2253,7 +2253,7 @@ describe('直播生成信号下发（RC-9：generating 随 LiveProcessState 传�
     }]
     active.activeRun = active.runs[0]
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-generating-flag-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-generating-flag-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     const service = new DesktopSessionService(
@@ -2310,7 +2310,7 @@ describe('封口防线：最终正文不重复成为过程 message（§8.4-4，2
     }]
     active.activeRun = active.runs[0]
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-final-msg-seal-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-final-msg-seal-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     const channelService = new ChannelMessageService(repository)
@@ -2481,7 +2481,7 @@ describe('会话交接「等待新会话」：sendMessage 把意图换算为席�
     active.activeRun = active.runs[0]
     active.bindings[0]!.sessionToken = sessionToken
     const repository = new SqliteChannelMessageRepository(
-      join(mkdtempSync(join(tmpdir(), 'qingtian-hold-send-')), 'channel.sqlite3')
+      join(mkdtempSync(join(tmpdir(), 'sg-hold-send-')), 'channel.sqlite3')
     )
     const relay = new ChannelMessageRelay(repository)
     repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')

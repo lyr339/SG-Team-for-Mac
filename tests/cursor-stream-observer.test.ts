@@ -767,9 +767,9 @@ describe('阶段 D：Bubble 级内部协议相位分组（RC-5 / RC-5.1 / RC-6�
     expect(items).toEqual([])
 
     // 水合为业务 MCP 工具 → 以真实名称展示
-    bubble = { toolFormerData: { toolCall: { tool: { case: 'mcpToolCall', value: { args: { server: 'SG Team', toolName: 'team_claim_task' }, result: { result: { case: 'success' } } } } } } }
+    bubble = { toolFormerData: { toolCall: { tool: { case: 'mcpToolCall', value: { args: { server: 'SG Team', toolName: 'team_task' }, result: { result: { case: 'success' } } } } } } }
     items = await collect(context, frames)
-    expect(items.map((item) => `${item.kind}:${item.toolName}`)).toEqual(['tool:mcp-SG Team-team_claim_task'])
+    expect(items.map((item) => `${item.kind}:${item.toolName}`)).toEqual(['tool:mcp-SG Team-team_task'])
   })
 
   it('hides transport bubbles as a group and keeps the final answer out of process messages (RC-5/RC-6)', async () => {
@@ -814,7 +814,7 @@ describe('阶段 D：Bubble 级内部协议相位分组（RC-5 / RC-5.1 / RC-6�
       conversationMap: {
         'msg-interim': { text: '先梳理任务。' },
         'th-biz': { thinking: '领取任务前先确认看板状态。' },
-        'tool-team': { toolFormerData: { name: 'mcp-SG Team-team_claim_task', status: 'completed' } },
+        'tool-team': { toolFormerData: { name: 'mcp-SG Team-team_task', status: 'completed' } },
         'msg-final': { text: '任务已领取。' }
       },
       generatingBubbleIds: []
@@ -828,7 +828,7 @@ describe('阶段 D：Bubble 级内部协议相位分组（RC-5 / RC-5.1 / RC-6�
       'cursor:tool-team'
     ])
     expect(items.find((item) => item.id === 'cursor:tool-team')).toMatchObject({
-      toolName: 'mcp-SG Team-team_claim_task', toolKind: 'mcp'
+      toolName: 'mcp-SG Team-team_task', toolKind: 'mcp'
     })
   })
 

@@ -13,7 +13,7 @@ interface HarnessOptions {
   /** 就绪探测依次返回的页面状态（最后一个复用）。 */
   readiness?: PageState[]
   fireStdout?: string
-  /** 删除结果轮询依次返回的 __qtDel 值（最后一个复用）。 */
+  /** 删除结果轮询依次返回的 __sgDel 值（最后一个复用）。 */
   pollResults?: string[]
   jsDisabled?: boolean
   tabGone?: boolean
@@ -47,7 +47,7 @@ function createHarness(options: HarnessOptions = {}) {
           fireScript = script
           return { stdout: options.fireStdout ?? 'armed', stderr: '' }
         }
-        if (script.includes('__qtDel')) {
+        if (script.includes('__sgDel')) {
           const seq = options.pollResults ?? ['{"st":200,"body":"{}"}']
           const value = seq[Math.min(pollCalls, seq.length - 1)]
           pollCalls += 1

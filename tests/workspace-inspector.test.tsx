@@ -37,7 +37,7 @@ describe('WorkspaceInspector Cursor Todos', () => {
   beforeEach(() => {
     ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     localStorage.clear()
-    localStorage.setItem('qingtian-team.inspector:active-tab', 'todos')
+    localStorage.setItem('sg-team.inspector:active-tab', 'todos')
     container = document.createElement('div')
     document.body.appendChild(container)
   })

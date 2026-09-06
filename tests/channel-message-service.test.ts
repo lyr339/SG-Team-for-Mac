@@ -7,7 +7,7 @@ import { ChannelMessageService } from '../src/application/channel-message-servic
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
 
 function fixture() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-service-')), 'channel.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-service-')), 'channel.sqlite3')
   const repository = new SqliteChannelMessageRepository(path)
   const service = new ChannelMessageService(repository)
   return { repository, service }

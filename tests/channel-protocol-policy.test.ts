@@ -39,7 +39,10 @@ describe('channel protocol policy text', () => {
     const instructions = buildUnifiedServerInstructions()
 
     expect(instructions).toContain('每次真实用户可见回复后必须 record_reply')
-    expect(instructions).toContain('团队内部通知只用 team_* 回执处理')
+    expect(instructions).toContain('团队内部通知只用 team_message 回执处理')
+    // 工具面收敛后的对象划分说明：模型据此在 7 个团队工具里选对象，再选 action/view。
+    expect(instructions).toContain('team_tasks 看任务（view）')
+    expect(instructions).toContain('team_run 运行与主控（action）')
     expect(instructions).toContain('keepalive、无未读或已读重复时必须静默续等')
     expect(instructions).toContain('也不要 record_reply')
     expect(instructions).toContain('内部通知不会触发该守门')
@@ -50,8 +53,8 @@ describe('channel protocol policy text', () => {
 
     expect(instruction).toContain('内部协作通知协议')
     expect(instruction).toContain('不是用户可见对话')
-    expect(instruction).toContain('team_read_message')
-    expect(instruction).toContain('team_respond_message')
+    expect(instruction).toContain("team_message({action:'read', messageId})")
+    expect(instruction).toContain("team_message({action:'respond', messageId, content})")
     expect(instruction).toContain('不要调用 record_reply')
     expect(instruction).not.toContain('持续对话协议')
   })

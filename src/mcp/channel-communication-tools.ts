@@ -175,7 +175,7 @@ function deliveredContentBlocks(input: {
   turnCount: number
   remainingQueue: number
 }): ToolContent[] {
-  // 投递形态对齐 qingtian-v2 插件（已验证 Cursor 可正确透传）：
+  // 投递形态（已验证 Cursor 可正确透传）：
   // 全部文本合并为单个前导 text 块，image 块固定排在末尾；
   // 文本与图片交错（text,image,text…）会导致部分客户端丢失图片块。
   const userText = input.messageText.trim()

@@ -1,6 +1,6 @@
 # 拾光 architecture
 
-拾光 is an independent desktop control plane for Cursor multi-Agent teamwork. It does not run inside any Cursor extension and does not depend on the legacy QingTian plugin process: channel messages, presence and Agent MCP all flow through the embedded SG Team server plus a shared SQLite database.
+拾光 (SG Team) is an independent desktop control plane for Cursor multi-Agent teamwork. It does not run inside any Cursor extension and does not depend on any plugin process: channel messages, presence and Agent MCP all flow through the embedded SG Team server plus a shared SQLite database.
 
 Dependency direction:
 
@@ -17,8 +17,8 @@ renderer -> preload API -> Electron main (services)
 Rules:
 
 - SQLite is the only inter-process medium between the Electron main process and the MCP server processes; both open the same database file and rely on `BEGIN IMMEDIATE` + revision CAS for cross-process atomicity.
-- The renderer is a pure snapshot consumer: it receives validated domain snapshots via IPC push/pull and never advances workflow state directly. Task/collaboration writes go exclusively through the Agent MCP tools (`team_claim_task`, `team_send_message`, …); the desktop IPC surface exposes only read projections plus workflow entry points (team setup, launch, handoff, account switching).
-- The MCP communication contract is exactly two tools: `check_messages` / `record_reply` (`channel_id`, plus an optional per-seat `session` token, see below); Cursor-native process events are observed directly and the keepalive marker is `<sg_team_keepalive n="N"/>`.
+- The renderer is a pure snapshot consumer: it receives validated domain snapshots via IPC push/pull and never advances workflow state directly. Task/collaboration writes go exclusively through the Agent MCP tools (`team_task`, `team_message`, …); the desktop IPC surface exposes only read projections plus workflow entry points (team setup, launch, handoff, account switching).
+- The MCP surface is nine tools in one native `SG Team` entry: the communication contract is exactly two tools, `check_messages` / `record_reply` (`channel_id`, plus an optional per-seat `session` token, see below); the seven team tools are grouped by object (`team_check_in`, `team_tasks`, `team_task`, `team_review`, `team_message`, `team_memory`, `team_run`) with an `action` / `view` enum each (see `docs/TASK-MCP.md`). Cursor-native process events are observed directly and the keepalive marker is `<sg_team_keepalive n="N"/>`.
 - Agent identity is `workspace hash + channel + install generation` (`workspaceId:ch-N:generation`); reinstalling a workspace revokes prior generations immediately, so stale MCP processes are fenced.
 - Sessions on the same channel are fenced by a per-seat session token, not by waiting for old heartbeats to expire (see "Run modes and the session fence").
 - Task, attempt, lease, review and agent-registration state is owned by application/domain services.

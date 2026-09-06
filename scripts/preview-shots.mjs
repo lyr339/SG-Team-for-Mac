@@ -28,10 +28,10 @@ const OUT = resolve(process.env.PREVIEW_OUT || 'preview-screenshots')
 const CDP_PORT = Number(process.env.PREVIEW_CDP_PORT || 9555)
 const ONLY = flag('--only')?.split(',').map((value) => value.trim()).filter(Boolean)
 
-const INSPECTOR_OPEN_KEY = 'qingtian-team.layout:v1:workspace-inspector:open'
-const INSPECTOR_TAB_KEY = 'qingtian-team.inspector:active-tab'
-const INSPECTOR_WIDTH_KEY = 'qingtian-team.layout:v1:shell.workspace-inspector'
-const REVIEW_SCOPE_KEY = 'qingtian-team.inspector:review-scope'
+const INSPECTOR_OPEN_KEY = 'sg-team.layout:v1:workspace-inspector:open'
+const INSPECTOR_TAB_KEY = 'sg-team.inspector:active-tab'
+const INSPECTOR_WIDTH_KEY = 'sg-team.layout:v1:shell.workspace-inspector'
+const REVIEW_SCOPE_KEY = 'sg-team.inspector:review-scope'
 const APPEARANCE_KEY = 'shiguang.appearance.v1'
 
 /** 基础存储：右栏展开、CH-2 会话、默认宽度。 */

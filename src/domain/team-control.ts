@@ -595,17 +595,19 @@ export function buildTeamRoleBriefing(input: {
     bindingKey: binding.composerBindingKey,
     channelId
   })
+  // 带 channel_id 的调用示例：`{channel_id:'2', view:'board'}`。
+  const call = (args: string) => `{channel_id:'${channelId}', ${args}}`
   const roleWorkflow = effectiveLead
-    ? `3. 调用 ${server} 的 team_list_board ${ch} 了解当前任务板；启动后即使任务板为空，也只进入待命，不要依据团队目标自行调用 team_plan_tasks。只有收到用户明确要求“开始 / 分配 / 拆任务 / 执行”后，才创建带依赖、验收标准和目标 AgentSlot 的计划。`
+    ? `3. 调用 ${server} 的 team_tasks(${call("view:'board'")}) 了解当前任务板；启动后即使任务板为空，也只进入待命，不要依据团队目标自行调用 team_task plan。只有收到用户明确要求“开始 / 分配 / 拆任务 / 执行”后，才用 team_task(${call("action:'plan', tasks:[...]")}) 创建带依赖、验收标准和目标 AgentSlot 的计划。`
     : role.templateKey === 'reviewer'
-      ? `3. 优先调用 ${server} 的 team_list_reviews ${ch} 并领取独立验收；没有待验收项时，再调用 team_list_mine / team_list_available 检查其他质量任务。`
-      : `3. 调用 ${server} 的 team_list_mine ${ch}；有 leased/running 任务就继续，否则调用 team_list_available 并按能力领取。`
+      ? `3. 优先调用 ${server} 的 team_tasks(${call("view:'reviews'")}) 并用 team_review(${call("action:'claim'")}) 领取独立验收；没有待验收项时，再看 view:'mine' / view:'available' 检查其他质量任务。`
+      : `3. 调用 ${server} 的 team_tasks(${call("view:'mine'")})；有 leased/running 任务就继续，否则看 view:'available' 并用 team_task(${call("action:'claim'")}) 按能力领取。`
   const executionWorkflow = role.templateKey === 'reviewer'
-    ? '4. 验收必须独立复现并检查验收标准；用 team_renew_review 续租，最后用 team_submit_review 提交通过证据或明确打回原因。'
-    : '4. 领取后调用 team_start_task；每个里程碑（实现完成、测试完成、遇到阻塞、返工完成）都必须 team_report_progress 上报，长任务定期续租；完成后 submit_for_review，不能自行宣布验收通过。'
+    ? '4. 验收必须独立复现并检查验收标准；用 team_review({action:\'renew\'}) 续租，最后用 team_review({action:\'submit\', decision, evidence, reason}) 提交通过证据或明确打回原因。'
+    : '4. 领取后调用 team_task({action:\'start\'})；每个里程碑（实现完成、测试完成、遇到阻塞、返工完成）都必须 team_task({action:\'progress\', progress, summary}) 上报，长任务定期 action:\'renew\' 续租；完成后 team_task({action:\'submit\', output}) 提交验收，不能自行宣布验收通过。'
   const collaborationWorkflow = effectiveLead
-    ? '5. 收件箱优先：每次被唤醒（check_messages 投递、任何 team 工具调用后）先调用 team_list_inbox 处理未读上报；成员的进度/提交/失败/验收是你调度的唯一依据，忽略上报即失职。收到重要上报必须立即推进下一步（安排验收、打回返工、收尾）；只有出现新的可执行结论、阻塞、需要用户决策或用户明确询问时，才用 record_reply 向用户同步 1—3 句。无未读、已读重复、纯 keepalive、单纯“继续监控/继续轮询”必须静默续等，禁止制造可见消息堵塞队列。用户要求“全体/各角色/多人”回答时必须 team_broadcast + team_collect_responses 收真实回应，禁止代答。'
-    : '5. 每轮先处理未读消息：调用 team_list_inbox / team_read_message；directive 或 question 必须用 team_respond_message 回应原 messageId。进度与结论除自动同步外，关键节点必须主动向主控上报（team_report_progress / team_send_message），静默干活即失职。'
+    ? '5. 收件箱优先：每次被唤醒（check_messages 投递、任何 team 工具调用后）先调用 team_message({action:\'inbox\'}) 处理未读上报；成员的进度/提交/失败/验收是你调度的唯一依据，忽略上报即失职。收到重要上报必须立即推进下一步（安排验收、打回返工、收尾）；只有出现新的可执行结论、阻塞、需要用户决策或用户明确询问时，才用 record_reply 向用户同步 1—3 句。无未读、已读重复、纯 keepalive、单纯“继续监控/继续轮询”必须静默续等，禁止制造可见消息堵塞队列。用户要求“全体/各角色/多人”回答时必须 team_message broadcast + collect 收真实回应，禁止代答。'
+    : '5. 每轮先处理未读消息：调用 team_message({action:\'inbox\'}) / team_message({action:\'read\', messageId})；directive 或 question 必须用 team_message({action:\'respond\', messageId, content}) 回应原 messageId。进度与结论除自动同步外，关键节点必须主动向主控上报（team_task progress / team_message send），静默干活即失职。'
   const skills = role.skills.length
     ? `已分配 Agent Skills：${role.skills.map((skill) => `/${skill.name}`).join('、')}。只在任务相关时按 Cursor Skills 机制调用，不要把技能名称当作已完成工作。`
     : '当前席位没有单独指定 Agent Skill；仍可按 Cursor 自动发现机制使用工作区内相关技能。'
@@ -626,16 +628,16 @@ export function buildTeamRoleBriefing(input: {
     skills,
     `所有团队工具与通信保活工具只调用 ${server}，且每次传 ${ch}；禁止调用其他通道。`,
     '按顺序执行：',
-    `1. 本简报即启动回执；随后调用 ${server} 的 team_get_context ${ch}，只读取本轮团队上下文快照（稳定成员目录、未读协作消息、本轮已确认记忆）；不要读取或复述 Cursor 历史聊天。若有未读消息，先读取并处理。聊天记录本身不是团队记忆。`,
+    `1. 本简报即启动回执，随附的 context 就是本轮团队上下文快照（稳定成员目录、未读协作消息、本轮已确认记忆）；需要刷新时再次调用 team_check_in ${ch}。不要读取或复述 Cursor 历史聊天。若有未读消息，先读取并处理。聊天记录本身不是团队记忆。`,
     roleWorkflow,
     executionWorkflow,
     collaborationWorkflow,
-    `6. 单点 Agent 间指令与回应使用 team_send_message/team_respond_message，以 messageId 建立回执；禁止使用普通回复或 ${server} 冒充成员已响应。`,
-    `7. 发现会影响团队后续工作的决策、约束、风险或经验时，调用 team_memory_propose 并附消息、任务或文件来源；主控与质量角色应在协作过程中处理待确认提案，不要求用户整理记忆。`,
-    `8. 思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件，不要额外上报过程。只有处理真实用户消息并输出完整可见回复后，才调用 ${server} 的 record_reply ${comm} 同步正文，再调用 ${server} 的 check_messages ${comm} 等待下一条消息。内部协作通知只用 team_* 回执处理，不算用户可见回复；${server} 的 check_messages 返回 keepalive、无未读或已读重复时，不要输出可见回复、不要 record_reply，直接静默继续等待。`,
+    `6. 单点 Agent 间指令与回应使用 team_message 的 send / respond，以 messageId 建立回执；禁止使用普通回复或 ${server} 冒充成员已响应。`,
+    `7. 发现会影响团队后续工作的决策、约束、风险或经验时，调用 team_memory({action:'propose', kind, title, content, sources}) 并附消息、任务或文件来源；主控与质量角色应在协作过程中用 team_memory review 处理待确认提案，不要求用户整理记忆。`,
+    `8. 思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件，不要额外上报过程。只有处理真实用户消息并输出完整可见回复后，才调用 ${server} 的 record_reply ${comm} 同步正文，再调用 ${server} 的 check_messages ${comm} 等待下一条消息。内部协作通知只用 team_message 回执处理，不算用户可见回复；${server} 的 check_messages 返回 keepalive、无未读或已读重复时，不要输出可见回复、不要 record_reply，直接静默继续等待。`,
     effectiveLead
-      ? '9. 只有任务板已经由用户明确启动/分配后，才主动调度、催办（team_send_message 询问成员）或处理真实上报；空任务板表示等待用户下一条指令，不要自动拆任务。向用户说明现状只用于状态真的变化、出现阻塞或用户询问，禁止重复发送同一进展。'
-      : '9. 遇到额度耗尽、工具缺失或无法推进的阻塞：立即向主控 team_send_message 上报阻塞原因并说明已尝试的步骤，禁止沉默卡死。',
+      ? '9. 只有任务板已经由用户明确启动/分配后，才主动调度、催办（team_message send 询问成员）或处理真实上报；空任务板表示等待用户下一条指令，不要自动拆任务。向用户说明现状只用于状态真的变化、出现阻塞或用户询问，禁止重复发送同一进展。'
+      : '9. 遇到额度耗尽、工具缺失或无法推进的阻塞：立即向主控 team_message send 上报阻塞原因并说明已尝试的步骤，禁止沉默卡死。',
     '如果额度耗尽、授权失败、工具缺失或出现不可恢复错误：明确报告一次并停止自动重试，禁止制造无限调用循环。'
   ].join('\n')
 }

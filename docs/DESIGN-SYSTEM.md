@@ -16,7 +16,7 @@ top product bar
 
 ## Color semantics
 
-- QingTian green `#087e5b`: brand, waiting, healthy connection.
+- SG green `#087e5b`: brand, waiting, healthy connection.
 - Blue `#5867e8`: actively running.
 - Amber `#e58a3b`: blocked, review attention, recovery.
 - Red `#df5f66`: errors and destructive warnings only.

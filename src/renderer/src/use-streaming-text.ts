@@ -20,7 +20,9 @@ import { useEffect, useRef, useState } from 'react'
  * 6. 一个常驻 rAF 循环，文本增长只更新目标，不重启循环；
  * 7. 按 grapheme 切分（emoji / 组合字符不被劈开）；
  * 8. 保留：来源 id 变化重置；同源文本回退（新文本不再是可见前缀）整体对齐；
- *    prefers-reduced-motion / immediate 直出全文；firstFrameDoneFull 历史水合。
+ *    prefers-reduced-motion / immediate 直出全文；firstFrameDoneFull 历史水合；
+ * 9. hydrate：观看者到来前已存在的文字（切会话进入进行中的回合）落位不重播，
+ *    播放只针对之后到达的增量——打字机表达的是「正在发生」，不是「曾经发生」。
  */
 export interface StreamingTextSource {
   /** 稳定身份（block id / turn key）；变化即重置播放。 */
@@ -37,6 +39,14 @@ export interface StreamingTextOptions {
   firstFrameDoneFull?: boolean
   /** 禁用播放（历史/封口卡）——恒等全文。 */
   immediate?: boolean
+  /**
+   * 观看者到来之前这段文字就已经存在（切换会话进入正在生成的回合、冷启动水合）：
+   * 播放器创建时直接落到当前全文，只对之后新增的部分打字——不管来源此刻是 done
+   * 还是 streaming。区别于 firstFrameDoneFull（只在 done 时全文），它解决的是
+   * 「正在流式输出的正文切进来被从头重放」与「直播卡里早已写完的思考再播一遍」。
+   * 只作用于播放器的首次创建；之后 id 变化仍按直播语义从空串播放（新到达的来源）。
+   */
+  hydrate?: boolean
 }
 
 /** 播放器参数（单位：字/秒、毫秒）。导出供测试与调参。 */
@@ -134,10 +144,11 @@ function prefersReducedMotion(): boolean {
 /** 计算某来源的初始可见文本（同步首帧，避免静态渲染/水合闪烁）。 */
 export function initialStreamingText(
   source: StreamingTextSource,
-  options: Pick<StreamingTextOptions, 'firstFrameDoneFull' | 'immediate'>
+  options: Pick<StreamingTextOptions, 'firstFrameDoneFull' | 'immediate' | 'hydrate'>
 ): string {
   if (options.immediate === true) return source.text
   if (prefersReducedMotion()) return source.text
+  if (options.hydrate === true) return source.text
   return source.done && options.firstFrameDoneFull === true ? source.text : ''
 }
 
@@ -253,6 +264,8 @@ export function useStreamingText(
   const { id, text, done } = source
   const immediate = options.immediate === true
   const firstFrameDoneFull = options.firstFrameDoneFull === true
+  // hydrate 在挂载时锁定：它描述的是「观看者到来时文字是否已在」，之后 props 翻转不改变语义。
+  const hydrateOnCreate = useRef(options.hydrate === true)
   const [visible, setVisible] = useState(() => initialStreamingText(source, options))
   const visibleRef = useRef(visible)
   const player = useRef<PlayerState | null>(null)
@@ -280,10 +293,11 @@ export function useStreamingText(
     const at = nowMs()
     let state = player.current
     if (!state || state.id !== id) {
+      // 首次创建且观看者到来前文字已在（hydrate）：落到当前全文，只播之后的增量。
       // 来源切换：直播上下文从空串重新播放；历史水合语义（firstFrameDoneFull）
       // 且新来源已 done 时直接全文。
       stopLoop()
-      const showAll = done && firstFrameDoneFull
+      const showAll = (!state && hydrateOnCreate.current) || (done && firstFrameDoneFull)
       state = createState(id, text, done, showAll, at)
       player.current = state
       publish(showAll ? text : '')

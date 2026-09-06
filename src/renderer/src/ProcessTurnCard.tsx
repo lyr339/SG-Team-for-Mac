@@ -15,6 +15,12 @@ interface ProcessTurnCardProps {
   title?: string
   live?: boolean
   truncatedItemCount?: number
+  /**
+   * 观看者（会话视图）挂载那一刻已存在的过程块 id：这些块的正文落位不重播。
+   * 不传则退化为"卡片挂载时已存在的步骤"——但直播卡是在首个块到达时才挂载的，
+   * 这个退化判据会把观看者眼前到达的第一帧当成历史，所以会话视图应显式传入。
+   */
+  hydratedBlockIds?: ReadonlySet<string>
 }
 
 function formatDuration(milliseconds?: number): string {
@@ -88,20 +94,24 @@ function TodoIndicator({ tone }: { tone: ReturnType<typeof todoTone> }): React.J
  *
  * 播放模式在挂载时锁定：直播中挂载的正文在回合结束（live 翻 false）后继续把
  * 尾部匀速播完，而不是随 immediate 翻转瞬间跳全文；历史卡挂载即全文。
+ * hydrate：观看者到来时就已存在的步骤（切换会话进入进行中的回合）落位不重播，
+ * 只有观看者到来之后新出现的步骤才从空串打字。
  */
 function StreamingTextBody({
   step,
   live,
+  hydrate,
   className
 }: {
   step: ProcessTurnStep
   live: boolean
+  hydrate: boolean
   className?: string
 }): React.JSX.Element | null {
   const immediate = useRef(!live)
   const visible = useStreamingText(
     { id: step.id, text: step.body ?? '', done: step.status !== 'running' },
-    { immediate: immediate.current }
+    { immediate: immediate.current, hydrate }
   )
   if (!step.body) return null
   return <MessageContent text={visible} className={className} />
@@ -154,7 +164,8 @@ export function ProcessTurnCard({
   compact = false,
   title = '过程记录',
   live = false,
-  truncatedItemCount = 0
+  truncatedItemCount = 0,
+  hydratedBlockIds
 }: ProcessTurnCardProps): React.JSX.Element | null {
   const model = useMemo(() => buildProcessTurnView({ id, blocks, startedAt, updatedAt }), [id, blocks, startedAt, updatedAt])
   const [open, setOpen] = useState(defaultOpen)
@@ -166,6 +177,16 @@ export function ProcessTurnCard({
   })
   /** 已自动展开过的最新步骤：内容继续增长时不与用户的手动收起对抗。 */
   const lastAutoExpanded = useRef<string | null>(null)
+  /**
+   * 观看者到来前就已存在的步骤落位不重播（hydrate），之后新出现的步骤才打字：
+   * 切换会话进入正在生成的回合时，这里就是"早已呈现过"与"正在发生"的分界。
+   * 分界以会话视图挂载时的块集合为准；没有该信息时退化为卡片挂载时的步骤集合。
+   */
+  const stepsAtMount = useRef<ReadonlySet<string> | null>(null)
+  if (stepsAtMount.current === null) stepsAtMount.current = new Set(model.steps.map((step) => step.id))
+  const hydrated = (step: ProcessTurnStep): boolean => hydratedBlockIds
+    ? hydratedBlockIds.has(step.blockId)
+    : (stepsAtMount.current?.has(step.id) ?? false)
   useEffect(() => {
     if (!live) return
     // 直播时展开「最新可见的文本内容」：优先运行中的块；Cursor 常把生成中的
@@ -234,14 +255,14 @@ export function ProcessTurnCard({
                       : <><strong>Thought</strong>{duration ? <time>for {duration}</time> : null}</>}
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d={stepOpen ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'} fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg>
                   </button>
-                  {stepOpen && step.body ? <StreamingTextBody step={step} live={live} className="cursor-native-thought__body" /> : null}
+                  {stepOpen && step.body ? <StreamingTextBody step={step} live={live} hydrate={hydrated(step)} className="cursor-native-thought__body" /> : null}
                 </article>
               )
             }
             if (step.kind === 'message') {
               return step.body ? (
                 <article key={step.id} className={`cursor-native-message is-${step.status}`} data-step-id={step.id}>
-                  <StreamingTextBody step={step} live={live} />
+                  <StreamingTextBody step={step} live={live} hydrate={hydrated(step)} />
                 </article>
               ) : null
             }

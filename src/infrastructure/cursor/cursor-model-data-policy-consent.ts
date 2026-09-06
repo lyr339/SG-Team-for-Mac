@@ -38,7 +38,7 @@ function compact(value: unknown, limit = 160): string {
  */
 export function buildEnsureCursorModelDataPolicyScript(policy: CursorModelDataPolicy): string {
   const encodedPolicy = JSON.stringify(policy)
-  return `/* __qtModelDataPolicy */(async()=>{
+  return `/* __sgModelDataPolicy */(async()=>{
     const policy=${encodedPolicy};
     const request=async(url,body)=>{
       const controller=new AbortController();

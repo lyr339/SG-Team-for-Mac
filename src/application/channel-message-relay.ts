@@ -93,7 +93,7 @@ function isRecentDuplicateEntry(left: ConversationEntry, right: ConversationEntr
 /**
  * 通道消息中继（一体化 S1 主进程侧）。
  *
- * 职责对齐原 QingtianBridge 的 WS 链路，但后端是拾光 SQLite：
+ * 职责对齐旧版桥接插件的 WS 链路，但后端是拾光 SQLite：
  * - 发送改道：内嵌通道的用户消息直写 channel_outbox（Agent 长轮询取走）
  * - 入站消费：轮询 channel_replies，把 Agent record_reply 转入会话时间线
  * - 活性投影：channel_presence → AgentSession 覆盖（check_messages 调用流即心跳）
@@ -251,7 +251,7 @@ export class ChannelMessageRelay {
    * 附件入队前处理（协议定稿）：
    * - data base64 小文件（≤2MB/个、合计 ≤8MB、≤8 个）落盘到 channel-attachments/<messageId>/，
    *   落盘后清掉 data 只留 path；MCP 投递阶段会按文件类型读取 path，图片转 MCP image block，
-   *   文本/小型二进制文件按 qingtian-v2 插件兼容格式内联；
+   *   文本/小型二进制文件按内联附件格式投递；
    * - path 绝对路径引用不复制不落盘，Agent 直接读原文件；
    * - 图片保留 data: 预览 URL 供 UI 缩略展示。
    */
@@ -310,7 +310,7 @@ export class ChannelMessageRelay {
 
   private attachmentRoot(): string {
     return this.repository.path === ':memory:'
-      ? join(tmpdir(), 'qingtian-channel-attachments')
+      ? join(tmpdir(), 'sg-team-channel-attachments')
       : join(dirname(this.repository.path), 'channel-attachments')
   }
 
@@ -662,7 +662,7 @@ export class ChannelMessageRelay {
       && isExplicitlyStoppedPhase(presence.connectionPhase)
       && (presence.runtimeActiveAt ?? 0) <= presence.lastSeenAt
     const session: AgentSession = {
-      id: previous?.id ?? `qingtian-channel:${channelId}`,
+      id: previous?.id ?? `sg-channel:${channelId}`,
       channelId,
       generation: previous?.generation ?? 0,
       displayName: previous?.displayName ?? `SG Team CH-${channelId}`,

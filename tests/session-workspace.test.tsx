@@ -168,10 +168,10 @@ describe('SessionWorkspace', () => {
     expect(cdp).not.toContain('chat-state">')
   })
 
-  it('never renders the legacy qingtian runtime id as a user-facing session label', () => {
-    const html = renderWorkspace({ session: { id: 'qingtian-channel:5', composerTitle: undefined } })
+  it('never renders the raw channel runtime id as a user-facing session label', () => {
+    const html = renderWorkspace({ session: { id: 'sg-channel:5', composerTitle: undefined } })
     expect(html).toContain('SG Team · CH-5')
-    expect(html).not.toContain('qingtian-channel:5')
+    expect(html).not.toContain('sg-channel:5')
   })
 
   it('Agent 运行中且无过程块时显示「正在处理」占位气泡', () => {

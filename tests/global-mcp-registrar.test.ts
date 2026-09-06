@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { reconcileGlobalChannelServers } from '../src/infrastructure/cursor/global-mcp-registrar'
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'qunshu-global-mcp-'))
+  const root = mkdtempSync(join(tmpdir(), 'sg-team-global-mcp-'))
   const configPath = join(root, '.cursor', 'mcp.json')
   const command = join(root, 'Electron')
   const server = join(root, 'index.mjs')
@@ -51,20 +51,20 @@ describe('global mcp registrar', () => {
     expect(reconcileGlobalChannelServers(inputOf(files)).changed).toBe(false)
   })
 
-  it('strips legacy dual-era entries on reconcile', () => {
+  it('rewrites a drifted SG Team entry and creates the config from scratch when missing', () => {
     const files = fixture()
     writeFileSync(files.configPath, JSON.stringify({
-      mcpServers: {
-        'qt-ch-1': { command: 'old-team' },
-        'qtwx-mcp-1': { command: 'old-channel' },
-        'qingtian-team-ch-2': { command: 'ancient' },
-        'qunshu': { command: 'old-unified' },
-        'qunshu-ch-9': { command: 'stale' }
-      }
+      mcpServers: { 'SG Team': { command: '/old/electron', args: ['/old/index.mjs'] } }
     }))
-    reconcileGlobalChannelServers(inputOf(files))
+    expect(reconcileGlobalChannelServers(inputOf(files)).changed).toBe(true)
     const config = JSON.parse(readFileSync(files.configPath, 'utf8'))
     expect(Object.keys(config.mcpServers)).toEqual(['SG Team'])
+    expect(config.mcpServers['SG Team'].command).toBe(files.command)
+
+    const fresh = fixture()
+    rmSync(fresh.configPath, { force: true })
+    expect(reconcileGlobalChannelServers(inputOf(fresh)).changed).toBe(true)
+    expect(Object.keys(JSON.parse(readFileSync(fresh.configPath, 'utf8')).mcpServers)).toEqual(['SG Team'])
   })
 
   it('refuses malformed global config without touching it', () => {

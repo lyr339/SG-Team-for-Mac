@@ -7,7 +7,7 @@ import { CHANNEL_OUTBOX_MAX_PENDING } from '../src/domain/channel-message'
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
 
 function fixture() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-')), 'channel.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-')), 'channel.sqlite3')
   return new SqliteChannelMessageRepository(path)
 }
 
@@ -331,7 +331,7 @@ describe('SqliteChannelMessageRepository', () => {
   })
 
   it('tracks embedded channel registrations across repository instances', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-')), 'channel.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-')), 'channel.sqlite3')
     const writer = new SqliteChannelMessageRepository(path)
     try {
       writer.markChannelEmbedded('1', 'workspace-a', '/workspace/a', 100)
@@ -423,7 +423,7 @@ describe('SqliteChannelMessageRepository', () => {
   })
 
   it('shares the outbox between two repository instances (WAL multi-process)', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-')), 'channel.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-')), 'channel.sqlite3')
     const main = new SqliteChannelMessageRepository(path)
     const agent = new SqliteChannelMessageRepository(path)
     try {

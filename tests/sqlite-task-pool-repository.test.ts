@@ -8,7 +8,7 @@ import { TaskPoolAggregate } from '../src/domain/task-pool'
 import { SqliteTaskPoolRepository } from '../src/infrastructure/task-pool/sqlite-task-pool-repository'
 
 function databasePath(name: string): string {
-  return join(mkdtempSync(join(tmpdir(), `qingtian-team-${name}-`)), 'task-pool.sqlite3')
+  return join(mkdtempSync(join(tmpdir(), `sg-team-${name}-`)), 'task-pool.sqlite3')
 }
 
 describe('SqliteTaskPoolRepository', () => {

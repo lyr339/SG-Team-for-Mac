@@ -64,9 +64,9 @@ class FakeBridge implements TeamControlBridge {
       ...this.snapshot,
       sessions: [...this.snapshot.sessions, {
         ...template,
-        id: `qingtian-channel:${channelId}`,
+        id: `sg-channel:${channelId}`,
         channelId,
-        displayName: `QingTian CH-${channelId}`
+        displayName: `SG Team CH-${channelId}`
       }],
       updatedAt: this.snapshot.updatedAt + 1
     }
@@ -94,10 +94,10 @@ function desktopSnapshot(waiting = true): DesktopSnapshot {
   return {
     connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
     sessions: ['1', '2'].map((channelId) => ({
-      id: `qingtian-channel:${channelId}`,
+      id: `sg-channel:${channelId}`,
       channelId,
       generation: 0,
-      displayName: `QingTian CH-${channelId}`,
+      displayName: `SG Team CH-${channelId}`,
       roleName: '未绑定外置团队',
       status: waiting ? 'waiting' : 'idle',
       currentTask: '',
@@ -116,7 +116,7 @@ function desktopSnapshot(waiting = true): DesktopSnapshot {
 }
 
 function fixture(waiting = true) {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-service-')), 'control.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-service-')), 'control.sqlite3')
   const repository = new SqliteTeamControlRepository(path)
   const bridge = new FakeBridge(desktopSnapshot(waiting))
   const service = new TeamControlService(repository, bridge, 100)
@@ -144,7 +144,7 @@ function fixture(waiting = true) {
 }
 
 function soloFixture() {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-service-solo-')), 'control.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-service-solo-')), 'control.sqlite3')
   const repository = new SqliteTeamControlRepository(path)
   const bundle = createConfiguredTeamBundle({
     workspaceId: 'mixed', workspaceName: 'mixed', workspacePath: '/workspace/mixed', now: 1_000,
@@ -174,7 +174,7 @@ function soloFixture() {
 
 describe('TeamControlService', () => {
   it('creates an independent run without team goal, lead, or collaboration launch', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-independent-service-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-independent-service-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bridge = new FakeBridge(desktopSnapshot(false))
     const service = new TeamControlService(repository, bridge, 100)
@@ -292,7 +292,7 @@ describe('TeamControlService', () => {
   })
 
   it('clears stale collaboration state for a prelaunch run on startup', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-service-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-service-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bundle = createDefaultTeamBundle({
       workspaceId: 'alpha',
@@ -324,7 +324,7 @@ describe('TeamControlService', () => {
   })
 
   it('does not migrate a legacy main run that already has runtime bindings', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-bound-main-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-bound-main-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bundle = createDefaultTeamBundle({
       workspaceId: 'alpha',
@@ -368,7 +368,7 @@ describe('TeamControlService', () => {
   })
 
   it('creates a fresh TeamRun each time a workspace team is configured', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-fresh-run-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-fresh-run-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bridge = new FakeBridge(desktopSnapshot())
     const service = new TeamControlService(repository, bridge, 100)
@@ -403,7 +403,7 @@ describe('TeamControlService', () => {
   })
 
   it('persists per-channel model selection to the slot and reads it back after reopen', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-slot-model-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-slot-model-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bridge = new FakeBridge(desktopSnapshot())
     const service = new TeamControlService(repository, bridge, 100)
@@ -448,7 +448,7 @@ describe('TeamControlService', () => {
   })
 
   it('clears collaboration state when a workspace team is recreated and launched', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-service-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-service-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bridge = new FakeBridge(desktopSnapshot())
     const clearedRuns: string[] = []
@@ -495,7 +495,7 @@ describe('TeamControlService', () => {
   })
 
   it('exposes an unsaved goal as a visible launch gate even when every channel check passes', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-goal-gate-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-goal-gate-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bridge = new FakeBridge(desktopSnapshot(true))
     const service = new TeamControlService(repository, bridge, 100)
@@ -577,7 +577,7 @@ describe('TeamControlService', () => {
   })
 
   it('marks MCP incomplete when a member channel lacks registration', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-no-install-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-no-install-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bridge = new FakeBridge(desktopSnapshot(true))
     const service = new TeamControlService(repository, bridge, 100)
@@ -752,7 +752,7 @@ describe('TeamControlService', () => {
   })
 
   it('uses verified Cursor activity for Team member status instead of MCP heartbeat alone', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-presence-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-presence-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const bridge = new FakeBridge(desktopSnapshot(true))
     const source: CursorComposerTelemetrySource = {
@@ -820,7 +820,7 @@ describe('TeamControlService', () => {
 
 describe('独立模式 → 团队切换（会话围栏软守卫）', () => {
   function independentFixture(online: boolean) {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-ind-to-team-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-ind-to-team-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const desktop = desktopSnapshot(false)
     desktop.sessions = desktop.sessions.map((session) => (
@@ -930,7 +930,7 @@ describe('独立模式 → 团队切换（会话围栏软守卫）', () => {
       configured.service.dispose()
       configured.repository.close()
     }
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-end-empty-')), 'control.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-end-empty-')), 'control.sqlite3')
     const repository = new SqliteTeamControlRepository(path)
     const service = new TeamControlService(repository, new FakeBridge(desktopSnapshot(false)), 100)
     try {

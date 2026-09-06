@@ -70,7 +70,7 @@ export class MemoryReviewCoordinator {
           `标题：${item.title}`,
           `内容：${item.content}`,
           `来源数量：${item.sources.length}`,
-          '请调用 team_memory_search({ includeProposed: true }) 核对来源，再调用 team_memory_review 给出采纳或拒绝结论，并用 team_respond_message 回应本调度消息。',
+          '请调用 team_memory({action:\'search\', includeProposed:true}) 核对来源，再调用 team_memory({action:\'review\', memoryId, decision}) 给出采纳或拒绝结论，并用 team_message({action:\'respond\', messageId, content}) 回应本调度消息。',
           '禁止审核自己提出的记忆；项目级记忆必须由质量角色确认。'
         ].join('\n'),
         clientMessageId: orchestratorMessageId('memory', item.id, item.version)

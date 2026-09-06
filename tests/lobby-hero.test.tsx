@@ -7,8 +7,8 @@ describe('LobbyHero', () => {
   it('renders the command area as a stateful process track', () => {
     const html = renderToStaticMarkup(
       <LobbyHero
-        workspaceName="qingtian"
-        runName="qingtian · 本轮运行"
+        workspaceName="demo-app"
+        runName="demo-app · 本轮运行"
         goal="拾光软件开发"
         status="running"
         steps={[
@@ -35,8 +35,8 @@ describe('LobbyHero', () => {
     expect(html).toContain('flow-status-icon is-done')
     expect(html).toContain('m5.2 10.2 3.1 3.1 6.6-7')
     expect(html).toContain('Agent 待命')
-    expect(html).toContain('<small title="qingtian · 本轮运行">本轮运行</small>')
-    expect(html).not.toContain('<small title="qingtian · 本轮运行">qingtian · 本轮运行</small>')
+    expect(html).toContain('<small title="demo-app · 本轮运行">本轮运行</small>')
+    expect(html).not.toContain('<small title="demo-app · 本轮运行">demo-app · 本轮运行</small>')
   })
 
   it('shows a completed run as a finished flow with next-run action', () => {
@@ -47,8 +47,8 @@ describe('LobbyHero', () => {
     })
     const html = renderToStaticMarkup(
       <LobbyHero
-        workspaceName="qingtian"
-        runName="qingtian · 本轮运行"
+        workspaceName="demo-app"
+        runName="demo-app · 本轮运行"
         goal="拾光软件开发"
         status="completed"
         steps={steps}
@@ -73,8 +73,8 @@ describe('LobbyHero', () => {
   it('renders an all-offline run as disconnected instead of collaborating', () => {
     const html = renderToStaticMarkup(
       <LobbyHero
-        workspaceName="qingtian"
-        runName="qingtian · 本轮运行"
+        workspaceName="demo-app"
+        runName="demo-app · 本轮运行"
         goal="软件开发"
         status="running"
         steps={lobbyFlowStepsFor({ goal: '软件开发', status: 'running', allMembersWaiting: false })}

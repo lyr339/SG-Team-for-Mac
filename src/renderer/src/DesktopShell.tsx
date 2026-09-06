@@ -74,8 +74,8 @@ const MODULE_ORDER: AppModule[] = ['sessions', 'lobby']
 const CONTEXT_SIDEBAR_SPECS = [{ defaultSize: 270, minSize: 220, maxSize: 500 }] as const
 const SESSION_SIDEBAR_SPECS = [{ defaultSize: 326, minSize: 286, maxSize: 420 }] as const
 const INSPECTOR_SPECS = [{ defaultSize: 420, minSize: 300, maxSize: 720 }] as const
-const INSPECTOR_OPEN_KEY = 'qingtian-team.layout:v1:workspace-inspector:open'
-const SESSION_SIDEBAR_COLLAPSED_KEY = 'qingtian-team.layout:v1:shell.sessions.v2:collapsed'
+const INSPECTOR_OPEN_KEY = 'sg-team.layout:v1:workspace-inspector:open'
+const SESSION_SIDEBAR_COLLAPSED_KEY = 'sg-team.layout:v1:shell.sessions.v2:collapsed'
 // 快捷键提示平台化：mac 显示 ⌘，其余平台（Windows）显示 Ctrl+；事件侧已兼容两键。
 const MODULE_SWITCH_MODIFIER = typeof document !== 'undefined'
   && document.documentElement.dataset.platform === 'darwin'

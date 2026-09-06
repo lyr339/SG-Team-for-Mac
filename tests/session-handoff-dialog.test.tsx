@@ -5,7 +5,7 @@ import { SessionHandoffDialog } from '../src/renderer/src/SessionHandoffDialog'
 
 function session(channelId: string, overrides: Partial<AgentSession> = {}): AgentSession {
   return {
-    id: `qingtian-channel:${channelId}`,
+    id: `sg-channel:${channelId}`,
     channelId,
     generation: 0,
     displayName: `独立席 ${channelId}`,

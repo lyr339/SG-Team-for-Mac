@@ -2,7 +2,13 @@ import WebSocket from 'ws'
 import type { CursorUsageEvent, CursorUsageSample } from '../../domain/cursor-usage'
 import { nativeUsagePayload } from './cursor-native-usage'
 import { CHANNEL_USER_DELIVERY_MARKER } from '../../domain/channel-delivery-policy'
-import { parseProcessStream, type CursorProcessStream } from './cursor-cdp-session-creator'
+import {
+  CURSOR_CDP_DEFAULT_PORT,
+  CURSOR_CDP_PORT_ENV,
+  parseProcessStream,
+  TRANSPORT_TOOL_NAMES,
+  type CursorProcessStream
+} from './cursor-cdp-session-creator'
 
 /**
  * Cursor 过程流写信号观察者（事件驱动层）。
@@ -39,7 +45,7 @@ export const CURSOR_STREAM_BINDING_NAME = 'sgTeamStream'
 export const CURSOR_USAGE_BINDING_NAME = '__sgTeamUsage'
 export const CURSOR_PROCESS_BINDING_NAME = 'sgTeamProcess'
 /** 页面内 hook 版本：不一致时 install 会先还原旧 wrapper 再重装（拾光强退后遗留的旧版）。 */
-export const CURSOR_STREAM_HOOK_VERSION = 22
+export const CURSOR_STREAM_HOOK_VERSION = 23
 const RETRY_BASE_MS = 5_000
 const RETRY_MAX_MS = 60_000
 const ATTACH_TIMEOUT_MS = 8_000
@@ -103,7 +109,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
   }
   function isTransportNoise(name) {
     const lower = String(name || '').toLowerCase()
-    return ['check_messages', 'record_reply', 'wait_messages', 'qingtian'].some(item => (
+    return ${JSON.stringify(TRANSPORT_TOOL_NAMES)}.some(item => (
       lower === item || lower.endsWith('-' + item) || lower.endsWith('_' + item)
     ))
   }
@@ -679,9 +685,9 @@ export class CursorStreamObserver {
   private lastStatus?: { state: 'connected' | 'reconnecting' | 'unavailable'; detail: string }
 
   constructor(options: CursorStreamObserverOptions = {}) {
-    const envPort = Number(process.env.QINGTIAN_CURSOR_CDP_PORT)
+    const envPort = Number(process.env[CURSOR_CDP_PORT_ENV])
     this.port = options.port
-      ?? (Number.isInteger(envPort) && envPort > 0 && envPort < 65_536 ? envPort : 9333)
+      ?? (Number.isInteger(envPort) && envPort > 0 && envPort < 65_536 ? envPort : CURSOR_CDP_DEFAULT_PORT)
     this.fetchPageSocketUrl = options.fetchPageSocketUrl ?? defaultFetchPageSocketUrl
     this.openSocket = options.openSocket ?? defaultOpenSocket
     this.onWriteSignal = options.onWriteSignal ?? (() => {})

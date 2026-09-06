@@ -24,7 +24,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
 
 describe('Team message end-to-end local delivery', () => {
   it('delivers lead → builder → lead through the embedded channel queue', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-e2e-')), 'team.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-e2e-')), 'team.sqlite3')
     const teamRepository = new SqliteTeamControlRepository(path)
     const bundle = createDefaultTeamBundle({
       workspaceId: 'alpha',

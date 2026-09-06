@@ -8,7 +8,7 @@ import { SqliteTeamCollaborationRepository } from '../src/infrastructure/team-co
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 
 function fixture(workspaceId = 'alpha') {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-collaboration-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-team-collaboration-')), 'team.sqlite3')
   const team = new SqliteTeamControlRepository(path)
   const bundle = createDefaultTeamBundle({
     workspaceId,
@@ -51,7 +51,7 @@ function fixture(workspaceId = 'alpha') {
 
 describe('SqliteTeamCollaborationRepository', () => {
   it('excludes solo seats from the collaboration member directory at the SQL boundary', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-team-collaboration-solo-')), 'team.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-team-collaboration-solo-')), 'team.sqlite3')
     const team = new SqliteTeamControlRepository(path)
     const bundle = createConfiguredTeamBundle({
       workspaceId: 'solo-directory', workspaceName: 'solo-directory', workspacePath: '/workspace/solo-directory', now: 100,

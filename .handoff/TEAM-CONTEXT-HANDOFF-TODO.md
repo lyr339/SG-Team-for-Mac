@@ -3,7 +3,7 @@
 > 状态（2026-09-04）：待办，未动工。独立席位的上下文交接已在 `47d261f` 落地并提交；
 > 本文档只覆盖把同一能力扩展到团队席位（lead / builder / reviewer / …）的工作。
 >
-> 项目：拾光 `qingtian-team` · 工作区 `/Users/lyr/Downloads/qingtian/qingtian-team`
+> 项目：拾光 / SG Team（`shiguang-team`） · 工作区：仓库根目录
 >
 > 基线：`37253bf`（含独立席位交接、队列保持位协议、图片附件查看器）
 
@@ -32,7 +32,7 @@
 ## 1. 要解决的具体问题
 
 1. **入口**：团队席位在线时也需要可点的「交接」，且与离线职责迁移区分开。
-2. **接收方是团队席位时的语义**：团队席位的 Cursor 会话开场是 launch hint → `team_check_in` → 简报。交接消息作为普通用户消息经 `check_messages` 投递，模型收到时已经是团队角色，会按简报流程工作（先 team_get_context / 收件箱）。交接消息里的「读转录后向用户确认已接手」与团队协议里「只有处理真实用户消息才 record_reply」不冲突（这就是一条真实用户消息），但需要在消息里明确它**不是任务板任务**，避免主控把它当成要拆解的目标。
+2. **接收方是团队席位时的语义**：团队席位的 Cursor 会话开场是 launch hint → `team_check_in` → 简报。交接消息作为普通用户消息经 `check_messages` 投递，模型收到时已经是团队角色，会按简报流程工作（team_check_in 已随简报返回上下文快照，再处理收件箱）。交接消息里的「读转录后向用户确认已接手」与团队协议里「只有处理真实用户消息才 record_reply」不冲突（这就是一条真实用户消息），但需要在消息里明确它**不是任务板任务**，避免主控把它当成要拆解的目标。
 3. **目标选择**：团队 run 里其他通道是有角色的成员。把实现席的上下文投给验收席通常没有意义；候选列表应显示角色名，并把「同角色 / 备用通道」排前面。备用通道（standby，未编入本轮的在线 MCP 通道）目前不在 `snapshot.sessions`？——需核实 `TeamControlSnapshot.standbyChannels` 与 `DesktopSnapshot.sessions` 的交集，缺则补。
 4. **与失效接管的关系**：成员离线时，用户可能既想迁移职责（现有），也想把上下文一并交给接手者。最小方案：`ManualHandoffDialog` 确认迁移后，追加一步「同时把原席位的上下文文档投递给接手通道」（复选框，默认勾选，复用 `deliverSessionHandoff({ target: { kind: 'channel', channelId: 接手通道 } })`）。这样离线路径一次点击完成两件事，在线路径走独立的上下文交接弹窗。
 
@@ -50,7 +50,7 @@
 
 - `src/domain/session-handoff.ts` `buildSessionHandoffMessage` 增加 `sourceRole?: { name: string; templateKey: string }` 与 `targetIsTeamSeat?: boolean`：
   - 标题带角色：`【会话交接】来自 CH-2（架构实现 · 实现席 · Claude Opus）`；
-  - 团队接收方追加一句：「这是用户发起的上下文交接，不是任务板任务；读取后不要 team_plan_tasks，也不要向主控上报为进度」。
+  - 团队接收方追加一句：「这是用户发起的上下文交接，不是任务板任务；读取后不要 team_task plan 拆任务，也不要向主控上报为进度」。
 - `SessionHandoffService.context()` 从 `team.members` 补出 `roleName / templateKey`（按 channelId 找 member）。
 
 ### 阶段 C：候选排序与备用通道

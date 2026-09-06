@@ -82,7 +82,7 @@ function snapshotProvider(
 }
 
 function setup(options: Omit<TeamCollaborationSweeperOptions, 'now'> = {}, launch = true) {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-sweeper-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-sweeper-')), 'team.sqlite3')
   const control = new SqliteTeamControlRepository(path)
   const bundle = createDefaultTeamBundle({
     workspaceId: 'alpha',

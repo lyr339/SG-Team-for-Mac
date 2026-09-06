@@ -76,18 +76,16 @@ describe('team control domain', () => {
       binding
     })
 
-    expect(prompt).toContain('team_get_context')
+    expect(prompt).toContain('team_check_in')
     expect(prompt).toContain('完成 Bridge v2，并提供回归测试证据')
     expect(prompt).toContain("channel_id:'2'")
     expect(prompt).toContain('SG Team')
-    expect(prompt).not.toContain('qtwx-mcp-2')
     expect(prompt).toContain('[[SG_TEAM_BIND:generation123:CH-2]]')
-    expect(prompt).not.toContain('QINGTIAN')
     expect(prompt).toContain('停止自动重试')
     expect(prompt).toContain('默认控制在 1—4 句')
     expect(prompt).toContain('不要固定输出“当前结论 / 下一步 / 阻塞项”')
     expect(prompt).toContain(bundle.slots[0]!.id)
-    expect(prompt).toContain('不要依据团队目标自行调用 team_plan_tasks')
+    expect(prompt).toContain('不要依据团队目标自行调用 team_task plan')
     expect(prompt).toContain('只有收到用户明确要求“开始 / 分配 / 拆任务 / 执行”后')
   })
 
@@ -154,8 +152,8 @@ describe('team control domain', () => {
     })
     expect(prompt).toContain('唯一有效主控')
     expect(prompt).toContain('全局规划、调度、消息协调')
-    expect(prompt).toContain('team_list_board')
-    expect(prompt).toContain('team_broadcast + team_collect_responses')
+    expect(prompt).toContain("team_tasks({channel_id:'2', view:'board'})")
+    expect(prompt).toContain('team_message broadcast + collect')
   })
 
   it('requires exactly one lead regardless of team size', () => {

@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
   type DesktopSnapshot,
-  type QingtianDesktopApi
+  type SgDesktopApi
 } from '../shared/desktop-api'
 
 const markRendererPlatform = (): void => {
@@ -15,7 +15,7 @@ if (document.documentElement) {
   window.addEventListener('DOMContentLoaded', markRendererPlatform, { once: true })
 }
 
-const api: QingtianDesktopApi = {
+const api: SgDesktopApi = {
   listCursorAccounts: () => ipcRenderer.invoke(IPC.cursorAccountsList),
   saveCursorAccount: (input) => ipcRenderer.invoke(IPC.cursorAccountsSave, input),
   selectCursorAccount: (accountId) => ipcRenderer.invoke(IPC.cursorAccountsSelect, accountId),
@@ -140,4 +140,4 @@ const api: QingtianDesktopApi = {
   }
 }
 
-contextBridge.exposeInMainWorld('qingtianDesktop', api)
+contextBridge.exposeInMainWorld('sgDesktop', api)

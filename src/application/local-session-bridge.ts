@@ -25,7 +25,7 @@ function localSnapshot(now = Date.now()): DesktopSnapshot {
 /**
  * 拾光本地通道桥。
  *
- * 旧版通过 qingtian-v2 的 3180 WebSocket 投递消息、发现通道；一体化后
+ * 旧版通过桥接插件的 3180 WebSocket 投递消息、发现通道；一体化后
  * 通道收发由 SQLite + SG Team 内嵌统一 server 完成。这个桥只提供本机控制面
  * 快照与发送入口，确保组队、安装和启动不再依赖旧插件进程。
  */

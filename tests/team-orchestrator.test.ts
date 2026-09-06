@@ -38,7 +38,7 @@ class QuietBridge implements TeamControlBridge {
 }
 
 function fixture(started = true) {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-orchestrator-')), 'team.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-orchestrator-')), 'team.sqlite3')
   const controlRepository = new SqliteTeamControlRepository(path)
   const bundle = createDefaultTeamBundle({
     workspaceId: 'alpha',
@@ -202,7 +202,7 @@ describe('TeamOrchestrator', () => {
         recipient: { type: 'agent', slotId: data.slot('reviewer').id },
         kind: 'directive'
       })
-      expect(messages[1]!.content).toContain('team_claim_review')
+      expect(messages[1]!.content).toContain("team_review({action:'claim'})")
 
       const reviewer = data.taskAgent('reviewer')
       expect(reviewer.listReviews()).toHaveLength(1)

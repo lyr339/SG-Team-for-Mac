@@ -5,7 +5,7 @@
  * cacheReadTokens/cacheWriteTokens，BigInt），但渲染进程两条消费路径都把值丢弃
  * （cloud 路径只写 status；local 路径只存 turnTokenUsage 且不随持久化落盘）。
  * CDP 注入无法触达这些闭包，唯一出路是 bundle 内定点注入——本 Cursor 构建
- * 已有 __QINGTIAN_COMPOSER_SERVICE_HOOK_V2__ 定制先例，版本固定后此法稳定。
+ * 同一 bundle 已有其他定制补丁先例，版本固定后此法稳定。
  *
  * 双锚点（59MB 全文各唯一，已验证）：
  * 1. local（拾光会话主路径，chatService.submitChatMaybeAbortCurrent 管线）：

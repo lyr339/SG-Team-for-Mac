@@ -16,7 +16,7 @@ import { SqliteTaskPoolRepository } from '../src/infrastructure/task-pool/sqlite
 import { SqliteTeamControlRepository } from '../src/infrastructure/team-control/sqlite-team-control-repository'
 import { createDefaultTeamBundle } from '../src/domain/team-control'
 
-const directory = mkdtempSync(join(tmpdir(), 'qingtian-channel-mcp-smoke-'))
+const directory = mkdtempSync(join(tmpdir(), 'sg-team-channel-mcp-smoke-'))
 const databasePath = join(directory, 'task-pool.sqlite3')
 const mcpServerPath = resolve('out/mcp/index.mjs')
 
@@ -88,7 +88,7 @@ repository.enqueueOutbound('1', '冒烟：请审查统一通道服务器', 1_000
 
 const channel = await openUnifiedClient('1')
 const toolNames = (await channel.client.listTools()).tools.map((tool) => tool.name).sort()
-for (const expected of ['check_messages', 'record_reply', 'team_check_in', 'team_list_mine']) {
+for (const expected of ['check_messages', 'record_reply', 'team_check_in', 'team_tasks']) {
   if (!toolNames.includes(expected)) throw new Error(`统一服务器缺少工具 ${expected}：${toolNames}`)
 }
 

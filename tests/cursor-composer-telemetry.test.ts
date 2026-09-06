@@ -8,7 +8,7 @@ import type { RuntimeBinding } from '../src/domain/team-control'
 import { CursorComposerTelemetryReader } from '../src/infrastructure/cursor/cursor-composer-telemetry'
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'qingtian-cursor-telemetry-'))
+  const root = mkdtempSync(join(tmpdir(), 'sg-cursor-telemetry-'))
   const workspace = join(root, 'workspace')
   const projectsRoot = join(root, 'projects')
   const workspaceStorageRoot = join(root, 'workspace-storage')
@@ -239,89 +239,31 @@ function writeTranscript(projectsRoot: string, workspace: string, composerId: st
   writeFileSync(join(directory, `${composerId}.jsonl`), text)
 }
 
-function transcriptEntry(server: string, toolName: string): string {
+/** 统一服务器形态的工具调用转录行：服务器名不含通道号，通道身份在 arguments.channel_id。 */
+function transcriptEntry(channelId: string, toolName: string): string {
   return JSON.stringify({
     role: 'assistant',
     message: {
       content: [{
         type: 'tool_use',
         name: 'CallMcpTool',
-        input: { server, toolName, arguments: {} }
+        input: { server: 'user-SG Team', toolName, arguments: { channel_id: channelId } }
       }]
     }
   })
 }
 
-function dynamicTranscriptEntry(namespace: string, toolName: string, name = 'CallDynamicTool'): string {
+function dynamicTranscriptEntry(channelId: string, toolName: string, name = 'CallDynamicTool'): string {
   return JSON.stringify({
     role: 'assistant',
     message: {
       content: [{
         type: 'tool_use',
         name,
-        input: { namespace, toolName, arguments: {} }
+        input: { namespace: 'user-SG Team', toolName, arguments: { channel_id: channelId } }
       }]
     }
   })
-}
-
-function writeRuntimeState(input: {
-  workspaceStorageRoot: string
-  storageId: string
-  channelId: string
-  now: number
-  heartbeatPid: number
-  connectionPid: number
-  waitingPid?: number
-}): void {
-  const root = join(
-    input.workspaceStorageRoot,
-    input.storageId,
-    'QingTian.qingtian-v2',
-    'runtime',
-    'messages',
-    's',
-    input.channelId
-  )
-  mkdirSync(root, { recursive: true })
-  const state = (pid: number, active = true) => ({
-    channelId: input.channelId,
-    pid,
-    runtimeStamp: 'runtime-a',
-    active,
-    updatedAt: input.now
-  })
-  writeFileSync(join(root, 'heartbeat.json'), JSON.stringify({
-    ...state(input.heartbeatPid),
-    lastSeen: input.now
-  }))
-  writeFileSync(join(root, 'connection.json'), JSON.stringify(state(input.connectionPid)))
-  writeFileSync(join(root, 'waiting.json'), JSON.stringify(state(input.waitingPid ?? input.connectionPid)))
-}
-
-function writeLeaseFiles(input: {
-  workspaceStorageRoot: string
-  storageId: string
-  channelId: string
-  pid: number
-  heartbeatLastSeen: number
-  connectionUpdatedAt: number
-  waitingUpdatedAt: number
-}): void {
-  const root = join(
-    input.workspaceStorageRoot,
-    input.storageId,
-    'QingTian.qingtian-v2',
-    'runtime',
-    'messages',
-    's',
-    input.channelId
-  )
-  mkdirSync(root, { recursive: true })
-  const base = { channelId: input.channelId, pid: input.pid, runtimeStamp: 'runtime-a', active: true }
-  writeFileSync(join(root, 'heartbeat.json'), JSON.stringify({ ...base, lastSeen: input.heartbeatLastSeen }))
-  writeFileSync(join(root, 'connection.json'), JSON.stringify({ ...base, updatedAt: input.connectionUpdatedAt }))
-  writeFileSync(join(root, 'waiting.json'), JSON.stringify({ ...base, updatedAt: input.waitingUpdatedAt }))
 }
 
 function transcriptPath(projectsRoot: string, workspace: string, composerId: string): string {
@@ -661,7 +603,7 @@ describe('CursorComposerTelemetryReader', () => {
       ] } },
       { role: 'assistant', message: { content: [
         { type: 'text', text: '同步本轮业务进度。' },
-        { type: 'tool_use', name: 'CallDynamicTool', input: { namespace: 'user-SG Team', toolName: 'team_report_progress', arguments: { channel_id: '3' } } }
+        { type: 'tool_use', name: 'CallDynamicTool', input: { namespace: 'user-SG Team', toolName: 'team_task', arguments: { channel_id: '3' } } }
       ] } },
       { role: 'assistant', message: { content: [{ type: 'text', text: 'CH-3 已就绪。' }] } }
     ]
@@ -674,7 +616,7 @@ describe('CursorComposerTelemetryReader', () => {
       'thinking', 'thinking', 'tool'
     ])
     expect(composer.lastAssistantProcess?.blocks[2]).toMatchObject({
-      kind: 'tool', toolName: 'team_report_progress', toolKind: 'mcp', input: { channel_id: '3' }
+      kind: 'tool', toolName: 'team_task', toolKind: 'mcp', input: { channel_id: '3' }
     })
     expect(composer.lastAssistantProcess?.blocks.some((block) => (
       block.kind === 'tool' && String(block.toolName).includes('check_messages')
@@ -805,14 +747,14 @@ describe('CursorComposerTelemetryReader', () => {
     expect(snapshot.bindingCandidates).toEqual([])
   })
 
-  it('uses the legacy channel hint only when it is recent and globally unique', () => {
+  it('uses the transcript channel hint only when it is recent and globally unique', () => {
     const data = fixture()
     writeHeaders(data.globalStateDatabase, [
       header({ composerId: 'composer-recent-123', workspace: data.workspace, lastUpdatedAt: 10_000 }),
       header({ composerId: 'composer-stale-123', workspace: data.workspace, lastUpdatedAt: 1 })
     ])
-    writeTranscript(data.projectsRoot, data.workspace, 'composer-recent-123', 'using qtwx-mcp-3 now')
-    writeTranscript(data.projectsRoot, data.workspace, 'composer-stale-123', 'using qtwx-mcp-4 now')
+    writeTranscript(data.projectsRoot, data.workspace, 'composer-recent-123', transcriptEntry('3', 'check_messages'))
+    writeTranscript(data.projectsRoot, data.workspace, 'composer-stale-123', transcriptEntry('4', 'check_messages'))
 
     const snapshot = data.reader.readWorkspace(data.workspace, [
       binding('3', 'generation123', 9_000),
@@ -828,87 +770,43 @@ describe('CursorComposerTelemetryReader', () => {
     }])
   })
 
-  it('verifies waiting only when the bound Composer and current MCP process own the same lease', () => {
+  it('projects waiting when the last transcript action is check_messages on the bound channel', () => {
     const data = fixture()
     const now = 2_000_000
-    const storageId = 'a'.repeat(32)
     const composerId = 'composer-waiting-123'
     const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({
-      composerId,
-      workspace: data.workspace,
-      workspaceStorageId: storageId
-    })])
-    writeTranscript(
-      data.projectsRoot,
-      data.workspace,
-      composerId,
-      transcriptEntry('project-alpha-qtwx-mcp-1', 'check_messages')
-    )
-    writeRuntimeState({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '1',
-      now,
-      heartbeatPid: 4321,
-      connectionPid: 4321
-    })
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('1', 'check_messages'))
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: (pid) => pid === 4321
+      now: () => now
     })
 
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
 
-    expect(snapshot.composers[0]?.activity).toMatchObject({
-      state: 'waiting',
-      channelId: '1'
-    })
+    expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'waiting', channelId: '1' })
   })
 
-  it('rejects a stale waiting lease owned by a previous MCP process', () => {
+  it('reports stopped when the transcript last connected to a different channel', () => {
     const data = fixture()
     const now = 2_000_000
-    const storageId = 'b'.repeat(32)
-    const composerId = 'composer-stale-wait-123'
+    const composerId = 'composer-other-channel-123'
     const runtime = { ...binding('2'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({
-      composerId,
-      workspace: data.workspace,
-      workspaceStorageId: storageId
-    })])
-    writeTranscript(
-      data.projectsRoot,
-      data.workspace,
-      composerId,
-      transcriptEntry('project-alpha-qtwx-mcp-2', 'check_messages')
-    )
-    writeRuntimeState({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '2',
-      now,
-      heartbeatPid: 9002,
-      connectionPid: 8002
-    })
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('7', 'check_messages'))
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: (pid) => pid === 9002
+      now: () => now
     })
 
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
 
-    expect(snapshot.composers[0]?.activity).toMatchObject({
-      state: 'stopped',
-      channelId: '2'
-    })
-    expect(snapshot.composers[0]?.activity?.detail).toContain('旧运行时')
+    expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'stopped', channelId: '7' })
+    expect(snapshot.composers[0]?.activity?.detail).toContain('CH-7')
   })
 
   it('marks record_reply without a following check_messages as stopped once activity goes stale', () => {
@@ -923,28 +821,14 @@ describe('CursorComposerTelemetryReader', () => {
       workspaceStorageId: storageId,
       lastUpdatedAt: now - 120_000
     })])
-    writeTranscript(
-      data.projectsRoot,
-      data.workspace,
-      composerId,
-      transcriptEntry('project-alpha-qtwx-mcp-3', 'record_reply')
-    )
+    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('3', 'record_reply'))
     // 转录与 composer 双双陈旧：record_reply 收尾后长时间没有回到 check_messages = 真停止
     backdateTranscript(data.projectsRoot, data.workspace, composerId, 120_000)
-    writeRuntimeState({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '3',
-      now,
-      heartbeatPid: 4303,
-      connectionPid: 4303
-    })
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: (pid) => pid === 4303
+      now: () => now
     })
 
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
@@ -970,26 +854,12 @@ describe('CursorComposerTelemetryReader', () => {
     })])
     // 转录刚落盘（新鲜）：record_reply 与紧随的 check_messages 之间存在 flush 窗口，
     // 协议强制同步后立刻回到监听——窗口内不得判 stopped
-    writeTranscript(
-      data.projectsRoot,
-      data.workspace,
-      composerId,
-      transcriptEntry('project-alpha-qtwx-mcp-3', 'record_reply')
-    )
-    writeRuntimeState({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '3',
-      now,
-      heartbeatPid: 4303,
-      connectionPid: 4303
-    })
+    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('3', 'record_reply'))
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: (pid) => pid === 4303
+      now: () => now
     })
 
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
@@ -1015,26 +885,17 @@ describe('CursorComposerTelemetryReader', () => {
       data.workspace,
       composerId,
       [
-        dynamicTranscriptEntry('project-alpha-qtwx-mcp-4', 'record_reply'),
-        dynamicTranscriptEntry('project-alpha-qtwx-mcp-4', 'check_messages', 'GetDynamicTools')
+        dynamicTranscriptEntry('4', 'record_reply'),
+        dynamicTranscriptEntry('4', 'check_messages', 'GetDynamicTools')
       ].join('\n')
     )
     // 陈旧化：GetDynamicTools 被跳过后最后动作是 record_reply，且长时间未回到监听
     backdateTranscript(data.projectsRoot, data.workspace, composerId, 120_000)
-    writeRuntimeState({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '4',
-      now,
-      heartbeatPid: 4304,
-      connectionPid: 4304
-    })
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: (pid) => pid === 4304
+      now: () => now
     })
 
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
@@ -1045,99 +906,42 @@ describe('CursorComposerTelemetryReader', () => {
     })
   })
 
-  it('extracts the channel id from unified qunshu server arguments (channel_id param)', () => {
+  it('extracts the channel id from unified SG Team tool arguments (channel_id param)', () => {
     const data = fixture()
     const now = Date.now()
-    const composerId = 'composer-qunshu-channel-args'
+    const composerId = 'composer-unified-channel-args'
     const runtime = { ...binding('2'), composerId }
     writeHeaders(data.globalStateDatabase, [header({
       composerId,
       workspace: data.workspace,
       lastUpdatedAt: now
     })])
-    // 统一服务器形态：namespace 是 qunshu（不含通道号），通道身份在 arguments.channel_id
-    writeTranscript(
-      data.projectsRoot,
-      data.workspace,
-      composerId,
-      `${JSON.stringify({
-        role: 'assistant',
-        message: {
-          content: [{
-            type: 'tool_use',
-            name: 'CallDynamicTool',
-            input: { namespace: 'user-qunshu', toolName: 'check_messages', arguments: { channel_id: '2' } }
-          }]
-        }
-      })}\n`
-    )
+    // 统一服务器形态：namespace 不含通道号，通道身份在 arguments.channel_id
+    writeTranscript(data.projectsRoot, data.workspace, composerId, `${dynamicTranscriptEntry('2', 'check_messages')}\n`)
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: () => true
+      now: () => now
     })
 
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
 
-    // 通道归属正确识别；无插件租约文件（内嵌模式）时按 waiting 投影
     expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'waiting', channelId: '2' })
   })
 
-  it('keeps a busy agent active: long-poll ended for work (stale connection lease is not death)', () => {
+  it('keeps a working agent active on a fresh tool action', () => {
     const data = fixture()
     const now = Date.now()
-    const storageId = 'e'.repeat(32)
-    const composerId = 'composer-busy-thinking-123'
-    const runtime = { ...binding('1'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace, workspaceStorageId: storageId })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('project-alpha-qtwx-mcp-1', 'check_messages'))
-    // 心跳新鲜、身份一致；连接/等待租约仅时间陈旧（Agent 接到活后没再碰 MCP）
-    writeLeaseFiles({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '1',
-      pid: 7001,
-      heartbeatLastSeen: now,
-      connectionUpdatedAt: now - 60_000,
-      waitingUpdatedAt: now - 60_000
-    })
-    const reader = new CursorComposerTelemetryReader({
-      globalStateDatabase: data.globalStateDatabase,
-      projectsRoot: data.projectsRoot,
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: () => true
-    })
-    const snapshot = reader.readWorkspace(data.workspace, [runtime])
-    expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'active', channelId: '1' })
-    expect(snapshot.composers[0]?.activity?.detail).toContain('正在处理')
-  })
-
-  it('keeps a working agent active on tool action despite a time-stale connection lease', () => {
-    const data = fixture()
-    const now = Date.now()
-    const storageId = 'f'.repeat(32)
     const composerId = 'composer-busy-tool-123'
     const runtime = { ...binding('2'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace, workspaceStorageId: storageId })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('project-alpha-qtwx-mcp-2', 'run_command'))
-    writeLeaseFiles({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '2',
-      pid: 7002,
-      heartbeatLastSeen: now,
-      connectionUpdatedAt: now - 90_000,
-      waitingUpdatedAt: now - 90_000
-    })
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('2', 'run_command'))
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: () => true
+      now: () => now
     })
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
     expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'active' })
@@ -1147,27 +951,16 @@ describe('CursorComposerTelemetryReader', () => {
   it('marks long-task silence within work grace as workInProgress unknown, not stopped', () => {
     const data = fixture()
     const now = Date.now()
-    const storageId = '0'.repeat(32)
     const composerId = 'composer-long-task-123'
     const runtime = { ...binding('3'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace, workspaceStorageId: storageId })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('project-alpha-qtwx-mcp-3', 'run_command'))
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('3', 'run_command'))
     backdateTranscript(data.projectsRoot, data.workspace, composerId, 120_000)
-    writeLeaseFiles({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '3',
-      pid: 7003,
-      heartbeatLastSeen: now,
-      connectionUpdatedAt: now - 150_000,
-      waitingUpdatedAt: now - 150_000
-    })
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: () => true
+      now: () => now
     })
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
     expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'unknown', workInProgress: true })
@@ -1176,61 +969,20 @@ describe('CursorComposerTelemetryReader', () => {
   it('falls back to plain unknown beyond the work-activity grace window', () => {
     const data = fixture()
     const now = Date.now()
-    const storageId = '9'.repeat(32)
     const composerId = 'composer-beyond-grace-123'
     const runtime = { ...binding('4'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace, workspaceStorageId: storageId })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('project-alpha-qtwx-mcp-4', 'run_command'))
+    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
+    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('4', 'run_command'))
     backdateTranscript(data.projectsRoot, data.workspace, composerId, 601_000)
-    writeLeaseFiles({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '4',
-      pid: 7004,
-      heartbeatLastSeen: now,
-      connectionUpdatedAt: now - 610_000,
-      waitingUpdatedAt: now - 610_000
-    })
     const reader = new CursorComposerTelemetryReader({
       globalStateDatabase: data.globalStateDatabase,
       projectsRoot: data.projectsRoot,
       workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: () => true
+      now: () => now
     })
     const snapshot = reader.readWorkspace(data.workspace, [runtime])
     expect(snapshot.composers[0]?.activity?.state).toBe('unknown')
     expect(snapshot.composers[0]?.activity?.workInProgress).toBeUndefined()
-  })
-
-  it('does not call an Agent stopped merely because check_messages ended and the next work is quiet', () => {
-    const data = fixture()
-    const now = Date.now()
-    const storageId = '8'.repeat(32)
-    const composerId = 'composer-idle-death-123'
-    const runtime = { ...binding('5'), composerId }
-    writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace, workspaceStorageId: storageId })])
-    writeTranscript(data.projectsRoot, data.workspace, composerId, transcriptEntry('project-alpha-qtwx-mcp-5', 'check_messages'))
-    backdateTranscript(data.projectsRoot, data.workspace, composerId, 60_000)
-    writeLeaseFiles({
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      storageId,
-      channelId: '5',
-      pid: 7005,
-      heartbeatLastSeen: now,
-      connectionUpdatedAt: now - 60_000,
-      waitingUpdatedAt: now - 60_000
-    })
-    const reader = new CursorComposerTelemetryReader({
-      globalStateDatabase: data.globalStateDatabase,
-      projectsRoot: data.projectsRoot,
-      workspaceStorageRoot: data.workspaceStorageRoot,
-      now: () => now,
-      isProcessAlive: () => true
-    })
-    const snapshot = reader.readWorkspace(data.workspace, [runtime])
-    expect(snapshot.composers[0]?.activity).toMatchObject({ state: 'unknown', workInProgress: true })
-    expect(snapshot.composers[0]?.activity?.detail).toContain('可能正在执行长任务')
   })
 
   it('reports a missing Cursor database without throwing or fabricating data', () => {
@@ -1264,7 +1016,7 @@ describe('transcript discovery beyond workspace-derived directories', () => {
       data.projectsRoot,
       '1779762671039',
       composerId,
-      `${userLine}\n${transcriptEntry('qtwx-mcp-1', 'check_messages')}\n`
+      `${userLine}\n${transcriptEntry('1', 'check_messages')}\n`
     )
 
     const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]
@@ -1276,10 +1028,10 @@ describe('transcript discovery beyond workspace-derived directories', () => {
     const composerId = 'composer-multi-dir-123'
     const runtime = { ...binding('1'), composerId }
     writeHeaders(data.globalStateDatabase, [header({ composerId, workspace: data.workspace })])
-    const stale = writeTranscriptInDir(data.projectsRoot, '1779762671039', composerId, `${transcriptEntry('qtwx-mcp-1', 'record_reply')}\n`)
+    const stale = writeTranscriptInDir(data.projectsRoot, '1779762671039', composerId, `${transcriptEntry('1', 'record_reply')}\n`)
     const staleTime = new Date(Date.now() - 60 * 60_000)
     utimesSync(stale, staleTime, staleTime)
-    writeTranscriptInDir(data.projectsRoot, '1780659222896', composerId, `${transcriptEntry('qtwx-mcp-1', 'check_messages')}\n`)
+    writeTranscriptInDir(data.projectsRoot, '1780659222896', composerId, `${transcriptEntry('1', 'check_messages')}\n`)
 
     const composer = data.reader.readWorkspace(data.workspace, [runtime]).composers[0]
     expect(composer?.activity).toMatchObject({ state: 'waiting' })
@@ -1303,7 +1055,7 @@ describe('channel-level transcript activity evidence', () => {
     writeChannelTranscript(
       data.projectsRoot,
       'composer-ch2-ended-123',
-      `${transcriptEntry('qtwx-mcp-2', 'check_messages')}\n${transcriptEntry('qtwx-mcp-2', 'record_reply')}\n`,
+      `${transcriptEntry('2', 'check_messages')}\n${transcriptEntry('2', 'record_reply')}\n`,
       2 * 60_000
     )
 
@@ -1320,7 +1072,7 @@ describe('channel-level transcript activity evidence', () => {
     writeChannelTranscript(
       data.projectsRoot,
       'composer-ch3-live-123',
-      `${transcriptEntry('qtwx-mcp-3', 'check_messages')}\n`
+      `${transcriptEntry('3', 'check_messages')}\n`
     )
 
     const snapshot = data.reader.readWorkspace(data.workspace, [binding('3')])
@@ -1332,7 +1084,7 @@ describe('channel-level transcript activity evidence', () => {
     writeChannelTranscript(
       data.projectsRoot,
       'composer-ch1-zombie-123',
-      `${transcriptEntry('qtwx-mcp-1', 'check_messages')}\n`,
+      `${transcriptEntry('1', 'check_messages')}\n`,
       16 * 60_000
     )
 
@@ -1346,7 +1098,7 @@ describe('channel-level transcript activity evidence', () => {
     writeChannelTranscript(
       data.projectsRoot,
       'composer-ch1-paused-123',
-      `${transcriptEntry('qtwx-mcp-1', 'check_messages')}\n`,
+      `${transcriptEntry('1', 'check_messages')}\n`,
       45_000
     )
 
@@ -1369,14 +1121,14 @@ describe('global composer hydration for context and binding', () => {
     writeHeaders(data.globalStateDatabase, [{
       ...header({
         composerId,
-        workspace: '/tmp/qingtian-temp-workspace',
+        workspace: '/tmp/sg-temp-workspace',
         contextUsagePercent: 53.7
       }),
       modelName: 'gpt-5.3-codex'
     }])
     const directory = join(data.projectsRoot, '1779762671039', 'agent-transcripts', composerId)
     mkdirSync(directory, { recursive: true })
-    writeFileSync(join(directory, `${composerId}.jsonl`), `${transcriptEntry('qtwx-mcp-2', 'check_messages')}\n`)
+    writeFileSync(join(directory, `${composerId}.jsonl`), `${transcriptEntry('2', 'check_messages')}\n`)
 
     const snapshot = data.reader.readWorkspace(data.workspace, [binding('2')])
     expect(snapshot.channelActivities?.['2']?.composerId).toBe(composerId)
@@ -1390,37 +1142,13 @@ describe('global composer hydration for context and binding', () => {
     const composerId = 'composer-cross-ws-launch-1'
     writeHeaders(data.globalStateDatabase, [header({
       composerId,
-      workspace: '/tmp/qingtian-temp-workspace'
+      workspace: '/tmp/sg-temp-workspace'
     })])
     const runtime = binding('1')
     const marker = cursorComposerBindingMarker({ bindingKey: runtime.generation, channelId: '1' })
     const directory = join(data.projectsRoot, 'Users-example-Projects-BlockChainVecSim', 'agent-transcripts', composerId)
     mkdirSync(directory, { recursive: true })
     writeFileSync(join(directory, `${composerId}.jsonl`), `${transcriptEntry(marker, 'check_messages')}\n`)
-
-    const snapshot = data.reader.readWorkspace(data.workspace, [runtime])
-    expect(snapshot.bindingCandidates).toEqual([
-      expect.objectContaining({
-        channelId: '1',
-        composerId,
-        generation: runtime.generation,
-        method: 'launch_marker'
-      })
-    ])
-  })
-
-  it('still binds transcripts carrying the legacy QINGTIAN_TEAM_BIND marker after rebrand', () => {
-    const data = fixture()
-    const composerId = 'composer-legacy-marker-1'
-    writeHeaders(data.globalStateDatabase, [header({
-      composerId,
-      workspace: '/tmp/qingtian-temp-workspace'
-    })])
-    const runtime = binding('1')
-    const legacyMarker = `[[QINGTIAN_TEAM_BIND:${runtime.generation}:CH-1]]`
-    const directory = join(data.projectsRoot, 'Users-example-Projects-BlockChainVecSim', 'agent-transcripts', composerId)
-    mkdirSync(directory, { recursive: true })
-    writeFileSync(join(directory, `${composerId}.jsonl`), `${transcriptEntry(legacyMarker, 'check_messages')}\n`)
 
     const snapshot = data.reader.readWorkspace(data.workspace, [runtime])
     expect(snapshot.bindingCandidates).toEqual([
@@ -1465,7 +1193,7 @@ describe('global composer hydration for context and binding', () => {
       const composerId = 'composer-index-cache-7'
       const directory = join(data.projectsRoot, '1780659222896', 'agent-transcripts', composerId)
       mkdirSync(directory, { recursive: true })
-      writeFileSync(join(directory, `${composerId}.jsonl`), `${transcriptEntry('qtwx-mcp-7', 'check_messages')}\n`)
+      writeFileSync(join(directory, `${composerId}.jsonl`), `${transcriptEntry('7', 'check_messages')}\n`)
 
       expect(reader.readWorkspace(data.workspace, [binding('7')]).channelActivities?.['7']).toBeUndefined()
       now += 2_001

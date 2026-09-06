@@ -10,7 +10,7 @@ import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-me
 import type { DesktopSnapshot } from '../src/shared/desktop-api'
 
 function fixture(now = 10_000) {
-  const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-relay-')), 'channel.sqlite3')
+  const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-relay-')), 'channel.sqlite3')
   const repository = new SqliteChannelMessageRepository(path)
   let clock = now
   const relay = new ChannelMessageRelay(repository, () => clock)
@@ -549,7 +549,7 @@ describe('ChannelMessageRelay', () => {
   })
 
   it('rehydrates the persisted conversation scope on start after an app restart', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'qingtian-channel-restart-')), 'channel.sqlite3')
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-restart-')), 'channel.sqlite3')
     const first = new SqliteChannelMessageRepository(path)
     try {
       first.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
@@ -1034,10 +1034,10 @@ describe('ChannelMessageRelay', () => {
     try {
       repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
       const pluginSession = {
-        id: 'qingtian-channel:2',
+        id: 'sg-channel:2',
         channelId: '2',
         generation: 0,
-        displayName: 'QingTian CH-2',
+        displayName: 'SG Team CH-2',
         roleName: '未绑定外置团队',
         status: 'running' as const,
         currentTask: '',

@@ -29,7 +29,6 @@ import type {
 import type { RuntimeBinding } from '../../domain/team-control'
 import {
   BINDING_MARKER_PATTERN,
-  canonicalBindingMarker,
   cursorComposerBindingMarker,
   emptyCursorTelemetrySnapshot,
   type CursorChannelActivity,
@@ -50,11 +49,9 @@ const MAX_WORKSPACE_COMPOSERS = 250
 const MAX_TRANSCRIPT_HEAD_BYTES = 256 * 1024
 const MAX_TRANSCRIPT_TAIL_BYTES = 768 * 1024
 const MAX_TRANSCRIPT_SIGNAL_CACHE = 512
-const MAX_RUNTIME_STATE_BYTES = 16 * 1024
 const SAFE_COMPOSER_ID = /^[a-zA-Z0-9_-]{8,128}$/
 const SAFE_WORKSPACE_STORAGE_ID = /^[a-f0-9]{32}$/
 const FALLBACK_BINDING_CLOCK_SKEW_MS = 5 * 60 * 1_000
-const RUNTIME_STATE_FRESH_MS = 20_000
 const RECENT_TRANSCRIPT_GRACE_MS = 30_000
 // 长任务宽限：最后的 Agent 活动是干活特征（tool/assistant）时，转录在单个长命令
 // （构建/测试可达数分钟）执行期间暂停增长属正常——宽限期内不构成死亡证据
@@ -114,7 +111,6 @@ export interface CursorComposerTelemetryPaths {
 
 export interface CursorComposerTelemetryReaderOptions extends Partial<CursorComposerTelemetryPaths> {
   now?: () => number
-  isProcessAlive?: (pid: number) => boolean
   channelActivityPollMs?: number
   transcriptIndexTtlMs?: number
 }
@@ -123,24 +119,16 @@ export interface CursorComposerTelemetrySource {
   readWorkspace(workspacePath: string, bindings: RuntimeBinding[]): CursorTelemetrySnapshot
 }
 
+/** 环境变量覆盖只用于测试与排障；生产按平台默认的 Cursor 用户数据根目录。 */
 function defaultPaths(): CursorComposerTelemetryPaths {
-  const supportRoot = process.env.QINGTIAN_CURSOR_SUPPORT_ROOT?.trim() || cursorUserDataRoot()
+  const supportRoot = process.env.SG_TEAM_CURSOR_SUPPORT_ROOT?.trim() || cursorUserDataRoot()
   return {
-    globalStateDatabase: process.env.QINGTIAN_CURSOR_GLOBAL_STATE?.trim()
+    globalStateDatabase: process.env.SG_TEAM_CURSOR_GLOBAL_STATE?.trim()
       || join(supportRoot, 'User', 'globalStorage', 'state.vscdb'),
-    projectsRoot: process.env.QINGTIAN_CURSOR_PROJECTS_ROOT?.trim()
+    projectsRoot: process.env.SG_TEAM_CURSOR_PROJECTS_ROOT?.trim()
       || join(homedir(), '.cursor', 'projects'),
-    workspaceStorageRoot: process.env.QINGTIAN_CURSOR_WORKSPACE_STORAGE?.trim()
+    workspaceStorageRoot: process.env.SG_TEAM_CURSOR_WORKSPACE_STORAGE?.trim()
       || join(supportRoot, 'User', 'workspaceStorage')
-  }
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
 }
 
@@ -713,21 +701,10 @@ function emptyTranscriptSignals(): TranscriptSignals {
   return { bindingMarkers: new Set(), channelIds: new Set() }
 }
 
-function channelIdFromServer(server: unknown): string | undefined {
-  const value = boundedString(server, 512)
-  return value?.match(/(?:^|-)qtwx-mcp-(\d{1,12})(?:$|-)/)?.[1]
-}
-
 /** 统一服务器（SG Team）按工具参数 channel_id 区分通道——从调用参数提取通道号。 */
-function channelIdFromArguments(args: UnknownRecord | undefined): string | undefined {
-  const value = boundedString(args?.channel_id, 12)
-  return value && /^\d{1,12}$/.test(value) ? value : undefined
-}
-
 function channelIdFromToolInput(input: UnknownRecord | undefined): string | undefined {
-  return channelIdFromServer(input?.server)
-    ?? channelIdFromServer(input?.namespace)
-    ?? channelIdFromArguments(recordOf(input?.arguments))
+  const value = boundedString(recordOf(input?.arguments)?.channel_id, 12)
+  return value && /^\d{1,12}$/.test(value) ? value : undefined
 }
 
 function lastTranscriptAction(text: string): TranscriptAction | undefined {
@@ -869,13 +846,9 @@ function lastTranscriptAssistantProcess(text: string): ProcessBlock[] | undefine
 function extractTranscriptSignals(text: string): TranscriptSignals {
   const signals = emptyTranscriptSignals()
   for (const match of text.matchAll(BINDING_MARKER_PATTERN)) {
-    // 旧品牌标记规范化为现行格式，老转录仍能命中绑定匹配。
-    signals.bindingMarkers.add(canonicalBindingMarker(match[0]))
+    signals.bindingMarkers.add(match[0])
   }
-  for (const match of text.matchAll(/(?:qtwx-mcp|qingtian-team-ch)-(\d{1,12})/g)) {
-    signals.channelIds.add(match[1]!)
-  }
-  // 统一服务器（SG Team）形态：服务器名不含通道号，通道身份在工具参数 channel_id 里
+  // 统一服务器（SG Team）：服务器名不含通道号，通道身份在工具参数 channel_id 里
   for (const match of text.matchAll(/"channel_id"\s*:\s*"(\d{1,12})"/g)) {
     signals.channelIds.add(match[1]!)
   }
@@ -999,131 +972,14 @@ function transcriptPath(
   return transcriptPathGlobalFallback(paths, composer.telemetry.composerId, tried)
 }
 
-interface RuntimeLeaseState {
-  observed: boolean
-  connected: boolean
-  waiting: boolean
-  detail: string
-  /**
-   * 正面死亡/矛盾证据：心跳进程死亡、明确断开记录、连接属于旧运行时（所有权冲突）。
-   * false 表示仅时间陈旧——Agent 干活时不碰 MCP，租约自然过期（~20s），不构成死亡证据。
-   */
-  fatal: boolean
-}
-
-function readSmallJson(path: string): UnknownRecord | undefined {
-  try {
-    const stat = statSync(path)
-    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_RUNTIME_STATE_BYTES) return undefined
-    return recordOf(JSON.parse(readFileSync(path, 'utf8')))
-  } catch {
-    return undefined
-  }
-}
-
-function runtimeTimestamp(value: UnknownRecord | undefined, primary: string): number | undefined {
-  return finiteNumber(value?.[primary]) ?? finiteNumber(value?.updatedAt)
-}
-
-function runtimePid(value: UnknownRecord | undefined): number | undefined {
-  const pid = nonNegativeInteger(value?.pid)
-  return pid && pid > 0 ? pid : undefined
-}
-
-function runtimeStamp(value: UnknownRecord | undefined): string | undefined {
-  return boundedString(value?.runtimeStamp, 160)
-}
-
-function runtimeIdentityMatches(left: UnknownRecord | undefined, right: UnknownRecord | undefined): boolean {
-  const leftPid = runtimePid(left)
-  const rightPid = runtimePid(right)
-  const leftStamp = runtimeStamp(left)
-  const rightStamp = runtimeStamp(right)
-  return Boolean(
-    leftPid && rightPid && leftPid === rightPid
-    && leftStamp && rightStamp && leftStamp === rightStamp
-  )
-}
-
-function timestampIsFresh(value: number | undefined, now: number): boolean {
-  if (value === undefined) return false
-  return value <= now + 5_000 && value >= now - RUNTIME_STATE_FRESH_MS
-}
-
-function readRuntimeLease(
-  paths: CursorComposerTelemetryPaths,
-  workspaceStorageId: string | undefined,
-  channelId: string,
-  now: number,
-  isProcessAlive: (pid: number) => boolean
-): RuntimeLeaseState {
-  if (!workspaceStorageId || !/^\d{1,12}$/.test(channelId)) {
-    return { observed: false, connected: false, waiting: false, fatal: false, detail: '未找到当前工作区运行态' }
-  }
-  const channelRoot = join(
-    paths.workspaceStorageRoot,
-    workspaceStorageId,
-    'QingTian.qingtian-v2',
-    'runtime',
-    'messages',
-    's',
-    channelId
-  )
-  if (!existsSync(channelRoot)) {
-    return { observed: false, connected: false, waiting: false, fatal: false, detail: '当前工作区没有通道运行态' }
-  }
-
-  const heartbeat = readSmallJson(join(channelRoot, 'heartbeat.json'))
-  const connection = readSmallJson(join(channelRoot, 'connection.json'))
-  const waiting = readSmallJson(join(channelRoot, 'waiting.json'))
-  const heartbeatPid = runtimePid(heartbeat)
-  const heartbeatDead = !heartbeatPid || !isProcessAlive(heartbeatPid)
-  if (heartbeatDead || !timestampIsFresh(runtimeTimestamp(heartbeat, 'lastSeen'), now)) {
-    // 进程死亡是正面死亡证据；仅时间陈旧（进程仍在）不是——可能只是写入节奏暂停
-    return {
-      observed: true,
-      connected: false,
-      waiting: false,
-      fatal: heartbeatDead,
-      detail: heartbeatDead ? 'MCP 运行时心跳已失效' : 'MCP 运行时心跳陈旧（进程仍在）'
-    }
-  }
-  const waitingActive = waiting?.active === true
-    && timestampIsFresh(runtimeTimestamp(waiting, 'updatedAt'), now)
-    && runtimeIdentityMatches(heartbeat, waiting)
-  const connectionDisconnected = Boolean(connection) && connection?.active !== true
-  const connectionIdentityConflict = Boolean(connection) && !runtimeIdentityMatches(heartbeat, connection)
-  if (
-    connectionDisconnected
-    || connectionIdentityConflict
-    || !timestampIsFresh(runtimeTimestamp(connection, 'updatedAt'), now)
-  ) {
-    // 明确断开记录或所有权冲突 = 正面矛盾证据（fatal）；
-    // 仅 updatedAt 超时 = Agent 干活中未碰 MCP 的正常现象（非 fatal）
-    const fatal = connectionDisconnected || connectionIdentityConflict
-    return {
-      observed: true,
-      connected: false,
-      waiting: waitingActive,
-      fatal,
-      detail: fatal
-        ? 'MCP 进程仍在，但 Agent 连接属于旧运行时或已结束'
-        : 'MCP 进程仍在，Agent 连接租约随工作刷新暂停（时间陈旧）'
-    }
-  }
-  return {
-    observed: true,
-    connected: true,
-    waiting: waitingActive,
-    fatal: false,
-    detail: waitingActive ? '当前 Cursor Agent 正在长轮询待命' : '当前 Cursor Agent 正在执行'
-  }
-}
-
+/**
+ * 由转录最后动作 + 转录/Composer 新鲜度投影 Agent 活动状态。等待中/干活中的实时
+ * 区分不在这里：长轮询是否在途由内嵌 SG Team server 自己知道（AgentSession.waiting），
+ * 这里只负责"最后动作是什么、多久没动了"这一层证据。
+ */
 function composerActivity(
   signals: TranscriptSignals,
   expectedChannelId: string | undefined,
-  lease: RuntimeLeaseState,
   now: number,
   composerLastUpdatedAt?: number
 ): CursorComposerActivity {
@@ -1165,59 +1021,23 @@ function composerActivity(
       channelId: expectedChannelId ?? action.channelId
     }
   }
-  // 正面死亡/矛盾证据（心跳进程死亡、明确断开、连接属于旧运行时）才允许直接判 stopped；
-  // 仅时间陈旧不构成死亡证据——Agent 干活时不碰 MCP，租约自然过期（~20s）
-  if (lease.observed && !lease.connected && lease.fatal) {
-    return {
-      state: 'stopped',
-      detail: lease.detail,
-      observedAt,
-      channelId: expectedChannelId ?? action.channelId
-    }
-  }
   const transcriptAge = observedAt === undefined ? undefined : Math.max(0, now - observedAt)
   const transcriptRecent = transcriptAge !== undefined && transcriptAge <= RECENT_TRANSCRIPT_GRACE_MS
   if (action.kind === 'check_messages') {
-    if (lease.observed && !lease.waiting) {
-      // 长轮询刚结束 = 接到活开始干：思考/生成阶段不会产生新 action，但转录文件仍在增长
-      if (transcriptRecent) {
-        return {
-          state: 'active',
-          detail: '长轮询已结束，Agent 正在处理（转录活动新鲜）',
-          observedAt,
-          channelId: expectedChannelId ?? action.channelId
-        }
-      }
-      // 等待租约结束最常见的原因就是“刚收到消息开始干活”。如果后续长命令
-      // 暂时没有转录增量，no-waiting 仍不是死亡证据；正面死亡由上方 fatal
-      // 租约、Cursor terminal 状态或 composer 消失承担。
-      return transcriptAge !== undefined && transcriptAge <= WORK_ACTIVITY_GRACE_MS
-        ? {
-            state: 'unknown',
-            workInProgress: true,
-            detail: '长轮询已结束，Agent 可能正在执行长任务（等待正面活动或终止证据）',
-            observedAt,
-            channelId: expectedChannelId ?? action.channelId
-          }
-        : {
-            state: 'unknown',
-            detail: '长轮询已结束，当前缺少 Agent 活动或终止证据',
-            observedAt,
-            channelId: expectedChannelId ?? action.channelId
-          }
-    }
+    // 最后动作是 check_messages：Agent 进入了长轮询待命。轮询是否已经返回、是否
+    // 已开始干活，由内嵌 server 的等待登记表实时给出，不在转录里推断。
     return {
       state: 'waiting',
-      detail: 'Cursor 会话与当前 MCP 等待租约均有效',
+      detail: 'Cursor 会话最后一步是 check_messages，Agent 处于长轮询待命',
       observedAt,
       channelId: expectedChannelId ?? action.channelId
     }
   }
-  // 干活特征（tool/assistant）：转录增长是硬生存证据，优先级高于租约时间陈旧
-  if (transcriptRecent || lease.connected) {
+  // 干活特征（tool/assistant）：转录增长是硬生存证据
+  if (transcriptRecent) {
     return {
       state: 'active',
-      detail: lease.connected ? lease.detail : 'Cursor 会话刚刚产生新的 Agent 活动',
+      detail: 'Cursor 会话刚刚产生新的 Agent 活动',
       observedAt,
       channelId: expectedChannelId ?? action.channelId
     }
@@ -1407,7 +1227,6 @@ function bindingCandidates(
 export class CursorComposerTelemetryReader implements CursorComposerTelemetrySource {
   private readonly paths: CursorComposerTelemetryPaths
   private readonly now: () => number
-  private readonly isProcessAlive: (pid: number) => boolean
   private readonly transcriptSignalCache = new Map<string, CachedTranscriptSignals>()
   private readonly channelSignalCache = new Map<string, TranscriptSignals & { path: string }>()
   private readonly channelActivityPollMs: number
@@ -1444,14 +1263,12 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
   constructor(options: CursorComposerTelemetryReaderOptions = {}) {
     const {
       now,
-      isProcessAlive,
       channelActivityPollMs,
       transcriptIndexTtlMs,
       ...paths
     } = options
     this.paths = { ...defaultPaths(), ...paths }
     this.now = now ?? Date.now
-    this.isProcessAlive = isProcessAlive ?? processIsAlive
     this.channelActivityPollMs = Math.max(0, channelActivityPollMs ?? DEFAULT_CHANNEL_ACTIVITY_POLL_MS)
     this.transcriptIndexTtlMs = Math.max(0, transcriptIndexTtlMs ?? DEFAULT_TRANSCRIPT_INDEX_TTL_MS)
   }
@@ -1766,15 +1583,6 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
       const composers = allComposers.map((composer): CursorComposerTelemetry => {
         const binding = bindingByComposer.get(composer.telemetry.composerId)
         const signals = transcriptSignals.get(composer.telemetry.composerId) ?? emptyTranscriptSignals()
-        const lease = binding
-          ? readRuntimeLease(
-              this.paths,
-              composer.workspaceStorageId,
-              binding.channelId,
-              now,
-              this.isProcessAlive
-            )
-          : { observed: false, connected: false, waiting: false, fatal: false, detail: '会话尚未绑定通道' }
         return {
           ...composer.telemetry,
           modelProfile: persistentDetails.profiles.get(composer.telemetry.composerId),
@@ -1802,7 +1610,7 @@ export class CursorComposerTelemetryReader implements CursorComposerTelemetrySou
             : undefined,
           activity: composer.persistedActivity
             ? { ...composer.persistedActivity, channelId: binding?.channelId }
-            : composerActivity(signals, binding?.channelId, lease, now, composer.telemetry.lastUpdatedAt)
+            : composerActivity(signals, binding?.channelId, now, composer.telemetry.lastUpdatedAt)
         }
       })
       return this.cacheSnapshotRun(fingerprint, normalizedWorkspace, bindingsKey, activitiesKey, {

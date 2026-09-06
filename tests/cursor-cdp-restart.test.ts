@@ -89,7 +89,7 @@ describe('restartCursorWithCdp', () => {
   })
 
   it('带工作区路径时：直接打开 IDE 工作区并附加端口参数', async () => {
-    const workspacePath = mkdtempSync(join(tmpdir(), 'qingtian-cdp-workspace-'))
+    const workspacePath = mkdtempSync(join(tmpdir(), 'sg-cdp-workspace-'))
     const harness = createHarness({ cursorProcesses: 0, portReadyAfter: 1 })
     const result = await restartCursorWithCdp({
       port: 9333,
@@ -154,7 +154,7 @@ describe('restartCursorWithCdp', () => {
     const harness = createHarness({ cursorProcesses: 2 })
     const result = await restartCursorWithCdp({
       port: 9333,
-      workspacePath: '/path/that/does/not/exist/qingtian',
+      workspacePath: '/path/that/does/not/exist/demo-app',
       platform: 'darwin',
       execFileFn: harness.execFileFn as never,
       fetchFn: harness.fetchFn,

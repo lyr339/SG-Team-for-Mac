@@ -21,7 +21,7 @@ import { nativeUsagePayload } from './cursor-native-usage'
  */
 
 export const CURSOR_CDP_DEFAULT_PORT = 9333
-export const CURSOR_CDP_PORT_ENV = 'QINGTIAN_CURSOR_CDP_PORT'
+export const CURSOR_CDP_PORT_ENV = 'SG_TEAM_CURSOR_CDP_PORT'
 /** 编排器据此为计划项标记 code: 'cdp_unavailable'，UI 展示一键重启 Cursor 引导。 */
 export const CURSOR_CDP_UNAVAILABLE_HINT = '未检测到 Cursor 调试端口'
 
@@ -447,7 +447,7 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
         if (item && item.composerId) summaries.set(String(item.composerId), item);
       }
     } catch (e) {}
-    const TRANSPORT_TOOLS = ['check_messages', 'record_reply', 'wait_messages', 'qingtian'];
+    const TRANSPORT_TOOLS = ${JSON.stringify(TRANSPORT_TOOL_NAMES)};
     function isTransportTool(name) {
       const lower = String(name || '').toLowerCase();
       return TRANSPORT_TOOLS.some(item => (
@@ -640,29 +640,23 @@ function parseWindowInfo(value: unknown): CursorCdpWindowInfo | undefined {
 const STREAM_TOOL_KINDS = new Set(['command', 'read', 'search', 'edit', 'write', 'browser', 'mcp', 'todo', 'other'])
 
 /**
- * 内部协议工具名单与匹配规则——只收敛纯传输噪音：
- * check_messages / record_reply / wait_messages / qingtian（含旧服务器前缀形态）。
- * team_task / team_run 等会改变用户可见工作状态的工具必须进过程流
- * （Cursor 原生会话里同样可见）；它们调用频率低，不构成刷屏源。
+ * 内部协议工具名单与匹配规则——只收敛纯传输噪音：check_messages / record_reply
+ * （含服务器前缀形态）。team_task / team_run 等会改变用户可见工作状态的工具必须进
+ * 过程流（Cursor 原生会话里同样可见）；它们调用频率低，不构成刷屏源。
  * toolFormerData.name 形如 'mcp-SG Team-record_reply'——后缀匹配同时覆盖裸名形态。
  */
-const INTERNAL_STREAM_TOOL_NAMES = new Set([
-  'check_messages',
-  'record_reply',
-  'wait_messages',
-  'qingtian'
-])
+export const TRANSPORT_TOOL_NAMES = ['check_messages', 'record_reply'] as const
 
 function isInternalStreamTool(toolName: string): boolean {
   const lower = toolName.trim().toLowerCase()
-  return [...INTERNAL_STREAM_TOOL_NAMES].some((name) => (
+  return TRANSPORT_TOOL_NAMES.some((name) => (
     lower === name || lower.endsWith(`-${name}`) || lower.endsWith(`_${name}`)
   ))
 }
 
 /**
- * 内部协议工具判定（check_messages / record_reply / wait_messages / qingtian，
- * 含服务器前缀形态）。供转录兜底等旁路解析与主过滤共用同一名单。
+ * 内部协议工具判定（check_messages / record_reply，含服务器前缀形态）。
+ * 供转录兜底等旁路解析与主过滤共用同一名单。
  */
 export function isCursorInternalToolName(toolName: string): boolean {
   return isInternalStreamTool(toolName) || toolName.trim().toLowerCase() === 'mcptoolcall'

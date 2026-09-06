@@ -10,12 +10,13 @@ interface HarnessProps {
   done: boolean
   firstFrameDoneFull?: boolean
   immediate?: boolean
+  hydrate?: boolean
 }
 
-function Harness({ id, text, done, firstFrameDoneFull, immediate }: HarnessProps): React.JSX.Element {
+function Harness({ id, text, done, firstFrameDoneFull, immediate, hydrate }: HarnessProps): React.JSX.Element {
   const visible = useStreamingText(
     { id, text, done },
-    { firstFrameDoneFull, immediate }
+    { firstFrameDoneFull, immediate, hydrate }
   )
   return <p data-testid="visible">{visible}</p>
 }
@@ -107,6 +108,41 @@ describe('useStreamingText（阶段 G：共享打字机播放器）', () => {
 
     render({ id: 'r2', text: '封口卡正文', done: true, immediate: true })
     expect(visibleText()).toBe('封口卡正文')
+  })
+
+  it('hydrates text that existed before the viewer arrived and only plays what arrives afterwards', () => {
+    // 切换会话进入正在生成的回合：已流出的正文（streaming，未 done）直接落位，不重放。
+    const existing = '切进来之前就已经流出的三行内容，不应该再被打字机重放一遍'
+    render({ id: 'live-turn', text: existing, done: false, hydrate: true })
+    expect(visibleText()).toBe(existing)
+    act(() => { vi.advanceTimersByTime(200) })
+    expect(visibleText()).toBe(existing)
+
+    // 之后到达的增量照常打字：可见文本始终以已落位部分为前缀、单调增长。
+    const grown = `${existing}——这是切进来之后新生成的一段。`
+    render({ id: 'live-turn', text: grown, done: false, hydrate: true })
+    expect(visibleText()).toBe(existing)
+    let previous = existing
+    for (let round = 0; round < 40; round += 1) {
+      act(() => { vi.advanceTimersByTime(48) })
+      const current = visibleText()
+      expect(current.startsWith(existing)).toBe(true)
+      expect(grown.startsWith(current)).toBe(true)
+      expect(current.length).toBeGreaterThanOrEqual(previous.length)
+      previous = current
+      if (current === grown) break
+    }
+    expect(visibleText()).toBe(grown)
+  })
+
+  it('hydrate is a mount-time decision: a new source id afterwards still plays from empty', () => {
+    render({ id: 'turn-a', text: '已在屏幕上的回合', done: true, hydrate: true })
+    expect(visibleText()).toBe('已在屏幕上的回合')
+    // 观看期间换成新来源（新到达的块）：直播语义，从空串播放。
+    render({ id: 'turn-b', text: '观看期间新到达的块', done: true, hydrate: true })
+    expect(visibleText()).toBe('')
+    act(() => { vi.advanceTimersByTime(800) })
+    expect(visibleText()).toBe('观看期间新到达的块')
   })
 
   it('resets playback when the source id changes', () => {
