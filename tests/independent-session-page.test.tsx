@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TeamControlSnapshot, TeamMemberView } from '../src/domain/team-control'
+import type { CreateIndependentSessionsInput } from '../src/shared/desktop-api'
 import { IndependentSessionPage } from '../src/renderer/src/lobby/IndependentSessionPage'
 import { desktopSnapshot, teamControlSnapshot } from '../src/renderer/src/preview/mock-data'
 
@@ -63,9 +64,9 @@ describe('IndependentSessionPage 软守卫（结束批次 / 新建批次 / 替�
   }
   const dialog = () => container.querySelector('[role="alertdialog"]')
 
-  const render = async (team: TeamControlSnapshot, detected = { id: 'wedge-demo', name: 'wedge-demo', path: '/workspace/wedge-demo', channelIds: [] as string[] }) => {
+  const render = async (team: TeamControlSnapshot, detected = { id: 'wedge-demo', name: 'wedge-demo', path: '/workspace/wedge-demo' }) => {
     const onEndRun = vi.fn(async () => {})
-    const onCreate = vi.fn(async () => donePlan)
+    const onCreate = vi.fn(async (_input: CreateIndependentSessionsInput) => donePlan)
     const onLaunch = vi.fn(async () => donePlan)
     const onOpenSessions = vi.fn()
     await act(async () => root.render(
@@ -145,7 +146,7 @@ describe('IndependentSessionPage 软守卫（结束批次 / 新建批次 / 替�
     expect(onCreate).toHaveBeenCalledTimes(1)
     // 非独立模式下以 Cursor 当前识别到的工程为准（detectedWorkspace 优先于旧 run 的 workspace）。
     expect(onCreate.mock.calls[0]?.[0]).toMatchObject({ workspacePath: '/workspace/wedge-demo' })
-    expect((onCreate.mock.calls[0]?.[0] as { sessions: unknown[] }).sessions).toHaveLength(3)
+    expect(onCreate.mock.calls[0]?.[0].sessions).toHaveLength(3)
   })
 
   it('creates directly over a team run whose agents are all offline', async () => {
@@ -158,7 +159,7 @@ describe('IndependentSessionPage 软守卫（结束批次 / 新建批次 / 替�
 
   it('Cursor 已换工程：创建新工程批次而不是补齐旧工程通道，替换前确认', async () => {
     const team = independentTeam({ online: true })
-    const next = { id: 'project-b', name: '新工程 B', path: '/projects/b', channelIds: [] }
+    const next = { id: 'project-b', name: '新工程 B', path: '/projects/b' }
     const { onCreate, onLaunch } = await render(team, next)
     expect(container.querySelector('.independent-config__workspace')?.textContent).toContain('/projects/b')
     await act(async () => buttonNamed('批量创建独立会话（3）').click())

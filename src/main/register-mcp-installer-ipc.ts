@@ -6,7 +6,6 @@ import { IPC } from '../shared/desktop-api'
 import { assertTrustedSender } from './ipc-security'
 import { resolveTaskMcpServerPath } from './task-mcp-runtime'
 import type { SqliteChannelMessageRepository } from '../infrastructure/channel-messages/sqlite-channel-message-repository'
-import { migratePluginQueueFile } from '../infrastructure/channel-messages/plugin-queue-migration'
 
 /**
  * 团队 MCP 接入 IPC（S3-2 global 模式）：
@@ -52,20 +51,13 @@ export function registerMcpInstallerIpc(
       activateAgents: (batch) => teamService.recordInstallation(batch)
     })
     // 一体化接管落成：SG Team 统一条目已指向拾光内嵌 server，
-    // 登记内嵌通道，发送链路与活性投影自此改道 SQLite；
-    // 同步迁移插件文件队列中的未读存量，防止切换后消息滞留。
+    // 登记内嵌通道，发送链路与活性投影自此改道 SQLite。
     if (channelMessages) {
       channelMessages.replaceEmbeddedChannels(
         result.workspaceId,
         result.workspacePath,
         result.registrations.agents.map((agent) => agent.channelId)
       )
-      for (const agent of result.registrations.agents) {
-        const migration = migratePluginQueueFile(channelMessages, agent.channelId)
-        if (!migration.skipped) {
-          process.stderr.write(`[channel-migration] CH-${agent.channelId}: ${migration.detail}\n`)
-        }
-      }
     }
     return {
       ok: true,

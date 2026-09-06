@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import type { TeamControlService } from '../application/team-control-service'
 import type { DesktopSessionBridge } from '../application/desktop-session-service'
 import { CursorSkillCatalog } from '../infrastructure/cursor/cursor-skill-catalog'
-import type { CursorWorkspaceDetector } from '../infrastructure/cursor/cursor-workspace-detector'
 import { workspaceIdentityOf } from '../infrastructure/cursor/workspace-identity'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES, workspaceRunMode, type TeamControlSnapshot } from '../domain/team-control'
 import { IPC, type CreateIndependentSessionsInput, type CreateTeamInput, type TeamSetupDraft } from '../shared/desktop-api'
@@ -30,7 +29,8 @@ function requiredString(value: unknown, field: string, maxLength: number): strin
 
 export interface TeamControlIpcOptions {
   onRunEnded?: (snapshot: TeamControlSnapshot) => void | Promise<void>
-  detectCurrentWorkspace?: () => Promise<CursorWorkspaceDetection>
+  /** Cursor 当前 IDE 窗口的工作区（CDP 读窗口配置）：展示、组队草稿与创建前核对的唯一来源。 */
+  detectCurrentWorkspace: () => Promise<CursorWorkspaceDetection>
   /** 一键会话创建是否仍在进行：创建/替换 run 期间换拓扑会让编排器对着错误的席位收尾。 */
   isSessionLaunchRunning?: () => boolean
 }
@@ -38,9 +38,8 @@ export interface TeamControlIpcOptions {
 export function registerTeamControlIpc(
   service: TeamControlService,
   bridge: Pick<DesktopSessionBridge, 'getSnapshot'>,
-  workspaceDetector: CursorWorkspaceDetector,
   getWindow: () => BrowserWindow | undefined,
-  options: TeamControlIpcOptions = {}
+  options: TeamControlIpcOptions
 ): () => void {
   const assertNoSessionLaunch = (): void => {
     if (options.isSessionLaunchRunning?.()) {
@@ -60,8 +59,7 @@ export function registerTeamControlIpc(
   }
   const prepareDraft = (
     workspace: { id: string; name: string; path: string },
-    initialMembers?: TeamSetupDraft['initialMembers'],
-    detectedChannelIds: string[] = []
+    initialMembers?: TeamSetupDraft['initialMembers']
   ): TeamSetupDraft => {
     pruneDrafts()
     const bridgeSnapshot = bridge.getSnapshot()
@@ -73,18 +71,6 @@ export function registerTeamControlIpc(
       waiting: session.waiting,
       queueDepth: session.queueDepth
     }]))
-    for (const channelId of detectedChannelIds) {
-      if (!channelMap.has(channelId)) {
-        channelMap.set(channelId, {
-          channelId,
-          displayName: `SG Team CH-${channelId}`,
-          status: 'offline',
-          online: false,
-          waiting: false,
-          queueDepth: 0
-        })
-      }
-    }
     for (const member of initialMembers ?? []) {
       if (!channelMap.has(member.channelId)) {
         channelMap.set(member.channelId, {
@@ -131,11 +117,11 @@ export function registerTeamControlIpc(
   })
   ipcMain.handle(IPC.teamControlDetectWorkspace, (event) => {
     assertTrustedSender(event, getWindow)
-    return options.detectCurrentWorkspace ? options.detectCurrentWorkspace() : workspaceDetector.detect()
+    return options.detectCurrentWorkspace()
   })
   ipcMain.handle(IPC.teamControlPrepareDetectedWorkspace, async (event) => {
     assertTrustedSender(event, getWindow)
-    const detection = options.detectCurrentWorkspace ? await options.detectCurrentWorkspace() : workspaceDetector.detect()
+    const detection = await options.detectCurrentWorkspace()
     if (detection.state === 'ambiguous') {
       throw new Error(detection.detail)
     }
@@ -152,7 +138,7 @@ export function registerTeamControlIpc(
     // 走组队草稿——createTeam 时 configureWorkspace 会原子替换独立 run。
     return {
       kind: 'setup',
-      draft: prepareDraft(workspace, undefined, workspace.channelIds)
+      draft: prepareDraft(workspace)
     } as const
   })
   ipcMain.handle(IPC.teamControlChooseWorkspace, async (event) => {
@@ -224,14 +210,12 @@ export function registerTeamControlIpc(
     const workspacePath = requiredString(input.workspacePath, '工作区路径', 2_000)
     const workspace = workspaceIdentityOf(workspacePath)
     // 在替换旧 run / 签发新身份之前核对窗口；检测过程不产生业务写入。
-    if (options.detectCurrentWorkspace) {
-      const detected = await options.detectCurrentWorkspace()
-      if (detected.state !== 'detected' || !detected.workspace) throw new Error(detected.detail)
-      if (detected.workspace.id !== workspace.id) {
-        throw new Error(`Cursor 当前工程为「${detected.workspace.name}」，创建配置仍为「${workspace.name}」。请按当前工程重新发起；原批次已保留。`)
-      }
-      assertNoSessionLaunch()
+    const detected = await options.detectCurrentWorkspace()
+    if (detected.state !== 'detected' || !detected.workspace) throw new Error(detected.detail)
+    if (detected.workspace.id !== workspace.id) {
+      throw new Error(`Cursor 当前工程为「${detected.workspace.name}」，创建配置仍为「${workspace.name}」。请按当前工程重新发起；原批次已保留。`)
     }
+    assertNoSessionLaunch()
     const members = resolveIndependentSessionMembers(
       bridge.getSnapshot().cursorModels ?? [],
       input as CreateIndependentSessionsInput

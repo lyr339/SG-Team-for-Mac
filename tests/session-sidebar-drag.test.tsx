@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { DesktopSnapshot } from '../../shared/desktop-api'
+import type { DesktopSnapshot } from '../src/shared/desktop-api'
 import { SessionSidebar } from '../src/renderer/src/SessionSidebar'
 import {
   applySessionOrder,
@@ -179,7 +179,7 @@ describe('SessionSidebar 拖拽重排', () => {
     expect(container.querySelector('.session-group.is-waiting .session-group__list')).toBeNull()
     expect(JSON.parse(localStorage.getItem('shiguang.sessionGroups.collapsed.v1')!)).toContain('waiting')
 
-    const offlineFilter = Array.from(container.querySelectorAll('.session-filters button'))
+    const offlineFilter = Array.from(container.querySelectorAll<HTMLButtonElement>('.session-filters button'))
       .find((button) => button.textContent?.includes('离线'))!
     await act(async () => offlineFilter.click())
     expect(container.querySelectorAll('.session-group__header')).toHaveLength(0)
@@ -303,7 +303,7 @@ describe('SessionSidebar 拖拽重排', () => {
         />
       )
     })
-    const onlineButton = Array.from(container.querySelectorAll('.session-filters button'))
+    const onlineButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.session-filters button'))
       .find((button) => button.textContent?.includes('在线'))!
     await act(async () => { onlineButton.click() })
     const cards = Array.from(container.querySelectorAll('.rail-session-card')) as HTMLButtonElement[]

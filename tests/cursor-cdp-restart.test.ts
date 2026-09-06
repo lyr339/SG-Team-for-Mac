@@ -35,6 +35,10 @@ function createHarness(options: { cursorProcesses?: number; portReadyAfter?: num
       exec.cursorProcesses = 0
       return { stdout: '', stderr: '' }
     }
+    if (file === 'powershell.exe') {
+      // Get-Process：运行中回显可执行路径（全用户安装位置），未运行为空。
+      return { stdout: exec.cursorProcesses > 0 ? 'C:\\Program Files\\cursor\\Cursor.exe\r\n' : '', stderr: '' }
+    }
     if (file === 'open' || file === 'cmd.exe') {
       if (exec.failOpen) throw new Error('launch failed')
       exec.openCalled = true
@@ -202,6 +206,11 @@ describe('restartCursorWithCdp', () => {
     // 优雅退出不带 /F（保留用户未保存内容——与 mac osascript quit 语义对齐）
     expect(harness.exec.calls.some((call) => call.startsWith('taskkill /F'))).toBe(false)
     expect(startIndex).toBeGreaterThan(killIndex)
+    // 退出前采集到的可执行路径用于拉起：全用户安装（Program Files）没有 App Paths，裸名会找不到。
+    const probeIndex = harness.exec.calls.findIndex((call) => call.startsWith('powershell.exe'))
+    expect(probeIndex).toBeGreaterThanOrEqual(0)
+    expect(probeIndex).toBeLessThan(killIndex)
+    expect(harness.exec.calls[startIndex]).toContain('start "" "C:\\Program Files\\cursor\\Cursor.exe"')
   })
 
   it('Windows：tasklist 探测真实失败 → fail-closed 拒绝重启，绝不双开 Cursor', async () => {

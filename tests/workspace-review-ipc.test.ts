@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { WorkspaceReviewReader } from '../src/infrastructure/git/workspace-review-reader'
 import type { WorkspaceReviewWatcher } from '../src/infrastructure/git/workspace-review-watcher'
-import { registerWorkspaceReviewIpc } from '../src/main/register-workspace-review-ipc'
+import { editorFileUrl, registerWorkspaceReviewIpc } from '../src/main/register-workspace-review-ipc'
 import { IPC } from '../src/shared/desktop-api'
 
 const { handlers, shell } = vi.hoisted(() => ({
@@ -120,5 +120,11 @@ describe('workspace review IPC', () => {
     } finally {
       dispose()
     }
+  })
+
+  it('builds editor deep links with URL-style paths on both platforms', () => {
+    expect(editorFileUrl('cursor', '/repo/src/a b.ts', 12)).toBe('cursor://file/repo/src/a%20b.ts:12')
+    expect(editorFileUrl('cursor', 'C:\\Users\\demo\\repo\\src\\a.ts')).toBe('cursor://file/C:/Users/demo/repo/src/a.ts')
+    expect(editorFileUrl('cursor', 'C:\\Users\\demo\\repo\\中文\\a.ts', 3)).toBe('cursor://file/C:/Users/demo/repo/%E4%B8%AD%E6%96%87/a.ts:3')
   })
 })

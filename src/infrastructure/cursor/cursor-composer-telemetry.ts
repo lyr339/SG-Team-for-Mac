@@ -18,6 +18,7 @@ import type {
   ContextUsageBreakdown
 } from '../../domain/agent-session'
 import { badgesFromParameters, contextTokensFromValue, readableParameterValue } from '../../shared/model-badges'
+import { cursorUserDataRoot } from './cursor-install-paths'
 import { sanitizeModelDisplayText } from '../../domain/model-output-sanitizer'
 import type {
   CursorModelOption,
@@ -123,12 +124,7 @@ export interface CursorComposerTelemetrySource {
 }
 
 function defaultPaths(): CursorComposerTelemetryPaths {
-  // 平台分离：mac = ~/Library/Application Support/Cursor；win = %APPDATA%\Cursor
-  //（与 cursor-update-preferences 的解析规则一致）
-  const supportRoot = process.env.QINGTIAN_CURSOR_SUPPORT_ROOT?.trim()
-    || (process.platform === 'win32'
-      ? join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'Cursor')
-      : join(homedir(), 'Library', 'Application Support', 'Cursor'))
+  const supportRoot = process.env.QINGTIAN_CURSOR_SUPPORT_ROOT?.trim() || cursorUserDataRoot()
   return {
     globalStateDatabase: process.env.QINGTIAN_CURSOR_GLOBAL_STATE?.trim()
       || join(supportRoot, 'User', 'globalStorage', 'state.vscdb'),
@@ -684,12 +680,19 @@ function parseComposer(header: unknown, expectedWorkspace: string): ParsedCompos
 
 export function cursorProjectDirectoryNames(workspacePath: string): string[] {
   const withoutRoot = normalize(workspacePath).replace(/^[/\\]+/, '')
-  const separatorSlug = withoutRoot.replace(/[:/\\]+/g, '-')
-  const strictSlug = withoutRoot.replace(/[^\p{L}\p{N}._-]+/gu, '-')
-  // 实测（Cursor 3.6，2026-09）：非 ASCII 字符被直接丢弃而不是替换——
-  // `/Users/lyr/Downloads/20260904测试` → `Users-lyr-Downloads-20260904`。
-  const asciiSlug = separatorSlug.replace(/[^A-Za-z0-9._-]+/g, '')
-  return [...new Set([asciiSlug, separatorSlug, strictSlug].filter(Boolean))]
+  // Windows 实测（Cursor 3.18）：盘符小写后再拼——`C:\Users\admin\demo` → `c-Users-admin-demo`；
+  // 原大小写形态保留为候选（文件系统大小写不敏感，仅影响目录名精确比对）。
+  const forms = /^[A-Z]:/.test(withoutRoot)
+    ? [withoutRoot[0]!.toLowerCase() + withoutRoot.slice(1), withoutRoot]
+    : [withoutRoot]
+  return [...new Set(forms.flatMap((form) => {
+    const separatorSlug = form.replace(/[:/\\]+/g, '-')
+    const strictSlug = form.replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    // 实测（Cursor 3.6，2026-09）：非 ASCII 字符被直接丢弃而不是替换——
+    // `/Users/lyr/Downloads/20260904测试` → `Users-lyr-Downloads-20260904`。
+    const asciiSlug = separatorSlug.replace(/[^A-Za-z0-9._-]+/g, '')
+    return [asciiSlug, separatorSlug, strictSlug]
+  }).filter(Boolean))]
 }
 
 /** JSONL 记录数（非空行）；超大文件只读不解析，失败返回 undefined。 */

@@ -80,14 +80,11 @@ function cursorWorkspaceFingerprint(detection?: CursorWorkspaceDetection): strin
   if (!detection) return ''
   return JSON.stringify({
     state: detection.state,
-    source: detection.source,
-    confidence: detection.confidence,
     workspace: detection.workspace && {
       id: detection.workspace.id,
       name: detection.workspace.name,
       path: detection.workspace.path,
-      cursorWorkspaceId: detection.workspace.cursorWorkspaceId,
-      channelIds: detection.workspace.channelIds
+      cursorWorkspaceId: detection.workspace.cursorWorkspaceId
     },
     candidates: detection.candidates.map((candidate) => candidate.id),
     detail: detection.detail
@@ -626,7 +623,7 @@ export function App(): React.JSX.Element {
           ))
         }
       } catch {
-        if (!disposed) setCursorWorkspace({ state: 'unavailable', source: 'cursor-window', confidence: 'none', candidates: [], detail: 'Cursor 检测连接未就绪', observedAt: Date.now() })
+        if (!disposed) setCursorWorkspace({ state: 'unavailable', candidates: [], detail: 'Cursor 检测连接未就绪', observedAt: Date.now() })
       } finally {
         polling = false
       }

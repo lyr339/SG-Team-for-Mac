@@ -38,7 +38,7 @@
 | # | 项 | 优先级 | 成本 | 依据 |
 |---|----|--------|------|------|
 | 4.1 | ✅ 已完成：文件大小格式化抽到 shared 唯一出口，renderer 继续 re-export，domain 投递清单直接复用 | P1 | S | shared/format-file-size.ts |
-| 4.2 | 死代码普查：跑 ts-prune / knip 一次；产物与空目录见 1.1/1.2 | P2 | S | — |
+| 4.2 | ✅ 已完成：knip 接入（`npm run lint:dead`，CI 同跑）；清除退役插件时代的工作区探测器、桥接扩展卸载器、插件队列迁移与旧图标；tsx 测试纳入 typecheck | P2 | S | knip.json / ci.yml |
 | 4.3 | 类型严格性保持：strict + noUncheckedIndexedAccess 已开，src 零 `: any` / `as any` ✅（现状良好，仅守护） | — | — | grep 实测 |
 
 ## 5. 测试与发布质量

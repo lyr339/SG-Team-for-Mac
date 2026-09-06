@@ -22,7 +22,6 @@ import { SqliteTeamContinuityRepository } from '../infrastructure/team-continuit
 import { SqliteChannelMessageRepository } from '../infrastructure/channel-messages/sqlite-channel-message-repository'
 import { ChannelMessageRelay } from '../application/channel-message-relay'
 import { reconcileGlobalChannelServers } from '../infrastructure/cursor/global-mcp-registrar'
-import { uninstallRetiredBridgeExtension } from './legacy-cleanup'
 import { resolveTaskMcpServerPath } from './task-mcp-runtime'
 import { TeamContinuityService } from '../application/team-continuity-service'
 import { TeamFailoverService } from '../application/team-failover-service'
@@ -65,7 +64,6 @@ import type { AccountAutomationBrowserHost } from '../infrastructure/cursor/acco
 import { AccountAutomationService } from '../application/account-automation-service'
 import { AccountAutomationSettingsStore } from '../application/account-automation-store'
 import { registerAccountAutomationIpc } from './register-account-automation-ipc'
-import { CursorWorkspaceDetector } from '../infrastructure/cursor/cursor-workspace-detector'
 import { LocalSessionBridge } from '../application/local-session-bridge'
 import { IPC } from '../shared/desktop-api'
 import { createTeamAgentLaunchPromptPort } from '../application/team-agent-launch-prompts'
@@ -190,7 +188,7 @@ function setMacDockIcon(): void {
   if (process.platform !== 'darwin' || !app.dock) return
   const iconPath = app.isPackaged
     ? join(process.resourcesPath, 'dock-icon.png')
-    : join(__dirname, '../../build/icon-team-1024.png')
+    : join(__dirname, '../../build/icon-shiguang-1024.png')
   if (!existsSync(iconPath)) return
   try {
     const icon = nativeImage.createFromPath(iconPath)
@@ -272,10 +270,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   } catch (error) {
     process.stderr.write(`[sg-team-global-mcp] registration failed: ${error instanceof Error ? error.message : String(error)}\n`)
   }
-  // S3-3：尽力卸载退役的桥接扩展（失败静默）。
-  void uninstallRetiredBridgeExtension((line) => process.stderr.write(`${line}\n`))
   const cursorTelemetry = new CursorComposerTelemetryReader()
-  const cursorWorkspaceDetector = new CursorWorkspaceDetector()
   teamControlService = new TeamControlService(
     teamControlRepository,
     localSessionBridge,
@@ -667,7 +662,6 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   disposeTeamControlIpc = registerTeamControlIpc(
     teamControlService,
     desktopSessionService,
-    cursorWorkspaceDetector,
     () => mainWindow,
     { isSessionLaunchRunning: () => agentSessionLauncher.getPlan()?.state === 'running',
       detectCurrentWorkspace: () => cursorCdpCreator.detectCurrentWorkspace(),

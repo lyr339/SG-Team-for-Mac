@@ -13,7 +13,6 @@ import { currentCursorTodos, PlanPanel, todoTone } from './inspector/PlanPanel'
 import { ReviewPanel } from './inspector/ReviewPanel'
 import { turnMutatedPaths } from './inspector/review-scope'
 
-export type WorkspaceInspectorTab = InspectorTabId
 export type { CursorTodoItem } from './inspector/PlanPanel'
 
 interface WorkspaceInspectorProps {

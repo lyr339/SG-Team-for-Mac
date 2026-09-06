@@ -1,6 +1,5 @@
 import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-
-export const DEFAULT_CURSOR_WORKBENCH_BUNDLE = '/Applications/Cursor.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js'
+import { cursorWorkbenchBundleCandidates, locateCursorWorkbenchBundle } from './cursor-install-paths'
 
 interface SwitchConfig {
   port: number
@@ -44,21 +43,33 @@ export function rewriteCursorRuntimeCompanion(
   return { source: rewritten, changed: true, previousPort }
 }
 
-/** 在 Cursor 已退出的切换窗口内，把 Companion 指向拾光独占端口。 */
+/**
+ * 在 Cursor 已退出的切换窗口内，把 Companion 指向拾光独占端口。
+ * bundle 路径缺省按平台在本机安装位置里查找（mac /Applications；win 当前用户 / 所有用户安装目录）。
+ */
 export class CursorRuntimeCompanionConfig {
-  constructor(readonly bundlePath = DEFAULT_CURSOR_WORKBENCH_BUNDLE) {}
+  constructor(private readonly configuredBundlePath?: string) {}
+
+  get bundlePath(): string {
+    const located = this.configuredBundlePath ?? locateCursorWorkbenchBundle()
+    if (!located) {
+      throw new Error(`未找到 Cursor 主程序 bundle（已查找：${cursorWorkbenchBundleCandidates().join('；') || '当前平台无默认安装位置'}）`)
+    }
+    return located
+  }
 
   ensure(input: { port: number; key: string }): { changed: boolean; previousPort: number } {
-    if (!existsSync(this.bundlePath)) throw new Error(`Cursor 主程序 bundle 不存在：${this.bundlePath}`)
-    const current = readFileSync(this.bundlePath, 'utf8')
+    const bundlePath = this.bundlePath
+    if (!existsSync(bundlePath)) throw new Error(`Cursor 主程序 bundle 不存在：${bundlePath}`)
+    const current = readFileSync(bundlePath, 'utf8')
     const rewritten = rewriteCursorRuntimeCompanion(current, input)
     if (!rewritten.changed) return { changed: false, previousPort: rewritten.previousPort }
-    const backup = `${this.bundlePath}.sg-runtime-switch-backup`
-    if (!existsSync(backup)) copyFileSync(this.bundlePath, backup)
-    const temporary = `${this.bundlePath}.sg-runtime-switch.tmp`
+    const backup = `${bundlePath}.sg-runtime-switch-backup`
+    if (!existsSync(backup)) copyFileSync(bundlePath, backup)
+    const temporary = `${bundlePath}.sg-runtime-switch.tmp`
     writeFileSync(temporary, rewritten.source, 'utf8')
-    renameSync(temporary, this.bundlePath)
-    const verified = rewriteCursorRuntimeCompanion(readFileSync(this.bundlePath, 'utf8'), input)
+    renameSync(temporary, bundlePath)
+    const verified = rewriteCursorRuntimeCompanion(readFileSync(bundlePath, 'utf8'), input)
     if (verified.previousPort !== input.port) throw new Error('Cursor 运行时换号 Companion 写入后校验失败')
     return { changed: true, previousPort: rewritten.previousPort }
   }

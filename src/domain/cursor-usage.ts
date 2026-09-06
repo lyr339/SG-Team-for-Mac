@@ -75,17 +75,15 @@ export interface ModelTokenPrice {
   cacheWritePerM: number
 }
 
-/** 快照日期：牌价随时间漂移，核对时以 cursor.com/docs/models-and-pricing 为准。 */
-export const MODEL_PRICES_SNAPSHOT_DATE = '2026-09-04'
-
 function price(label: string, inputPerM: number, outputPerM: number, cacheReadPerM: number, cacheWritePerM = inputPerM): ModelTokenPrice {
   return { label, inputPerM, outputPerM, cacheReadPerM, cacheWritePerM }
 }
 
 /**
- * 模型牌价表（USD / 1M tokens）。来源：Cursor「Models & Pricing」页（Cursor 按模型
- * API 价扣用量，与「等价 API 成本」口径一致）；Cursor 目录外的 DeepSeek / Qwen 取官方
- * API 标价（DeepSeek 为非高峰价）。长上下文（>200K）加价、Fast 未列变体、区域加价不建模。
+ * 模型牌价表（USD / 1M tokens，牌价快照 2026-09-04；核对时以 cursor.com/docs/models-and-pricing 为准）。
+ * 来源：Cursor「Models & Pricing」页（Cursor 按模型 API 价扣用量，与「等价 API 成本」口径一致）；
+ * Cursor 目录外的 DeepSeek / Qwen 取官方 API 标价（DeepSeek 为非高峰价）。
+ * 长上下文（>200K）加价、Fast 未列变体、区域加价不建模。
  *
  * 匹配规则：modelId 与键都归一为小写、非字母数字折成 `-`，键必须从词首（^ 或 `-` 之后）
  * 开始、到词尾（`-`、结尾或紧随的版本数字）结束——`o3` 不会命中 `gpt-5-3-codex`，

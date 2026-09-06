@@ -1,6 +1,6 @@
 import { join } from 'node:path'
-import { homedir, platform } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
+import { cursorUserDataRoot } from './cursor-install-paths'
 
 export interface ImportedCursorAccount {
   /** 从 Cursor 本地 state.vscdb 读到的完整 access token（JWT）。 */
@@ -13,22 +13,7 @@ export interface ImportedCursorAccount {
 
 export class CursorTokenImporter {
   private resolveCursorStateDatabasePath(): string {
-    const system = platform()
-    let base: string
-    switch (system) {
-      case 'darwin':
-        base = join(homedir(), 'Library', 'Application Support', 'Cursor')
-        break
-      case 'win32': {
-        const appData = process.env.APPDATA
-        if (!appData) throw new Error('无法获取本机 Cursor 配置：环境变量 APPDATA 未设置')
-        base = join(appData, 'Cursor')
-        break
-      }
-      default:
-        base = join(homedir(), '.config', 'Cursor')
-    }
-    return join(base, 'User', 'globalStorage', 'state.vscdb')
+    return join(cursorUserDataRoot(), 'User', 'globalStorage', 'state.vscdb')
   }
 
   private bufferToString(value: unknown): string | undefined {

@@ -21,7 +21,8 @@
     "verify:win": "npm run pack:win && npm run smoke:mcp:packaged",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint:dead": "npx --yes knip@5"
   },
   "dependencies": {
     "ws": "^8.21.3",
@@ -85,5 +86,10 @@
       "allowToChangeInstallationDirectory": true,
       "artifactName": "拾光-Setup-${version}.${ext}"
     }
+  },
+  "allowScripts": {
+    "electron": true,
+    "esbuild": true,
+    "electron-winstaller": true
   }
 }

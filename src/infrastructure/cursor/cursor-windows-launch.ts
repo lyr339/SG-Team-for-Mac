@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { cursorInstallRoots } from './cursor-install-paths'
 
 /**
  * Windows 版 Cursor 进程操作共享辅助（账号切换器 cursor-account-switcher 与
@@ -19,14 +20,57 @@ export interface WindowsCursorLaunchSpec {
   cdpPort?: number
 }
 
-/** 解析 Windows Cursor 可执行文件：优先用户级安装路径，回退裸名（走 App Paths 注册表）。 */
-export function resolveCursorWindowsExecutable(): string {
-  const localAppData = process.env.LOCALAPPDATA
-  if (localAppData) {
-    const installed = join(localAppData, 'Programs', 'Cursor', 'Cursor.exe')
-    if (existsSync(installed)) return installed
+type ExecFileFn = (file: string, args: string[]) => Promise<{ stdout: string }>
+
+/**
+ * Cursor 的 Inno Setup 安装器有「仅当前用户」与「所有用户」两种位置；后者落在
+ * Program Files 且不注册 App Paths，裸名 `Cursor.exe` 对 cmd start 不可见。
+ */
+export function cursorWindowsExecutableCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  return cursorInstallRoots('win32', env).map((root) => join(root, 'Cursor.exe'))
+}
+
+/** powershell.exe 解析：PATH 优先；System32 缺失的异常会话回退绝对路径。 */
+export function windowsPowerShellCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  const systemRoot = env.SystemRoot?.trim() || 'C:\\Windows'
+  return ['powershell.exe', join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')]
+}
+
+const RUNNING_CURSOR_PATH_ARGS = [
+  '-NoProfile',
+  '-Command',
+  'Get-Process -Name Cursor -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -First 1 -ExpandProperty Path'
+]
+
+/**
+ * 正在运行的 Cursor 主进程可执行路径——用户实际在用的那份安装，比任何候选目录都可靠。
+ * 必须在终止 Cursor 之前采集；未运行 / 查询失败返回 undefined，调用方回退候选目录。
+ */
+export async function runningCursorWindowsExecutable(execFileFn: ExecFileFn): Promise<string | undefined> {
+  for (const powershell of windowsPowerShellCandidates()) {
+    try {
+      const { stdout } = await execFileFn(powershell, RUNNING_CURSOR_PATH_ARGS)
+      const path = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+      return path && /\\Cursor\.exe$/i.test(path) ? path : undefined
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== 'ENOENT') return undefined
+    }
   }
-  return 'Cursor.exe'
+  return undefined
+}
+
+/**
+ * 解析 Windows Cursor 可执行文件：运行中进程路径（刚从活进程读到，直接信任）→ 常见安装目录
+ * → 裸名（App Paths / PATH）。裸名是最后手段：没有 App Paths 注册时 cmd start 会报「找不到 Cursor.exe」。
+ */
+export function resolveCursorWindowsExecutable(options: {
+  runningPath?: string
+  env?: NodeJS.ProcessEnv
+  exists?: (path: string) => boolean
+} = {}): string {
+  if (options.runningPath) return options.runningPath
+  const exists = options.exists ?? existsSync
+  return cursorWindowsExecutableCandidates(options.env).find((candidate) => exists(candidate)) ?? 'Cursor.exe'
 }
 
 /** 组装 cmd start 命令串（cmd.exe 的 args 形态；引号包裹空格路径）。 */
@@ -47,9 +91,7 @@ export function buildCursorWindowsStartArgs(spec: WindowsCursorLaunchSpec): stri
  * 否则会误判「未运行」跳过退出流程，直接 start 出第二个 Cursor 实例。
  * 退出码 1 = 过滤器无匹配（部分 tasklist 版本语义，同 pgrep），按 0 处理。
  */
-export async function countWindowsCursorProcesses(
-  execFileFn: (file: string, args: string[]) => Promise<{ stdout: string }>
-): Promise<number> {
+export async function countWindowsCursorProcesses(execFileFn: ExecFileFn): Promise<number> {
   try {
     const { stdout } = await execFileFn('tasklist', ['/NH', '/FI', 'IMAGENAME eq Cursor.exe'])
     return stdout.split(/\r?\n/).filter((line) => line.includes('Cursor.exe')).length

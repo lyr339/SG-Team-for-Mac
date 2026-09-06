@@ -1,19 +1,13 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { homedir, platform } from 'node:os'
+import { platform } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { CursorUpdatePreferences, CursorUpdateWriteResult } from '../../domain/cursor-update'
+import { cursorUserDataRoot } from './cursor-install-paths'
 
 type JsonObject = Record<string, unknown>
 
 export function defaultCursorUserSettingsPath(currentPlatform: NodeJS.Platform = platform()): string {
-  if (currentPlatform === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'settings.json')
-  }
-  if (currentPlatform === 'win32') {
-    const appData = process.env.APPDATA || join(homedir(), 'AppData', 'Roaming')
-    return join(appData, 'Cursor', 'User', 'settings.json')
-  }
-  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'Cursor', 'User', 'settings.json')
+  return join(cursorUserDataRoot(currentPlatform), 'User', 'settings.json')
 }
 
 function stripJsonComments(input: string): string {

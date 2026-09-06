@@ -29,7 +29,7 @@ describe('Cursor 当前窗口工作区检测', () => {
       expect(missing.workspace).toBeUndefined()
       config = { workspace: { id: 'b', uri: { scheme: 'file', path: uriPathOf(join(root, 'B')) } } }
       fetchTargets.mockResolvedValue([{ ...target, id: 'window-2', webSocketDebuggerUrl: 'ws://localhost/window-2' }])
-      expect(await reader.detectCurrentWorkspace()).toMatchObject({ state: 'detected', source: 'cursor-window', workspace: { name: 'B', cursorWorkspaceId: 'b' } })
+      expect(await reader.detectCurrentWorkspace()).toMatchObject({ state: 'detected', workspace: { name: 'B', cursorWorkspaceId: 'b' } })
       expect(evaluate.mock.calls.at(-1)?.[0]).toBe('ws://localhost/window-2')
       config = {}
       expect((await reader.detectCurrentWorkspace()).detail).toBe('Cursor 未打开工作区')

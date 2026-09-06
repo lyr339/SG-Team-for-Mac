@@ -19,16 +19,17 @@
  * CursorStreamObserver 注册接收），payload = {c,i,o,r,w,t}。
  *
  * 幂等：已含 __SG_TEAM_USAGE_PATCH__ 标记则跳过；锚点数≠1 立即中止。
- * 安全：先备份 .sg-usage-backup；写 /Applications 需 macOS「App 管理」权限。
+ * 安全：先备份 .sg-usage-backup；写 /Applications 需 macOS「App 管理」权限，
+ * 写 Program Files 需 Windows 管理员权限。
  *
  * 用法：npx tsx scripts/patch-cursor-usage-hook.ts [--restore] [--bundle <path>]
+ * 缺省按平台在本机 Cursor 安装位置里查找 bundle；装在别处可用 --bundle 覆盖。
  */
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { cursorWorkbenchBundleCandidates, locateCursorWorkbenchBundle } from '../src/infrastructure/cursor/cursor-install-paths'
 
-// Cursor 默认安装路径（macOS）；如装在别处可用 --bundle 覆盖。
-const DEFAULT_BUNDLE = '/Applications/Cursor.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js'
 const MARKER = '__SG_TEAM_USAGE_PATCH_V3__'
 
 /** 本地路径锚点：AgentResponseAdapter turnEnded（拾光会话走这条）。 */
@@ -89,13 +90,12 @@ function main(): void {
   const restore = args.includes('--restore')
   const bundleArgIdx = args.indexOf('--bundle')
   const bundleArg = bundleArgIdx >= 0 ? args[bundleArgIdx + 1] : undefined
-  const bundlePath = bundleArg ?? DEFAULT_BUNDLE
-  const backupPath = `${bundlePath}.sg-usage-backup`
-
-  if (!existsSync(bundlePath)) {
-    console.error(`[patch] 未找到 bundle：${bundlePath}`)
+  const bundlePath = bundleArg ?? locateCursorWorkbenchBundle()
+  if (!bundlePath || !existsSync(bundlePath)) {
+    console.error(`[patch] 未找到 bundle：${bundlePath ?? cursorWorkbenchBundleCandidates().join(' | ')}（可用 --bundle 指定）`)
     process.exit(1)
   }
+  const backupPath = `${bundlePath}.sg-usage-backup`
 
   if (restore) {
     if (!existsSync(backupPath)) {

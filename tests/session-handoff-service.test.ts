@@ -94,6 +94,12 @@ describe('cursorProjectDirectoryNames', () => {
     expect(cursorProjectDirectoryNames('/Users/lyr/Downloads/20260904测试')[0]).toBe('Users-lyr-Downloads-20260904')
     expect(cursorProjectDirectoryNames('/Users/lyr/Downloads/qingtian/qingtian-team')[0]).toBe('Users-lyr-Downloads-qingtian-qingtian-team')
   })
+
+  it('lower-cases the Windows drive letter the way Cursor names project directories', () => {
+    const names = cursorProjectDirectoryNames('C:\\Users\\admin\\Downloads\\ToDesk\\qingtian-team\\qingtian-team')
+    expect(names[0]).toBe('c-Users-admin-Downloads-ToDesk-qingtian-team-qingtian-team')
+    expect(names).toContain('C-Users-admin-Downloads-ToDesk-qingtian-team-qingtian-team')
+  })
 })
 
 describe('SessionHandoffService', () => {

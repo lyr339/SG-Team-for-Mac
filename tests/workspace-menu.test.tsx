@@ -7,9 +7,9 @@ import { DesktopShell } from '../src/renderer/src/DesktopShell'
 
 const workspace = { id: 'project-a', name: '项目 A', path: '/projects/a' }
 const detection = {
-  state: 'detected' as const, confidence: 'certain' as const, source: 'cursor-window' as const,
-  workspace: { id: 'project-b', name: '项目 B', path: '/projects/b', channelIds: [] },
-  candidates: [], detail: '最近使用', observedAt: 1
+  state: 'detected' as const,
+  workspace: { id: 'project-b', name: '项目 B', path: '/projects/b' },
+  candidates: [], detail: '由 Cursor 当前 IDE 窗口确认', observedAt: 1
 }
 
 describe('工作区查看入口', () => {
@@ -71,9 +71,10 @@ describe('工作区查看入口', () => {
     expect(panel()).toBeNull()
   })
 
-  it('未绑定时不把最近工程冒充当前项目；复制失败可见', async () => {
+  it('Cursor 未开工作区时不冒充当前项目；复制失败可见', async () => {
     const openConfiguration = vi.fn()
-    await act(async () => root.render(<WorkspaceMenu detection={{ ...detection, source: 'cursor-recent' }} onOpenConfiguration={openConfiguration} />))
+    const unavailable = { state: 'unavailable' as const, candidates: [], detail: 'Cursor 未打开工作区', observedAt: 1 }
+    await act(async () => root.render(<WorkspaceMenu detection={unavailable} onOpenConfiguration={openConfiguration} />))
     expect(trigger().textContent).toBe('工作区未就绪')
     await act(async () => trigger().click())
     expect(panel()?.textContent).toContain('工作区未就绪')
@@ -92,7 +93,7 @@ describe('工作区查看入口', () => {
     const render = async (next: typeof detection | undefined): Promise<void> => {
       await act(async () => root.render(<WorkspaceMenu workspace={workspace} detection={next} onOpenConfiguration={configure} />))
     }
-    await render({ ...detection, workspace: { ...workspace, channelIds: [] } })
+    await render({ ...detection, workspace })
     expect(trigger().textContent).toBe('项目 A')
     await render(detection)
     expect(trigger().textContent).toBe('项目 B')

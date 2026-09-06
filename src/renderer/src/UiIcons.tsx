@@ -26,16 +26,6 @@ export function WorkspaceIcon(props: IconProps): React.JSX.Element {
   return <Icon {...props}><path d="M3.5 6.5h6l2 2H20.5v9.8a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7V6.5Z" {...stroke} /><path d="M3.5 9h17" {...stroke} /></Icon>
 }
 
-export function SessionBindingIcon({ bound, ...props }: IconProps & { bound: boolean }): React.JSX.Element {
-  return <Icon {...props}>
-    <rect x="3.5" y="7.5" width="5" height="9" rx="2" {...stroke} />
-    <rect x="15.5" y="7.5" width="5" height="9" rx="2" {...stroke} />
-    {bound
-      ? <><path d="M8.5 12h7" {...stroke} /><path d="m10.2 12 1.3 1.3 2.4-2.7" {...stroke} /></>
-      : <><path d="M8.5 12h2M13.5 12h2" {...stroke} /><path d="m11.2 10.3 1.6 3.4" {...stroke} /></>}
-  </Icon>
-}
-
 export function PlayIcon(props: IconProps): React.JSX.Element {
   return <Icon {...props}><path d="M8 5.5v13l10.5-6.5L8 5.5Z" {...stroke} /></Icon>
 }
@@ -71,10 +61,6 @@ export function EraseIcon(props: IconProps): React.JSX.Element {
 
 export function HandoffIcon(props: IconProps): React.JSX.Element {
   return <Icon {...props}><path d="M4 8h12.5M13 4.5 16.5 8 13 11.5M20 16H7.5M11 12.5 7.5 16l3.5 3.5" {...stroke} /></Icon>
-}
-
-export function ShieldIcon(props: IconProps): React.JSX.Element {
-  return <Icon {...props}><path d="M12 3.5 19 6v5.2c0 4.5-2.8 7.5-7 9.3-4.2-1.8-7-4.8-7-9.3V6l7-2.5Z" {...stroke} /><path d="m8.7 12 2.1 2.1 4.6-5" {...stroke} /></Icon>
 }
 
 export function ChevronDownIcon(props: IconProps): React.JSX.Element {

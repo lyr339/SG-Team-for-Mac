@@ -24,9 +24,8 @@ it('创建前确认 Cursor 工程：旧路径不签发身份，新路径传入 c
   const dispose = registerTeamControlIpc(
     { subscribe: () => () => {}, configureIndependentWorkspace: configure } as unknown as Parameters<typeof registerTeamControlIpc>[0],
     { getSnapshot: () => ({ cursorModels: [] }) } as unknown as Parameters<typeof registerTeamControlIpc>[1],
-    {} as Parameters<typeof registerTeamControlIpc>[2], () => undefined,
-    { detectCurrentWorkspace: async () => ({ state: 'detected', confidence: 'certain', source: 'cursor-window',
-      workspace: { ...b, channelIds: [] }, candidates: [], detail: 'IDE', observedAt: 1 }) }
+    () => undefined,
+    { detectCurrentWorkspace: async () => ({ state: 'detected', workspace: b, candidates: [], detail: 'IDE', observedAt: 1 }) }
   )
   try {
     const create = handlers.get(IPC.teamControlCreateIndependent)!
@@ -52,8 +51,8 @@ it('显式结束后补收最终样本再冻结；结束失败不冻结', async (
   })
   const dispose = registerTeamControlIpc(
     { subscribe: () => () => {}, endActiveRun: end } as unknown as Parameters<typeof registerTeamControlIpc>[0],
-    {} as Parameters<typeof registerTeamControlIpc>[1], {} as Parameters<typeof registerTeamControlIpc>[2], () => undefined,
-    { onRunEnded }
+    {} as Parameters<typeof registerTeamControlIpc>[1], () => undefined,
+    { onRunEnded, detectCurrentWorkspace: async () => ({ state: 'unavailable', candidates: [], detail: '测试不检测', observedAt: 1 }) }
   )
   try {
     const finish = handlers.get(IPC.teamControlEndRun)!

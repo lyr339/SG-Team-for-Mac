@@ -48,7 +48,13 @@ const common = {
   onChooseWorkspace: async () => {},
   onReconfigure: async () => {},
   onUpdateGoal: async () => teamControlSnapshot,
-  onInstallMcp: async () => ({ installation: { ok: true as const, restartRequired: false, detail: '' }, snapshot: teamControlSnapshot }),
+  onInstallMcp: async () => ({
+    installation: {
+      ok: true as const, workspacePath: '/workspace/wedge-demo', workspaceId: 'wedge-demo', runId: 'team-run:wedge-demo:main',
+      configPath: '/workspace/wedge-demo/.cursor/mcp.json', serverNames: ['SG Team'], autoInjected: true, restartRequired: false
+    },
+    snapshot: teamControlSnapshot
+  }),
   onLaunch: async () => teamControlSnapshot,
   onCreateNextRun: async () => ({ snapshot: teamControlSnapshot, restartRequired: false }),
   onLaunchAgentSessions: async () => ({ id: 'plan:test', state: 'done' as const, items: [], startedAt: 1, finishedAt: 2 }),
@@ -110,7 +116,7 @@ describe('LobbyPage', () => {
     const html = renderToStaticMarkup(
       <LobbyPage
         {...common}
-        detectedWorkspace={{ id: 'wedge-demo', name: 'wedge-demo', path: '/workspace/wedge-demo', channelIds: [] }}
+        detectedWorkspace={{ id: 'wedge-demo', name: 'wedge-demo', path: '/workspace/wedge-demo' }}
         section="independent"
         onSectionChange={() => {}}
       />

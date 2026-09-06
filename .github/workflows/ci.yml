@@ -27,6 +27,7 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint:dead
       - run: npm test
       - run: npm run build
       - run: npm run smoke:channel

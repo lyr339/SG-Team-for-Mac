@@ -257,7 +257,7 @@ describe('LobbyAccountTile', () => {
   it('keeps every existing feature entry point', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
-        automationSettings: { enabled: true, delaySec: 10, browserHost: 'external' },
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, browserHost: 'external' },
         onImportFromFingerprint: async () => {}
       })} />
     )
@@ -380,7 +380,7 @@ describe('LobbyAccountTile', () => {
 
   it('labels the countdown step as off when automation is disabled', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({ automationSettings: { enabled: false, delaySec: 10 } })} />
+      <LobbyAccountTile {...propsFor({ automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: false, delaySec: 10 } })} />
     )
 
     expect(html).toContain('aria-label="步骤 2：倒计时，未开启"')
@@ -417,7 +417,7 @@ describe('LobbyAccountTile', () => {
   it('已选指纹窗口时下拉按钮直接显示窗口名（自绘 MenuSelect 选中态）', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
-        automationSettings: { enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
         bitProfiles: [
           { id: 'bit-proxy', name: '代理', seq: 1 },
           { id: 'bit-direct', name: '直连', seq: 2 }
@@ -435,7 +435,7 @@ describe('LobbyAccountTile', () => {
   it('external source shows edge hint and browser import as quick action', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
-        automationSettings: { enabled: true, delaySec: 10, browserHost: 'external' },
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, browserHost: 'external' },
         bitProfiles: [{ id: 'bit-proxy', name: '代理', seq: 1 }],
         onImportFromFingerprint: async () => {}
       })} />
@@ -457,7 +457,7 @@ describe('LobbyAccountTile', () => {
     expect(noWindow).toMatch(/disabled=""[^>]*>导入中…|从指纹浏览器导入（推荐）</)
     const picked = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
-        automationSettings: { enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
         onImportFromFingerprint: async () => {}
       })} />
     )
@@ -467,7 +467,7 @@ describe('LobbyAccountTile', () => {
   it('renders the open-login-page quick action beside the fingerprint import (fingerprint host)', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
-        automationSettings: { enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
         onImportFromFingerprint: async () => {},
         onOpenFingerprintLogin: async () => {}
       })} />
@@ -484,7 +484,7 @@ describe('LobbyAccountTile', () => {
     // 自动化活跃阶段禁用：此时导航的正是自动化链在用的 tab（破坏就绪探测/轮换基准）
     const active = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
-        automationSettings: { enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
         automationRun: runFor({ phase: 'processing', message: '奥仔自助处理中…', startedAt: 1 }),
         onOpenFingerprintLogin: async () => {}
       })} />
@@ -495,7 +495,7 @@ describe('LobbyAccountTile', () => {
   it('hides the open-login-page action for the external browser host', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
-        automationSettings: { enabled: true, delaySec: 10, browserHost: 'external' },
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, browserHost: 'external' },
         onOpenFingerprintLogin: async () => {}
       })} />
     )
@@ -539,7 +539,7 @@ describe('LobbyAccountTile', () => {
   it('countdown step has no browser controls, only the follow note', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
-        automationSettings: { enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' }
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' }
       })} />
     )
 
@@ -567,7 +567,7 @@ describe('LobbyAccountTile', () => {
     const html = renderToStaticMarkup(
       <LobbyAccountTile {...propsFor({
         platform: 'win32',
-        automationSettings: { enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' }
+        automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' }
       })} />
     )
 

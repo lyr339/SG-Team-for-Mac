@@ -60,8 +60,12 @@ The task pool is durable and uses Electron's bundled `node:sqlite`:
 
 ## Cursor account switching
 
-Switching accounts (FlyCursor-style one-click flow) is orchestrated in the main process: deterministically terminate Cursor (`pkill -x` → poll → `pkill -9` fallback) → logical key backup → write auth keys + account-bound machine identity into `state.vscdb` / `storage.json` / `machineid` exclusively (Cursor must be dead: `node:sqlite` is synchronous and touching the DB while Cursor runs froze the main process) → relaunch with `--remote-debugging-port`.
+Switching accounts (FlyCursor-style one-click flow) is orchestrated in the main process: deterministically terminate Cursor (macOS `pkill -x` → poll → `pkill -9` fallback; Windows `taskkill /F`) → logical key backup → write auth keys + account-bound machine identity into `state.vscdb` / `storage.json` / `machineid` exclusively (Cursor must be dead: `node:sqlite` is synchronous and touching the DB while Cursor runs froze the main process) → relaunch with `--remote-debugging-port`. On Windows the relaunch uses the executable path captured from the running process before it was terminated (per-user and all-users Inno Setup installs live in different directories and the latter registers no App Paths entry).
+
+## Platform boundary
+
+Both desktop platforms are first-class. Everything that touches Cursor's own files goes through `src/infrastructure/cursor/cursor-install-paths.ts` (user-data root, install roots, workbench bundle), and process control goes through the platform pair `open/pkill/pgrep/osascript` (macOS) vs `cmd start/taskkill/tasklist/PowerShell Get-Process` (Windows). Two account-automation browser hosts exist: the fingerprint browser (RoxyBrowser, both platforms) and the external system browser (macOS only, AppleScript); Windows always uses the fingerprint host.
 
 ## Distribution boundary
 
-`npm run pack:mac` creates an unsigned local macOS app under `release/`. `npm run verify:mac` launches the MCP bundle through that packaged app executable and repeats the real three-process fencing/resume smoke. Signing and notarization are intentionally a later release step and are not implied by the local package.
+`npm run pack:mac` creates an unsigned local macOS app and `npm run pack:win` an NSIS installer plus `win-unpacked` under `release/`. `npm run verify:mac` / `verify:win` launch the MCP bundle through that packaged executable and repeat the real three-process fencing/resume smoke. Signing and notarization are intentionally a later release step and are not implied by the local package.

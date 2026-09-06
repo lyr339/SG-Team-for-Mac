@@ -517,14 +517,11 @@ const api: QingtianDesktopApi = {
   getTeamControlSnapshot: async () => structuredClone(state.team),
   detectCursorWorkspace: async () => ({
     state: 'detected',
-    source: 'cursor-window',
-    confidence: 'certain',
     workspace: {
       id: detectedSetupDraft.workspaceId,
       name: detectedSetupDraft.workspaceName,
       path: detectedSetupDraft.workspacePath,
-      cursorWorkspaceId: 'preview-cursor-workspace',
-      channelIds: detectedSetupDraft.channels.map((channel) => channel.channelId)
+      cursorWorkspaceId: 'preview-cursor-workspace'
     },
     candidates: [],
     detail: '预览中的 Cursor 工作区',

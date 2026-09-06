@@ -18,7 +18,7 @@ export function WorkspaceMenu({ workspace, detection, onOpenConfiguration }: Wor
   const panel = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const panelId = useId()
-  const detected = detection?.source === 'cursor-window' && detection.state === 'detected' ? detection.workspace : undefined
+  const detected = detection?.state === 'detected' ? detection.workspace : undefined
   const label = detected?.name ?? (detection?.state === 'ambiguous' ? '多个 Cursor 工作区' : '工作区未就绪')
 
   useLayoutEffect(() => {

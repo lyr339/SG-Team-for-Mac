@@ -781,7 +781,7 @@ export class CursorCdpSessionCreator {
   /** 每次重新枚举窗口，覆盖 Cursor 在同一进程内更换工作区/重载页面的情况。 */
   async detectCurrentWorkspace(): Promise<CursorWorkspaceDetection> {
     const unavailable = (detail: string): CursorWorkspaceDetection => ({
-      state: 'unavailable', source: 'cursor-window', confidence: 'none', candidates: [], detail, observedAt: Date.now()
+      state: 'unavailable', candidates: [], detail, observedAt: Date.now()
     })
     try {
       const targets = await this.fetchTargets(this.port, PROBE_TIMEOUT_MS)
@@ -802,11 +802,10 @@ export class CursorCdpSessionCreator {
         folder = value.authority ? `//${String(value.authority)}${folder}` : folder.replace(/^\/([a-zA-Z]:)/, '$1')
       } else if (value.authority) return unavailable('当前文件夹路径不属于本机')
       const workspace = {
-        ...workspaceIdentityOf(folder), channelIds: [],
+        ...workspaceIdentityOf(folder),
         ...(typeof value.id === 'string' ? { cursorWorkspaceId: value.id } : {})
       }
-      return { state: 'detected', source: 'cursor-window', confidence: 'certain', workspace,
-        candidates: [workspace], detail: '由 Cursor 当前 IDE 窗口确认', observedAt: Date.now() }
+      return { state: 'detected', workspace, candidates: [workspace], detail: '由 Cursor 当前 IDE 窗口确认', observedAt: Date.now() }
     } catch {
       return unavailable('Cursor 检测连接未就绪，请确认 Cursor 已启动且调试连接可用')
     }

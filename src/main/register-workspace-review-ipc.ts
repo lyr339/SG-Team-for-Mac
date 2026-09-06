@@ -40,6 +40,15 @@ function openInputOf(value: unknown): { path: string; line?: number } {
   return { path, ...(typeof line === 'number' && Number.isInteger(line) && line > 0 ? { line } : {}) }
 }
 
+/**
+ * 编辑器深链：`<scheme>://file/<absolute>[:line]`，路径按 URL 规则用 `/` 分隔并保证以 `/` 开头
+ * （Windows `C:\a\b.ts` → `cursor://file/C:/a/b.ts`；直接拼原生路径会得到 `fileC:%5Ca…`）。
+ */
+export function editorFileUrl(scheme: string, absolutePath: string, line?: number): string {
+  const urlPath = absolutePath.replace(/\\/g, '/')
+  return `${scheme}://file${urlPath.startsWith('/') ? '' : '/'}${encodeURI(urlPath)}${line ? `:${line}` : ''}`
+}
+
 export interface WorkspaceReviewIpcOptions {
   /**
    * 文件系统监听：变更时向渲染层推送刷新信号（替代渲染层 2s 轮询）；缺省只剩轮询。
@@ -104,7 +113,7 @@ export function registerWorkspaceReviewIpc(
     const absolute = await reader.resolveWorkspaceFile(path)
     // 编辑器深链（不依赖 CDP）：Cursor 注册了 cursor://file/<absolute>[:line[:column]]。
     // 未注册 scheme 时 openExternal 会 reject，退到系统默认程序。
-    const target = `${editorScheme}://file${encodeURI(absolute)}${line ? `:${line}` : ''}`
+    const target = editorFileUrl(editorScheme, absolute, line)
     try {
       await shell.openExternal(target)
       return { ok: true, method: 'editor' }

@@ -1,8 +1,8 @@
 import type { AgentSession } from '../domain/agent-session'
 import type { ConversationEntry, ProcessBlock } from '../domain/conversation-entry'
-import type { TaskPoolSnapshot, TeamTask } from '../domain/task-pool'
+import type { TaskPoolSnapshot } from '../domain/task-pool'
 import type { TeamControlSnapshot } from '../domain/team-control'
-import type { TeamCollaborationSnapshot, TeamMessage, TeamMessageKind } from '../domain/team-collaboration'
+import type { TeamCollaborationSnapshot } from '../domain/team-collaboration'
 import type { TeamContinuitySnapshot } from '../domain/team-continuity'
 import type { TeamMemorySnapshot } from '../domain/team-memory'
 import type { AgentSkillCatalogEntry } from '../domain/agent-skill'
@@ -123,23 +123,6 @@ export interface QueuedMessageRef {
 
 export interface SendMessageAccepted {
   commandId: string
-}
-
-export interface CreateDesktopTaskInput {
-  title: string
-  description?: string
-  acceptance?: string
-  priority?: number
-  maxAttempts?: number
-  dependsOnTaskIds?: string[]
-  requiredCapabilities?: string[]
-}
-
-export interface SendDesktopTeamMessageInput {
-  recipientSlotId: string
-  kind: Exclude<TeamMessageKind, 'response'>
-  subject?: string
-  content: string
 }
 
 export interface TeamSetupChannel {

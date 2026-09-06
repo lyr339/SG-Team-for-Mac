@@ -1,7 +1,12 @@
 import { execFile } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { promisify } from 'node:util'
-import { buildCursorWindowsStartArgs, countWindowsCursorProcesses, resolveCursorWindowsExecutable } from './cursor-windows-launch'
+import {
+  buildCursorWindowsStartArgs,
+  countWindowsCursorProcesses,
+  resolveCursorWindowsExecutable,
+  runningCursorWindowsExecutable
+} from './cursor-windows-launch'
 
 /**
  * 一键重启 Cursor 并附加 --remote-debugging-port，使 CDP 会话创建可用。
@@ -72,7 +77,10 @@ export async function restartCursorWithCdp(options: CursorCdpRestartOptions): Pr
   }
 
   try {
+    // Windows：先记下正在运行的那份 Cursor 的路径，退出后按它拉起（Program Files 安装无 App Paths）。
+    let windowsRunningExecutable: string | undefined
     if (await cursorMainProcessCount(execFileFn, platform) > 0) {
+      if (platform === 'win32') windowsRunningExecutable = await runningCursorWindowsExecutable(execFileFn)
       // 优雅退出（不做强杀——本模块策略与账号切换器不同，保留用户未保存内容）：
       // mac 走 AppleScript quit；win 走 taskkill（无 /F 即 WM_CLOSE，等价语义）
       if (platform === 'win32') {
@@ -91,7 +99,7 @@ export async function restartCursorWithCdp(options: CursorCdpRestartOptions): Pr
 
     if (platform === 'win32') {
       await execFileFn('cmd.exe', buildCursorWindowsStartArgs({
-        executable: resolveCursorWindowsExecutable(),
+        executable: resolveCursorWindowsExecutable({ runningPath: windowsRunningExecutable }),
         workspacePath,
         cdpPort: port
       }))

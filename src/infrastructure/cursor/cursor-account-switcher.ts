@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { homedir, platform } from 'node:os'
+import { platform } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { CursorMachineIdentity } from './cursor-machine-identity'
@@ -10,7 +10,8 @@ import {
   CursorDesktopTokenExchanger,
   type CursorDesktopTokenExchangePort
 } from './cursor-desktop-token-exchanger'
-import { buildCursorWindowsStartArgs, resolveCursorWindowsExecutable } from './cursor-windows-launch'
+import { cursorUserDataRoot } from './cursor-install-paths'
+import { buildCursorWindowsStartArgs, resolveCursorWindowsExecutable, runningCursorWindowsExecutable } from './cursor-windows-launch'
 
 const execFileAsync = promisify(execFile)
 
@@ -62,6 +63,8 @@ export interface CursorAccountSwitchResult {
  */
 export class CursorAccountSwitcher {
   private inFlight?: Promise<CursorAccountSwitchResult>
+  /** Windows：终止前记下正在运行的 Cursor 路径，重新拉起时优先用它（Program Files 安装无 App Paths）。 */
+  private windowsRunningExecutable?: string
 
   constructor(private readonly options: {
     stateDatabasePath?: string
@@ -245,6 +248,7 @@ export class CursorAccountSwitcher {
     if (!running) return false
     const name = this.cursorProcessName()
     if (this.platform() === 'win32') {
+      this.windowsRunningExecutable = await runningCursorWindowsExecutable(this.exec) ?? this.windowsRunningExecutable
       await this.exec('taskkill', ['/F', '/IM', name])
     } else {
       await this.exec('pkill', ['-x', name])
@@ -301,7 +305,7 @@ export class CursorAccountSwitcher {
         // cmd start 立即返回（不等待 GUI 进程），经 this.exec 走注入链可测试；
         // 与 mac 侧对齐：CDP 端口可用时附带调试参数，保住切换后的会话创建能力。
         await this.exec('cmd.exe', buildCursorWindowsStartArgs({
-          executable: resolveCursorWindowsExecutable(),
+          executable: resolveCursorWindowsExecutable({ runningPath: this.windowsRunningExecutable }),
           workspacePath: workspace,
           cdpPort: port
         }))
@@ -353,15 +357,7 @@ export class CursorAccountSwitcher {
   // ── 路径解析 ────────────────────────────────────────────────────
 
   private resolveCursorBaseDir(): string {
-    if (this.platform() === 'win32') {
-      const appData = process.env.APPDATA
-      if (!appData) throw new Error('无法获取本机 Cursor 配置：环境变量 APPDATA 未设置')
-      return join(appData, 'Cursor')
-    }
-    if (this.platform() === 'darwin') {
-      return join(homedir(), 'Library', 'Application Support', 'Cursor')
-    }
-    return join(homedir(), '.config', 'Cursor')
+    return cursorUserDataRoot(this.platform())
   }
 
   private resolveStateDatabasePath(): string {
