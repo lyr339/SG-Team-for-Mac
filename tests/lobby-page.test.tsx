@@ -48,15 +48,9 @@ const common = {
   onChooseWorkspace: async () => {},
   onReconfigure: async () => {},
   onUpdateGoal: async () => teamControlSnapshot,
-  onInstallMcp: async () => ({
-    installation: {
-      ok: true as const, workspacePath: '/workspace/wedge-demo', workspaceId: 'wedge-demo', runId: 'team-run:wedge-demo:main',
-      configPath: '/workspace/wedge-demo/.cursor/mcp.json', serverNames: ['SG Team'], autoInjected: true, restartRequired: false
-    },
-    snapshot: teamControlSnapshot
-  }),
+  onInstallMcp: async () => teamControlSnapshot,
   onLaunch: async () => teamControlSnapshot,
-  onCreateNextRun: async () => ({ snapshot: teamControlSnapshot, restartRequired: false }),
+  onCreateNextRun: async () => ({ snapshot: teamControlSnapshot }),
   onLaunchAgentSessions: async () => ({ id: 'plan:test', state: 'done' as const, items: [], startedAt: 1, finishedAt: 2 }),
   onCreateIndependentSessions: async () => ({ id: 'plan:independent', state: 'done' as const, items: [], startedAt: 1, finishedAt: 2 }),
   onChooseIndependentWorkspace: async () => undefined,

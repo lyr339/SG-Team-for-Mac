@@ -28,7 +28,7 @@ function databasePathOf(): string {
 }
 
 /**
- * 拾光单一 MCP 服务器进程（S4）：
+ * 拾光单一 MCP 服务器进程：
  * 一条「SG Team」条目承载团队工具 + 通信保活工具，channel_id 区分通道；
  * 运行时按通道懒加载缓存，身份每次调用前实时解析（团队换届零配置重写）。
  */
@@ -173,10 +173,7 @@ async function serveUnified(databasePath: string): Promise<void> {
   process.once('SIGTERM', () => void shutdown().finally(() => process.exit(0)))
 }
 
-// 遗留角色名（team/channel，双条目时代条目）收敛到统一服务器。
+// 只有一种服务器角色；启动时的全局注册器写入 unified，缺省亦按 unified。
 const role = process.env.SG_TEAM_SERVER_ROLE?.trim() || 'unified'
-if (role === 'unified' || role === 'team' || role === 'channel') {
-  await serveUnified(databasePathOf())
-} else {
-  throw new Error(`SG_TEAM_SERVER_ROLE 无效：${role}`)
-}
+if (role !== 'unified') throw new Error(`SG_TEAM_SERVER_ROLE 无效：${role}`)
+await serveUnified(databasePathOf())

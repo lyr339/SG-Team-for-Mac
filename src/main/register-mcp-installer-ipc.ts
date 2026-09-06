@@ -2,7 +2,7 @@ import { app, ipcMain, type BrowserWindow } from 'electron'
 import type { SqliteTaskPoolRepository } from '../infrastructure/task-pool/sqlite-task-pool-repository'
 import { CursorMcpInstaller } from '../infrastructure/cursor/cursor-mcp-installer'
 import type { TeamControlService } from '../application/team-control-service'
-import { IPC } from '../shared/desktop-api'
+import { IPC, type McpInstallationResult } from '../shared/desktop-api'
 import { assertTrustedSender } from './ipc-security'
 import { resolveTaskMcpServerPath } from './task-mcp-runtime'
 import type { SqliteChannelMessageRepository } from '../infrastructure/channel-messages/sqlite-channel-message-repository'
@@ -57,17 +57,13 @@ export function registerMcpInstallerIpc(
         result.registrations.agents.map((agent) => agent.channelId)
       )
     }
-    return {
-      ok: true,
+    const installation: McpInstallationResult = {
       workspacePath: result.workspacePath,
       workspaceId: result.workspaceId,
       runId: result.registrations.runId,
-      configPath: result.configPath,
-      backupPath: result.backupPath,
-      serverNames: result.serverNames,
-      autoInjected: true,
-      restartRequired: result.restartRequired
-    } as const
+      serverNames: result.serverNames
+    }
+    return installation
   })
 
   return () => ipcMain.removeHandler(IPC.taskMcpInstall)

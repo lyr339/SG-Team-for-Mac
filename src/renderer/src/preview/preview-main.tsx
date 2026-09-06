@@ -505,14 +505,10 @@ const api: SgDesktopApi = {
   saveImageAs: async () => true,
   getTaskPoolSnapshot: async () => structuredClone(previewTasks),
   installTaskMcp: async () => ({
-    ok: true,
     workspacePath: detectedSetupDraft.workspacePath,
     workspaceId: detectedSetupDraft.workspaceId,
     runId: state.team.activeRun?.id ?? 'preview-run',
-    configPath: `${detectedSetupDraft.workspacePath}/.cursor/mcp.json`,
-    serverNames: ['SG Team'],
-    autoInjected: true,
-    restartRequired: false
+    serverNames: ['SG Team']
   }),
   getTeamControlSnapshot: async () => structuredClone(state.team),
   detectCursorWorkspace: async () => ({

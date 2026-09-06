@@ -5,7 +5,7 @@ import type { TeamCollaborationSnapshot } from '../../../domain/team-collaborati
 import type { AgentLaunchPlan, AgentLaunchRequest } from '../../../domain/agent-launch'
 import type { CursorModelOption, CursorModelSelection } from '../../../domain/cursor-model'
 import type { CdpAutoHealEvent } from '../../../domain/cursor-cdp'
-import type { CreateIndependentSessionsInput, IndependentWorkspaceSelection, McpInstallationResult } from '../../../shared/desktop-api'
+import type { CreateIndependentSessionsInput, IndependentWorkspaceSelection } from '../../../shared/desktop-api'
 import type { DetectedCursorWorkspace } from '../../../domain/cursor-workspace'
 import { BrandMark } from '../BrandMark'
 import { cursorModelSelectionFromOption, normalizeCursorModelSelection } from '../cursor-model-selection'
@@ -29,16 +29,11 @@ interface LobbyPageProps {
   onChooseWorkspace: () => Promise<void>
   onReconfigure: () => Promise<void>
   onUpdateGoal: (goal: string) => Promise<TeamControlSnapshot>
-  onInstallMcp: () => Promise<{ installation: McpInstallationResult; snapshot: TeamControlSnapshot }>
+  /** 接入团队 MCP（登记 Agent 注册身份），返回接入后的团队快照；失败抛错。 */
+  onInstallMcp: () => Promise<TeamControlSnapshot>
   onLaunch: () => Promise<TeamControlSnapshot>
-  onCreateNextRun: () => Promise<{
-    snapshot: TeamControlSnapshot
-    restartRequired: boolean
-    issue?: string
-  }>
+  onCreateNextRun: () => Promise<{ snapshot: TeamControlSnapshot; issue?: string }>
   externalNotice?: string
-  autoStartOnGoalSave?: boolean
-  mcpReloadRequired?: boolean
   agentLaunchPlan?: AgentLaunchPlan
   cursorModels: CursorModelOption[]
   onLaunchAgentSessions: (requests: AgentLaunchRequest[]) => Promise<AgentLaunchPlan>
@@ -69,8 +64,6 @@ export function LobbyPage({
   onLaunch,
   onCreateNextRun,
   externalNotice = '',
-  autoStartOnGoalSave = false,
-  mcpReloadRequired = false,
   agentLaunchPlan,
   cursorModels,
   onLaunchAgentSessions,
@@ -292,45 +285,37 @@ export function LobbyPage({
     }
   }
   const prepareAndLaunch = async (): Promise<void> => {
-    if (team.preflight.canLaunch && !mcpReloadRequired) {
+    if (team.preflight.canLaunch) {
       await onLaunch()
       setNotice('启动指令已投递；正在为未待命通道自动创建 Agent 会话。')
       void autoCreateSessions()
       return
     }
-    if (team.preflight.mcpInstalled && !mcpReloadRequired) {
+    if (team.preflight.mcpInstalled) {
       setNotice(team.preflight.blockers[0]
         || '请在 Cursor 手动发起对应 Agent 会话；拾光检测到待命后会自动接管。')
       return
     }
     const prepared = await onInstallMcp()
-    if (prepared.installation.ok && prepared.installation.restartRequired) {
-      setNotice('团队 MCP 已安装。请重载 Cursor 一次；重载后软件会继续检测。')
-      return
-    }
-    if (prepared.snapshot.preflight.canLaunch) {
+    if (prepared.preflight.canLaunch) {
       await onLaunch()
       setNotice('通道已接入，团队启动指令已自动投递；正在自动创建 Agent 会话。')
       void autoCreateSessions()
       return
     }
-    setNotice(prepared.snapshot.preflight.blockers[0]
+    setNotice(prepared.preflight.blockers[0]
       || '请在 Cursor 手动发起对应 Agent 会话；拾光检测到待命后会自动接管。')
   }
-  const primaryLabel = mcpReloadRequired
-    ? '重载 Cursor 后继续'
-    : team.preflight.canLaunch
-      ? '启动团队'
-      : !team.preflight.mcpInstalled
-        ? '安装团队 MCP'
-        : '检查待命状态'
-  const primaryHint = mcpReloadRequired
-    ? 'MCP 已升级，重载 Cursor 后点我一次即可'
-    : team.preflight.canLaunch
-      ? '全部就绪，一键开跑'
-      : !team.preflight.mcpInstalled
-        ? '写入本工程 .cursor/mcp.json，约 10 秒'
-        : '检测各通道待命状态，自动接管手动发起的会话'
+  const primaryLabel = team.preflight.canLaunch
+    ? '启动团队'
+    : !team.preflight.mcpInstalled
+      ? '接入团队 MCP'
+      : '检查待命状态'
+  const primaryHint = team.preflight.canLaunch
+    ? '全部就绪，一键开跑'
+    : !team.preflight.mcpInstalled
+      ? '为本轮席位登记 SG Team 通道身份，无需重载 Cursor'
+      : '检测各通道待命状态，自动接管手动发起的会话'
   const runtimePresence = teamRuntimePresence(team)
   const activeRunDisconnected = runIsActive && runtimePresence !== 'online'
   const runStateLabel = runIsLaunching
@@ -357,9 +342,7 @@ export function LobbyPage({
   const allMembersWaiting = teamMembers.length > 0 && teamMembers.every((member) => (
     isAgentOnDuty(member.runtime)
   ))
-  const goalSaveWillAutoStart = autoStartOnGoalSave
-    && !mcpReloadRequired
-    && team.preflight.bridgeConnected
+  const goalSaveWillAutoStart = team.preflight.bridgeConnected
     && team.preflight.workspaceBound
     && team.preflight.mcpInstalled
     && team.preflight.agentsWaiting
@@ -385,7 +368,7 @@ export function LobbyPage({
           busy={Boolean(busy)}
           autoStartOnGoalSave={goalSaveWillAutoStart}
           primaryLabel={primaryLabel}
-          primaryTitle={mcpReloadRequired ? '请先重载 Cursor，完成后点击继续检测并启动' : team.preflight.blockers.join('；')}
+          primaryTitle={team.preflight.blockers.join('；')}
           primaryHint={primaryHint}
           runStateLabel={runStateLabel}
           runStateKind={runStateKind}
@@ -394,7 +377,7 @@ export function LobbyPage({
           onSaveGoal={async (goal) => {
             await run('goal', async () => {
               const updated = await onUpdateGoal(goal)
-              if (autoStartOnGoalSave && updated.preflight.canLaunch) {
+              if (updated.preflight.canLaunch) {
                 await onLaunch()
                 setNotice('目标已保存，团队启动指令已自动投递；正在自动创建 Agent 会话。')
                 void autoCreateSessions()

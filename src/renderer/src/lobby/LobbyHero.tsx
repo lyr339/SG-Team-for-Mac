@@ -19,7 +19,7 @@ interface LobbyHeroProps {
   autoStartOnGoalSave: boolean
   primaryLabel: string
   primaryTitle?: string
-  /** 下一步行动的一句人话指引（如「写入 .cursor/mcp.json，约 10 秒」）。 */
+  /** 下一步行动的一句人话指引（如「全部就绪，一键开跑」）。 */
   primaryHint: string
   runStateLabel?: string
   runStateKind?: 'launching' | 'active' | 'paused' | 'offline'

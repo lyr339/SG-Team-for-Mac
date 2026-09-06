@@ -57,6 +57,11 @@ function processBlocksFingerprint(blocks: ProcessBlock[]): string {
   ]))
 }
 
+/**
+ * 会话传输层契约：快照已经包含内嵌通道的会话与 presence（LocalSessionBridge 在此
+ * 合并 relay 数据），其事件覆盖 relay 的全部变化（回复落库、投递回填、presence 翻转）。
+ * DesktopSessionService 不再二次合并 relay，只在其上叠加遥测与直播投影。
+ */
 export interface DesktopSessionTransport {
   getSnapshot(): DesktopSnapshot
   sendMessage(input: SendMessageInput): SendMessageAccepted
@@ -303,7 +308,8 @@ export class DesktopSessionService implements DesktopSessionBridge {
   private readonly listeners = new Set<DesktopSessionListener>()
   private readonly unsubscribeBridge: () => void
   private readonly unsubscribeTeam: () => void
-  private readonly unsubscribeRelay?: () => void
+  private emitScheduled = false
+  private disposed = false
   private telemetry = emptyCursorTelemetrySnapshot()
   private telemetryFingerprint = ''
   private watchTimer?: ReturnType<typeof setInterval>
@@ -334,13 +340,8 @@ export class DesktopSessionService implements DesktopSessionBridge {
   }>()
   /** 已写入回复的原生 block；只保留 Observer 当前 256 项窗口内的交集。 */
   private readonly committedProcessBlockIds = new Map<string, Set<string>>()
-  /** Cursor 原生完成回合 FIFO；支持回复落库延迟与连续多回合，不覆盖前一轮。 */
+  /** Cursor 原生完成回合 FIFO：等待封口到对应回复；支持回复落库延迟与连续多回合。 */
   private readonly nativeProcessArchive = new Map<string, LiveProcessState[]>()
-  /** 已贴到回复的过程缓存；基础会话仓库不保存 CDP 过程，后续快照需稳定重放。 */
-  private readonly nativeProcessByReplyId = new Map<string, {
-    channelId: string
-    process: LiveProcessState
-  }>()
   private nativeProcessStream: NativeProcessStreamStatus = {
     state: 'reconnecting',
     detail: '正在连接 Cursor 原生过程流',
@@ -377,10 +378,11 @@ export class DesktopSessionService implements DesktopSessionBridge {
     this.activeRunId = initialTeam.activeRun?.id
     this.activeRunStatus = initialTeam.activeRun?.status
     if (initialTeam.activeRun?.status === 'completed') this.embeddedRelay?.completeScope()
-    this.unsubscribeBridge = bridge.subscribe(() => this.emit())
-    // relay 事件（回复落库、deliveredAt 回填、completeScope、presence 翻转）是
-    // 封口的触发源之一：先封口再推送——getSnapshot 本身不再触碰 SQLite（阶段 E）。
-    this.unsubscribeRelay = embeddedRelay?.subscribe(() => {
+    // 传输层事件（回复落库、deliveredAt 回填、completeScope、presence 翻转）是封口的
+    // 触发源之一：先封口再推送——getSnapshot 本身不触碰 SQLite（阶段 E）。只在这里
+    // 响应一次；此前同时订阅 bridge 与 relay，每个 relay 事件会推两份快照，且第一份
+    // 尚未封口。
+    this.unsubscribeBridge = bridge.subscribe(() => {
       this.sealEmbeddedVirtualProcess()
       this.emit()
     })
@@ -402,7 +404,6 @@ export class DesktopSessionService implements DesktopSessionBridge {
         this.liveCursorProcess.clear()
         this.committedProcessBlockIds.clear()
         this.nativeProcessArchive.clear()
-        this.nativeProcessByReplyId.clear()
         this.pendingNativeProcessByComposer.clear()
         this.contextUsageByComposer.clear()
         this.refreshTelemetry()
@@ -415,7 +416,6 @@ export class DesktopSessionService implements DesktopSessionBridge {
         this.liveCursorProcess.clear()
         this.committedProcessBlockIds.clear()
         this.nativeProcessArchive.clear()
-        this.nativeProcessByReplyId.clear()
         this.pendingNativeProcessByComposer.clear()
         this.contextUsageByComposer.clear()
       }
@@ -428,8 +428,7 @@ export class DesktopSessionService implements DesktopSessionBridge {
 
   getSnapshot(): DesktopSnapshot {
     const base = this.bridge.getSnapshot()
-    const withEmbedded = this.embeddedRelay?.applyTo(base) ?? base
-    const enriched = enrichDesktopSnapshot(withEmbedded, this.team.getSnapshot(), this.telemetry)
+    const enriched = enrichDesktopSnapshot(base, this.team.getSnapshot(), this.telemetry)
     const snapshot: DesktopSnapshot = {
       ...enriched,
       nativeProcessStream: this.nativeProcessStream,
@@ -484,9 +483,8 @@ export class DesktopSessionService implements DesktopSessionBridge {
         return view
       })
     }
-    const withNativeHistory = this.attachNativeProcessArchive(snapshot)
-    const liveAgentResponses = this.liveAgentResponseSnapshot(withNativeHistory)
-    const withResponses = liveAgentResponses ? { ...withNativeHistory, liveAgentResponses } : withNativeHistory
+    const liveAgentResponses = this.liveAgentResponseSnapshot(snapshot)
+    const withResponses = liveAgentResponses ? { ...snapshot, liveAgentResponses } : snapshot
     return this.applyLiveCursorProcess(withResponses)
   }
 
@@ -537,115 +535,6 @@ export class DesktopSessionService implements DesktopSessionBridge {
     return { ...snapshot, liveProcess }
   }
 
-  /**
-   * 把完成的 Cursor 原生过程贴到插件通道随后落地的助手回复（纯内存投影，
-   * 不触碰 SQLite——阶段 E 后持久化统一由封口事件路径承担）：
-   * - 已持久化的回复（relay 水合）进入 nativeProcessByReplyId 稳定缓存，
-   *   后续快照无脑重放（基础会话仓库不保存 CDP 过程）；
-   * - 队列项按「同 turn 精确匹配 → 时间窗就近匹配」绑定到缺失过程的回复；
-   * - 内嵌通道在循环头跳过（其持久化走 sealEmbeddedVirtualProcess）；
-   * - 队列按消费与 30 分钟时效收敛，防止内存无限增长。
-   */
-  private attachNativeProcessArchive(snapshot: DesktopSnapshot): DesktopSnapshot {
-    if (!this.nativeProcessArchive.size && !this.nativeProcessByReplyId.size) return snapshot
-    let conversations = snapshot.conversations
-    let changed = false
-    for (const [channelId, queue] of this.nativeProcessArchive) {
-      // 内嵌持续会话由 outbound 投递边界分段并直接写入对应回复；原生 turn
-      // 从启动到结束通常不变，继续走旧归档会把全程过程塞进最后一条回复。
-      if (this.embeddedRelay?.handlesChannel(channelId)) {
-        continue
-      }
-      const entries = conversations[channelId]
-      if (!entries?.length) continue
-      const consumedTurns = new Set<string>()
-      const usedIndexes = new Set<number>()
-      let nextEntries = entries
-      for (let index = 0; index < entries.length; index += 1) {
-        const entry = entries[index]
-        if (entry?.processBlocks?.length && entry.turn) {
-          const persisted: LiveProcessState = {
-            turn: entry.turn,
-            blocks: entry.processBlocks,
-            truncatedItemCount: entry.processTruncatedItemCount,
-            startedAt: entry.processBlocks[0]?.startedAt ?? entry.timestamp,
-            updatedAt: entry.timestamp
-          }
-          this.nativeProcessByReplyId.set(entry.id, { channelId, process: persisted })
-          if (queue.some((item) => item.turn === entry.turn)) consumedTurns.add(entry.turn)
-          continue
-        }
-        const cached = entry ? this.nativeProcessByReplyId.get(entry.id) : undefined
-        if (!entry || !cached || cached.channelId !== channelId) continue
-        if (nextEntries === entries) nextEntries = [...entries]
-        nextEntries[index] = {
-          ...entry,
-          processBlocks: cached.process.blocks,
-          processTruncatedItemCount: cached.process.truncatedItemCount,
-          turn: cached.process.turn
-        }
-      }
-      for (let replyIndex = 0; replyIndex < nextEntries.length; replyIndex += 1) {
-        const reply = nextEntries[replyIndex]
-        if (!reply || reply.role !== 'assistant' || reply.processBlocks?.length || usedIndexes.has(replyIndex)) continue
-        const exact = reply.turn
-          ? queue.find((item) => !consumedTurns.has(item.turn) && item.turn === reply.turn)
-          : undefined
-        const archived = exact ?? queue
-          .filter((item) => !consumedTurns.has(item.turn))
-          .map((item) => ({ item, lag: reply.timestamp - item.updatedAt }))
-          .filter(({ lag }) => lag >= -5_000 && lag <= 10 * 60_000)
-          .sort((left, right) => Math.abs(left.lag) - Math.abs(right.lag))[0]?.item
-        if (!archived) continue
-        if (nextEntries === entries) nextEntries = [...entries]
-        nextEntries[replyIndex] = {
-          ...reply,
-          processBlocks: archived.blocks,
-          processTruncatedItemCount: archived.truncatedItemCount,
-          turn: archived.turn
-        }
-        this.nativeProcessByReplyId.set(reply.id, { channelId, process: archived })
-        if (this.nativeProcessByReplyId.size > 200) {
-          const oldest = this.nativeProcessByReplyId.keys().next().value
-          if (oldest) this.nativeProcessByReplyId.delete(oldest)
-        }
-        usedIndexes.add(replyIndex)
-        consumedTurns.add(archived.turn)
-      }
-      if (nextEntries !== entries) {
-        if (!changed) conversations = { ...conversations }
-        conversations[channelId] = nextEntries
-        changed = true
-      }
-      const expireBefore = Date.now() - 30 * 60_000
-      const remaining = queue.filter((item) => !consumedTurns.has(item.turn) && item.updatedAt >= expireBefore)
-      if (remaining.length) this.nativeProcessArchive.set(channelId, remaining)
-      else this.nativeProcessArchive.delete(channelId)
-    }
-    // 队列已清空的通道仍需把已绑定过程稳定贴回基础快照。
-    for (const [channelId, entries] of Object.entries(conversations)) {
-      if (this.embeddedRelay?.handlesChannel(channelId)) continue
-      if (this.nativeProcessArchive.has(channelId) || !entries.length) continue
-      let nextEntries = entries
-      for (let index = 0; index < entries.length; index += 1) {
-        const entry = entries[index]
-        const cached = this.nativeProcessByReplyId.get(entry!.id)
-        if (!cached || cached.channelId !== channelId) continue
-        if (nextEntries === entries) nextEntries = [...entries]
-        nextEntries[index] = {
-          ...entry!, processBlocks: cached.process.blocks,
-          processTruncatedItemCount: cached.process.truncatedItemCount,
-          turn: cached.process.turn
-        }
-      }
-      if (nextEntries !== entries) {
-        if (!changed) conversations = { ...conversations }
-        conversations[channelId] = nextEntries
-        changed = true
-      }
-    }
-    return changed ? { ...snapshot, conversations } : snapshot
-  }
 
   /**
    * 事件驱动封口（阶段 E，RC-7）：把「虚拟回合过程 → 已落库回复」的持久化从
@@ -1724,18 +1613,30 @@ export class DesktopSessionService implements DesktopSessionBridge {
   }
 
   dispose(): void {
+    this.disposed = true
     this.stopWatcher()
     if (this.runtimeSignalTimer) clearTimeout(this.runtimeSignalTimer)
     this.runtimeSignalTimer = undefined
     this.pendingRuntimeSignals.clear()
     this.unsubscribeBridge()
     this.unsubscribeTeam()
-    this.unsubscribeRelay?.()
     this.listeners.clear()
   }
 
+  /**
+   * 推送合并到微任务：同一个事件会从多条路径到达这里（传输层事件本身、
+   * TeamControlService 因同一事件重算后的团队快照、遥测刷新），同步逐次推送会让
+   * 渲染层在一个 tick 内收到多份快照，且最先一份还没封口。合并后只在全部同步
+   * 处理（含封口）完成后算一次快照、推一次。
+   */
   private emit(): void {
-    const snapshot = this.getSnapshot()
-    for (const listener of this.listeners) listener(snapshot)
+    if (this.emitScheduled) return
+    this.emitScheduled = true
+    queueMicrotask(() => {
+      this.emitScheduled = false
+      if (this.disposed) return
+      const snapshot = this.getSnapshot()
+      for (const listener of this.listeners) listener(snapshot)
+    })
   }
 }

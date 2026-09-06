@@ -99,11 +99,24 @@ function telemetry(composerId = 'composer-alpha-123'): CursorTelemetrySnapshot {
   }
 }
 
+/**
+ * 传输层替身。与 LocalSessionBridge 同一契约：带 relay 时快照已合并内嵌通道数据、
+ * relay 事件转发给订阅者；服务层不再自行合并 relay。
+ */
 class FakeBridge implements DesktopSessionTransport {
   private readonly listeners = new Set<(snapshot: DesktopSnapshot) => void>()
   private snapshot = bridgeSnapshot()
 
-  getSnapshot(): DesktopSnapshot { return structuredClone(this.snapshot) }
+  constructor(private readonly relay?: ChannelMessageRelay) {
+    relay?.subscribe(() => {
+      for (const listener of this.listeners) listener(this.getSnapshot())
+    })
+  }
+
+  getSnapshot(): DesktopSnapshot {
+    const base = structuredClone(this.snapshot)
+    return this.relay ? this.relay.applyTo(base) : base
+  }
   sendMessage() { return { commandId: 'command-1' } }
   subscribe(listener: (snapshot: DesktopSnapshot) => void): () => void {
     this.listeners.add(listener)
@@ -210,6 +223,52 @@ describe('desktop Cursor session enrichment', () => {
     }
   })
 
+  it('pushes one snapshot per transport event, computed after sealing, and coalesces bursts', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const repository = new SqliteChannelMessageRepository(
+      join(mkdtempSync(join(tmpdir(), 'sg-emit-coalesce-')), 'channel.sqlite3')
+    )
+    const relay = new ChannelMessageRelay(repository)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
+      relay.resetScope('run-a', 1)
+      const service = new DesktopSessionService(
+        new FakeBridge(relay), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
+      )
+      try {
+        const pushes: DesktopSnapshot[] = []
+        service.subscribe((snapshot) => pushes.push(snapshot))
+        expect(pushes).toHaveLength(1)
+        // 一个 relay 事件同时经传输层与团队快照两条路径到达服务层：只推一次。
+        relay.sendMessage({ channelId: '1', text: '第一条' })
+        expect(pushes).toHaveLength(1)
+        await Promise.resolve()
+        expect(pushes).toHaveLength(2)
+        expect(pushes[1]?.conversations['1']?.map((entry) => entry.text)).toEqual(['第一条'])
+        // 同一 tick 内的多次触发合并为一份快照，且是最终状态。
+        relay.sendMessage({ channelId: '1', text: '第二条' })
+        relay.sendMessage({ channelId: '1', text: '第三条' })
+        await Promise.resolve()
+        expect(pushes).toHaveLength(3)
+        expect(pushes[2]?.conversations['1']?.map((entry) => entry.text)).toEqual(['第一条', '第二条', '第三条'])
+        // dispose 后不再推送。
+        service.dispose()
+        relay.sendMessage({ channelId: '1', text: '第四条' })
+        await Promise.resolve()
+        expect(pushes).toHaveLength(3)
+      } finally {
+        service.dispose()
+      }
+    } finally {
+      repository.close()
+    }
+  })
+
   it('suppresses transcript fallback when the reply is already persisted by record_reply', async () => {
     const active = teamSnapshot('composer-alpha-123')
     active.runs = [{
@@ -235,7 +294,7 @@ describe('desktop Cursor session enrichment', () => {
         }]
       }
       const service = new DesktopSessionService(
-        new FakeBridge(),
+        new FakeBridge(relay),
         new FakeTeam(active),
         { readWorkspace: () => telemetryWithResponse },
         relay,
@@ -284,7 +343,7 @@ describe('desktop Cursor session enrichment', () => {
 
       const team = new FakeTeam(active)
       service = new DesktopSessionService(
-        new FakeBridge(),
+        new FakeBridge(relay),
         team,
         { readWorkspace: () => telemetry() },
         relay,
@@ -468,7 +527,7 @@ describe('desktop Cursor session enrichment', () => {
       }]
     }
     const service = new DesktopSessionService(
-      new FakeBridge(), new FakeTeam(active), { readWorkspace: () => transcriptTelemetry }, relay,
+      new FakeBridge(relay), new FakeTeam(active), { readWorkspace: () => transcriptTelemetry }, relay,
       { inspectComposerRuntime: async () => ({}) }
     )
     try {
@@ -701,53 +760,6 @@ describe('desktop Cursor session enrichment', () => {
     }
   })
 
-  it('keeps consecutive native turns FIFO-bound to their exact assistant replies', () => {
-    const active = teamSnapshot('composer-alpha-123')
-    active.runs = [{
-      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
-      status: 'running', createdAt: 1, updatedAt: 1
-    }]
-    active.activeRun = active.runs[0]
-    const bridge = new FakeBridge()
-    const service = new DesktopSessionService(
-      bridge,
-      new FakeTeam(active),
-      { readWorkspace: () => telemetry() },
-      undefined,
-      { inspectComposerRuntime: async () => ({}) }
-    )
-    try {
-      service.refreshTelemetry()
-      const base = Date.now()
-      for (const [turnId, blockId, at] of [['user-turn-1', 'tool-turn-1', base], ['user-turn-2', 'tool-turn-2', base + 1_000]] as const) {
-        service.notifyNativeProcessSnapshot({
-          composerId: 'composer-alpha-123', observedAt: at, isGenerating: true,
-          process: {
-            turnId,
-            items: [{ kind: 'tool', id: blockId, toolName: 'read_file', toolKind: 'read', summary: blockId, status: 'running' }],
-            generatingBubbleCount: 1
-          }
-        })
-        service.notifyNativeProcessSnapshot({
-          composerId: 'composer-alpha-123', observedAt: at + 100, isGenerating: false
-        })
-      }
-      bridge.setConversations({
-        '1': [
-          { id: 'reply:one', channelId: '1', role: 'assistant', text: '第一轮', timestamp: base + 200, status: 'complete', source: 'cursor' },
-          { id: 'reply:two', channelId: '1', role: 'assistant', text: '第二轮', timestamp: base + 1_200, status: 'complete', source: 'cursor' }
-        ]
-      })
-      const first = service.getSnapshot().conversations['1']!
-      expect(first[0]).toMatchObject({ turn: 'cursor:user-turn-1', processBlocks: [{ id: 'tool-turn-1' }] })
-      expect(first[1]).toMatchObject({ turn: 'cursor:user-turn-2', processBlocks: [{ id: 'tool-turn-2' }] })
-      const second = service.getSnapshot().conversations['1']!
-      expect(second.map((entry) => entry.processBlocks?.[0]?.id)).toEqual(['tool-turn-1', 'tool-turn-2'])
-    } finally {
-      service.dispose()
-    }
-  })
-
   it('does not finalize a native process when an active runtime inspect omits process payload', () => {
     vi.useFakeTimers()
     const base = Date.now()
@@ -815,7 +827,7 @@ describe('desktop Cursor session enrichment', () => {
     relay.resetScope('run-a', 1)
     const attachProcess = vi.spyOn(relay, 'attachProcessToReply')
     const service = new DesktopSessionService(
-      new FakeBridge(), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
+      new FakeBridge(relay), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
     )
     const update = (service as unknown as {
       updateLiveCursorProcess(channelId: string, evidence: CursorComposerRuntimeEvidence): boolean
@@ -898,7 +910,7 @@ describe('desktop Cursor session enrichment', () => {
     const relay = new ChannelMessageRelay(repository)
     relay.resetScope('run-a', 1)
     const service = new DesktopSessionService(
-      new FakeBridge(), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
+      new FakeBridge(relay), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
     )
     const internals = service as unknown as {
       updateLiveCursorProcess(
@@ -1134,7 +1146,7 @@ describe('desktop Cursor session enrichment', () => {
       // Agent 取走消息进入长任务：MCP 心跳停在 1_000，此后不再调用任何工具。
       repository.touchPresence('1', { waiting: false, connectionPhase: 'processing', lastSeenAt: 1_000 }, 1_000)
       const service = new DesktopSessionService(
-        new FakeBridge(),
+        new FakeBridge(relay),
         new FakeTeam(active),
         { readWorkspace: () => ({ ...telemetry(), composers: [] }) },
         relay,
@@ -1579,7 +1591,7 @@ describe('虚拟回合封口（阶段 B：outboundId 精确关闭边界）', () 
     const channelService = new ChannelMessageService(repository)
     const dbPath = repository.path
     const service = new DesktopSessionService(
-      new FakeBridge(),
+      new FakeBridge(relay),
       new FakeTeam(active),
       { readWorkspace: () => telemetry() },
       relay,
@@ -1872,7 +1884,7 @@ describe('过程帧契约（阶段 C：snapshotComplete 权威合并）', () => 
     const relay = new ChannelMessageRelay(repository)
     const channelService = new ChannelMessageService(repository)
     const service = new DesktopSessionService(
-      new FakeBridge(),
+      new FakeBridge(relay),
       new FakeTeam(active),
       { readWorkspace: () => telemetry() },
       relay,
@@ -1975,7 +1987,7 @@ describe('事件驱动封口与持久化（阶段 E：RC-7）', () => {
     const relay = new ChannelMessageRelay(repository)
     const channelService = new ChannelMessageService(repository)
     const service = new DesktopSessionService(
-      new FakeBridge(),
+      new FakeBridge(relay),
       new FakeTeam(active),
       { readWorkspace: () => telemetry() },
       relay,
@@ -2108,7 +2120,7 @@ describe('事件驱动封口与持久化（阶段 E：RC-7）', () => {
     const relay2 = new ChannelMessageRelay(repository2)
     relay2.start(250)
     const service2 = new DesktopSessionService(
-      new FakeBridge(),
+      new FakeBridge(relay2),
       new FakeTeam(f.active),
       { readWorkspace: () => telemetry() },
       relay2,
@@ -2257,7 +2269,7 @@ describe('直播生成信号下发（RC-9：generating 随 LiveProcessState 传�
     )
     const relay = new ChannelMessageRelay(repository)
     const service = new DesktopSessionService(
-      new FakeBridge(),
+      new FakeBridge(relay),
       new FakeTeam(active),
       { readWorkspace: () => telemetry() },
       relay,
@@ -2315,7 +2327,7 @@ describe('封口防线：最终正文不重复成为过程 message（§8.4-4，2
     const relay = new ChannelMessageRelay(repository)
     const channelService = new ChannelMessageService(repository)
     const service = new DesktopSessionService(
-      new FakeBridge(),
+      new FakeBridge(relay),
       new FakeTeam(active),
       { readWorkspace: () => telemetry() },
       relay,
@@ -2487,7 +2499,7 @@ describe('会话交接「等待新会话」：sendMessage 把意图换算为席�
     repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
     relay.resetScope('run-a', 1)
     const service = new DesktopSessionService(
-      new FakeBridge(), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
+      new FakeBridge(relay), new FakeTeam(active), { readWorkspace: () => telemetry() }, relay
     )
     return { service, repository, relay }
   }

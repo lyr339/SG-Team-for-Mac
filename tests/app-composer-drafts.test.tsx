@@ -89,7 +89,7 @@ function installDesktopMock(desktopSnapshot: DesktopSnapshot = snapshot): void {
     getCursorUpdatePreferences: async () => ({}),
     detectCursorWorkspace: async () => ({ state: 'none', source: 'test', confidence: 0, candidates: [], detail: '' }),
     refreshAozaiBalance: async () => ({ saved: false }),
-    installTaskMcp: async () => ({ ok: true, restartRequired: false }),
+    installTaskMcp: async () => ({ workspacePath: '/workspace/demo', workspaceId: 'demo', runId: 'run-1', serverNames: ['SG Team'] }),
     sendMessage
   }
   const api = new Proxy(base, {

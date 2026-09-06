@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute } from 'node:path'
 import type { AgentRegistrationBatch } from '../../application/agent-authorization'
 import { SG_TEAM_MCP_SERVER_ID } from '../../domain/channel-message'
 import { workspaceIdentityOf } from './workspace-identity'
@@ -23,17 +23,11 @@ export interface CursorMcpInstallInput {
 }
 
 export interface CursorMcpInstallResult {
-  ok: true
   workspacePath: string
   workspaceId: string
-  /** 工作区级 Cursor MCP 配置路径（仅供展示；SG Team 只依赖全局原生条目，不再写它）。 */
-  configPath: string
-  backupPath?: string
   generation: string
   serverNames: string[]
   registrations: AgentRegistrationBatch
-  /** 全局条目由 Cursor 原生监听，接入不需要重载 MCP。 */
-  restartRequired: boolean
 }
 
 function safeGeneration(value?: string): string {
@@ -99,14 +93,11 @@ export class CursorMcpInstaller {
     input.activateAgents?.(registrations)
 
     return {
-      ok: true,
       workspacePath,
       workspaceId,
-      configPath: join(workspacePath, '.cursor', 'mcp.json'),
       generation,
       serverNames: [SG_TEAM_MCP_SERVER_ID],
-      registrations,
-      restartRequired: false
+      registrations
     }
   }
 }

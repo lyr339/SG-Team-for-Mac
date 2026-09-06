@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -47,10 +47,7 @@ describe('CursorMcpInstaller', () => {
 
     // 用户自己的工作区配置原样保留：SG Team 只依赖全局原生条目。
     expect(readFileSync(configPath, 'utf8')).toBe(original)
-    // workspacePath 经 realpath（macOS 的 /var → /private/var），configPath 随之派生。
-    expect(result.configPath).toBe(join(result.workspacePath, '.cursor', 'mcp.json'))
-    expect(result.backupPath).toBeUndefined()
-    expect(result.restartRequired).toBe(false)
+    expect(result.workspacePath).toBe(realpathSync(files.workspace))
     expect(result.serverNames).toEqual(['SG Team'])
     expect(result.registrations.agents.map((agent) => agent.agentSessionId)).toEqual([
       `${result.workspaceId}:ch-1:generation123`,
@@ -159,7 +156,7 @@ describe('CursorMcpInstaller', () => {
     })).not.toThrow()
 
     const second = install('generation456', 'team-run-next')
-    expect(second.restartRequired).toBe(false)
+    expect(second.generation).toBe('generation456')
     expect(() => repository.assertAgentAuthorized({
       agentSessionId: first.registrations.agents[0]!.agentSessionId,
       runId: 'team-run-main',

@@ -112,7 +112,6 @@ export function App(): React.JSX.Element {
   const [configurationSection, setConfigurationSection] = useState<ConfigurationSection>('team')
   const [sessionListRequested, setSessionListRequested] = useState(false)
   const [teamNotice, setTeamNotice] = useState('')
-  const [teamMcpReloadRequired, setTeamMcpReloadRequired] = useState(false)
   const [handoffOptions, setHandoffOptions] = useState<TeamHandoffOptions>()
   const [handoffBusy, setHandoffBusy] = useState(false)
   const [handoffError, setHandoffError] = useState('')
@@ -452,12 +451,7 @@ export function App(): React.JSX.Element {
     const created = await window.sgDesktop.createIndependentSessions(input)
     acceptTeamControl(created)
     mcpReconcileRunRef.current = reconcileKeyOf(created)
-    const installation = await window.sgDesktop.installTaskMcp()
-    if (!installation.ok) throw new Error('独立会话 MCP 安装已取消')
-    if (installation.restartRequired) {
-      setTeamMcpReloadRequired(true)
-      throw new Error('SG Team MCP 已更新，请重载 Cursor 后再次补齐独立会话')
-    }
+    await window.sgDesktop.installTaskMcp()
     const [latest, desktop] = await Promise.all([
       window.sgDesktop.getTeamControlSnapshot(),
       window.sgDesktop.getSnapshot()
@@ -652,17 +646,11 @@ export function App(): React.JSX.Element {
     if (mcpReconcileRunRef.current === topologyKey) return
     mcpReconcileRunRef.current = topologyKey
     void window.sgDesktop.installTaskMcp()
-      .then(async (installation) => {
-        if (installation.ok) {
-          setTeamMcpReloadRequired(installation.restartRequired)
-          setTeamNotice(installation.restartRequired
-            ? '已自动升级为稳定通道 MCP；请重载 Cursor 一次，之后新一轮无需重复重载。'
-            : '本轮通道已自动接入，无需重载 Cursor。')
-        }
+      .then(async () => {
+        setTeamNotice('本轮通道已自动接入 SG Team。')
         acceptTeamControl(await window.sgDesktop.getTeamControlSnapshot())
       })
       .catch((reason: unknown) => {
-        setTeamMcpReloadRequired(true)
         setTeamNotice(`自动接入 MCP 失败：${reason instanceof Error ? reason.message : String(reason)}`)
       })
   }, [
@@ -905,17 +893,9 @@ export function App(): React.JSX.Element {
             acceptTeamControl(result)
             mcpReconcileRunRef.current = reconcileKeyOf(result)
             try {
-              const installation = await window.sgDesktop.installTaskMcp()
-              setTeamMcpReloadRequired(installation.ok && installation.restartRequired)
-              if (!installation.ok) {
-                setTeamNotice('团队已创建；团队 MCP 尚未安装。请安装后在 Cursor 手动启动 Agent 会话。')
-              } else if (installation.restartRequired) {
-                setTeamNotice('团队已创建并安装 SG Team MCP；请重载 Cursor，再手动启动 Agent 会话。')
-              } else {
-                setTeamNotice('团队与 SG Team MCP 已就绪。请在 Cursor 手动启动 Agent 会话，拾光会自动接管。')
-              }
+              await window.sgDesktop.installTaskMcp()
+              setTeamNotice('团队与 SG Team MCP 已就绪。请在 Cursor 手动启动 Agent 会话，拾光会自动接管。')
             } catch (reason) {
-              setTeamMcpReloadRequired(true)
               setTeamNotice(`团队已创建；MCP 自动接入失败：${reason instanceof Error ? reason.message : String(reason)}`)
             }
             const [desktop, latestTeam, tasks, messages] = await Promise.all([
@@ -939,8 +919,6 @@ export function App(): React.JSX.Element {
           detectedWorkspace={cursorWorkspace?.workspace}
           collaboration={activeRunCollaboration}
           externalNotice={teamNotice}
-          autoStartOnGoalSave={!teamMcpReloadRequired}
-          mcpReloadRequired={teamMcpReloadRequired}
           onChooseWorkspace={chooseWorkspace}
           onReconfigure={async () => {
             setTeamSetup(await window.sgDesktop.prepareActiveTeamSetup())
@@ -951,11 +929,10 @@ export function App(): React.JSX.Element {
             return result
           }}
           onInstallMcp={async () => {
-            const installation = await window.sgDesktop.installTaskMcp()
-            if (installation.ok) setTeamMcpReloadRequired(installation.restartRequired)
+            await window.sgDesktop.installTaskMcp()
             const snapshot = await window.sgDesktop.getTeamControlSnapshot()
             acceptTeamControl(snapshot)
-            return { installation, snapshot }
+            return snapshot
           }}
           onLaunch={async () => {
             const result = await window.sgDesktop.launchTeam()
@@ -1190,14 +1167,9 @@ export function App(): React.JSX.Element {
             acceptTeamControl(created)
             acceptCollaboration(emptyTeamCollaborationSnapshot(created.activeRun?.id))
             mcpReconcileRunRef.current = reconcileKeyOf(created)
-            let restartRequired = false
             let issue: string | undefined
             try {
-              const installation = await window.sgDesktop.installTaskMcp()
-              restartRequired = installation.ok ? installation.restartRequired : false
-              if (!installation.ok) {
-                issue = '团队 MCP 安装已取消，请安装后再在 Cursor 手动启动 Agent 会话。'
-              }
+              await window.sgDesktop.installTaskMcp()
             } catch (reason) {
               issue = `MCP 自动接入失败：${reason instanceof Error ? reason.message : String(reason)}`
             }
@@ -1209,17 +1181,10 @@ export function App(): React.JSX.Element {
             acceptTeamControl(snapshot)
             acceptSnapshot(desktop)
             acceptCollaboration(messages)
-            setTeamMcpReloadRequired(restartRequired)
             setTeamNotice(issue
               ? `新一轮已建立；${issue}`
-              : restartRequired
-                ? '新一轮已建立；请重载 Cursor，再手动启动 Agent 会话。'
-                : '新一轮已建立；请填写目标，并在 Cursor 手动启动 Agent 会话。')
-            return {
-              snapshot,
-              restartRequired,
-              issue
-            }
+              : '新一轮已建立；请填写目标，并在 Cursor 手动启动 Agent 会话。')
+            return { snapshot, issue }
           }}
         />
       ) : selectedSession ? (

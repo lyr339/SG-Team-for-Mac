@@ -39,11 +39,12 @@ The marker line `【真实用户消息处理完后进入 check_messages 待命�
 
 ## Install from the desktop app
 
-Open the lobby and press **安装团队 MCP**, then explicitly choose the Cursor workspace. The installer:
+The lobby's **接入团队 MCP** step (also run automatically when a run's member topology changes) registers the run's seats with the server:
 
 - registers a fresh agent generation in SQLite and revokes the previous generation;
 - does not write the workspace `.cursor/mcp.json` at all — the only MCP entry is the global one below;
-- rolls nothing back on failure because it writes nothing to disk besides SQLite.
+- never requires a Cursor reload: the global entry is watched natively, so there is no "restart required" state anywhere in the app;
+- reports failures as IPC errors; nothing is written to disk besides SQLite, so there is nothing to roll back.
 
 The single native `SG Team` entry in the global `~/.cursor/mcp.json` is registered at app startup; the production bundle lives outside `app.asar` so Cursor can execute it with `ELECTRON_RUN_AS_NODE=1`.
 

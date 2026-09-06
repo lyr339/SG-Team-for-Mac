@@ -178,19 +178,13 @@ export type ChooseTeamWorkspaceResult =
   | { kind: 'existing'; snapshot: TeamControlSnapshot }
   | { kind: 'setup'; draft: TeamSetupDraft }
 
-export type McpInstallationResult =
-  | {
-      ok: true
-      workspacePath: string
-      workspaceId: string
-      runId: string
-      configPath: string
-      backupPath?: string
-      serverNames: string[]
-      autoInjected: boolean
-      restartRequired: boolean
-    }
-  | { ok: false; cancelled: true }
+/** 团队 MCP 接入结果：登记 Agent 注册身份并接管内嵌通道；失败以 IPC 异常传播。 */
+export interface McpInstallationResult {
+  workspacePath: string
+  workspaceId: string
+  runId: string
+  serverNames: string[]
+}
 
 export interface SgDesktopApi {
   listCursorAccounts(): Promise<CursorAccountMetadata[]>
