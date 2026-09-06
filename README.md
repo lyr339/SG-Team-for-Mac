@@ -29,12 +29,17 @@ On Windows, electron-builder shells out to `powershell.exe`; make sure
 it from.
 
 Design walkthrough (pure-browser preview with a mocked desktop API, plus a
-headless screenshot matrix over the right-hand inspector: panels × light/dark ×
-narrow × transparent × reduced-motion × hover states):
+headless screenshot matrix over the right-hand inspector and the 运行 page:
+panels / run states × light/dark × narrow × transparent × reduced-motion ×
+interactions):
 
 ```bash
 npm run preview:ui      # http://127.0.0.1:5174/preview.html
 npm run preview:shots   # writes preview-screenshots/*.png (needs Chrome or Edge)
+node scripts/preview-shots.mjs --only run-team-active-light,run-independent-mixed-dark
 ```
+
+If Vite binds to `localhost` only, point the shot script at it with
+`PREVIEW_BASE=http://localhost:5174`.
 
 Architecture and protocol decisions live in `docs/`.

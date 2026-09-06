@@ -5,9 +5,9 @@ import { applyAppearancePreferences, readAppearancePreferences } from './appeara
 import { migrateLegacyStorageKeys } from './storage-migration'
 import './claude-theme.css'
 import './styles.css'
-import './team-v2.css'
 import './team-setup.css'
 import './lobby/lobby.css'
+import './run/run.css'
 import './controls.css'
 import './workspace-inspector.css'
 

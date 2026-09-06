@@ -3,7 +3,7 @@ import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CursorModelOption, CursorModelSelection } from '../src/domain/cursor-model'
-import { LobbySessionLaunchTile } from '../src/renderer/src/lobby/LobbySessionLaunchTile'
+import { RunSeats } from '../src/renderer/src/run/RunSeats'
 
 const opus: CursorModelOption = {
   modelId: 'claude-opus-5',
@@ -84,7 +84,7 @@ function effortOf(selection: CursorModelSelection | undefined): string | undefin
   return selection?.parameters.find((parameter) => parameter.id === 'effort')?.value
 }
 
-describe('lobby per-session model config', () => {
+describe('run seats · per-session model config', () => {
   let container: HTMLDivElement
   let root: Root
 
@@ -107,15 +107,15 @@ describe('lobby per-session model config', () => {
     function Harness(): React.JSX.Element {
       const [selection, setSelection] = useState<CursorModelSelection>(() => structuredClone(opus))
       return (
-        <LobbySessionLaunchTile
-          pendingChannels={['3']}
+        <RunSeats
+          rows={[{ channelId: '3', name: '会话 3', pending: true }]}
           cursorModels={[opus]}
           selections={{ '3': selection }}
-          isPrelaunch
           busy={false}
+          createLabel="一键创建会话（1）"
           cdpAutoHealEnabled={false}
-          onLaunch={() => launched(selection)}
-          onModelSave={async (_channelId, next) => {
+          onCreate={() => launched(selection)}
+          onModelSave={async (_channelId: string, next: CursorModelSelection) => {
             persisted.push(structuredClone(next))
             setSelection(structuredClone(next))
           }}
@@ -158,20 +158,20 @@ describe('lobby per-session model config', () => {
 
   it('highlights and focuses the one-click action when goal guidance is active', async () => {
     await act(async () => root.render(
-      <LobbySessionLaunchTile
-        pendingChannels={['1', '2']}
+      <RunSeats
+        rows={[{ channelId: '1', name: '会话 1', pending: true }, { channelId: '2', name: '会话 2', pending: true }]}
         cursorModels={[opus]}
         selections={{ '1': structuredClone(opus), '2': structuredClone(opus) }}
-        isPrelaunch
         busy={false}
+        createLabel="一键创建会话（2）"
         guided
         cdpAutoHealEnabled={false}
-        onLaunch={() => {}}
+        onCreate={() => {}}
         onModelSave={() => {}}
       />
     ))
     await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)) })
-    expect(container.querySelector('.lobby-launch.is-guided')).not.toBeNull()
+    expect(container.querySelector('.run-seats.is-guided')).not.toBeNull()
     expect(container.textContent).toContain('下一步')
     expect(container.textContent).toContain('确认模型后创建 2 个 Cursor 会话')
     const launch = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
@@ -181,14 +181,14 @@ describe('lobby per-session model config', () => {
 
   it('keeps the editor open when persistence fails', async () => {
     await act(async () => root.render(
-      <LobbySessionLaunchTile
-        pendingChannels={['3']}
+      <RunSeats
+        rows={[{ channelId: '3', name: '会话 3', pending: true }]}
         cursorModels={[opus]}
         selections={{ '3': structuredClone(opus) }}
-        isPrelaunch
         busy={false}
+        createLabel="一键创建会话（1）"
         cdpAutoHealEnabled={false}
-        onLaunch={() => {}}
+        onCreate={() => {}}
         onModelSave={async () => { throw new Error('落库失败') }}
       />
     ))
@@ -202,14 +202,14 @@ describe('lobby per-session model config', () => {
 
   it('mirrors Cursor linkage when GPT-5.6 Sol Fast conflicts with 1M', async () => {
     await act(async () => root.render(
-      <LobbySessionLaunchTile
-        pendingChannels={['1']}
+      <RunSeats
+        rows={[{ channelId: '1', name: '会话 1', pending: true }]}
         cursorModels={[gptSol]}
         selections={{ '1': structuredClone(gptSol) }}
-        isPrelaunch
         busy={false}
+        createLabel="一键创建会话（1）"
         cdpAutoHealEnabled={false}
-        onLaunch={() => {}}
+        onCreate={() => {}}
         onModelSave={() => {}}
       />
     ))

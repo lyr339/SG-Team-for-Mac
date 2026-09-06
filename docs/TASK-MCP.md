@@ -39,7 +39,7 @@ The marker line `【真实用户消息处理完后进入 check_messages 待命�
 
 ## Install from the desktop app
 
-The lobby's **接入团队 MCP** step (also run automatically when a run's member topology changes) registers the run's seats with the server:
+The run page's **接入团队 MCP** step (also run automatically when a run's member topology changes) registers the run's seats with the server:
 
 - registers a fresh agent generation in SQLite and revokes the previous generation;
 - does not write the workspace `.cursor/mcp.json` at all — the only MCP entry is the global one below;

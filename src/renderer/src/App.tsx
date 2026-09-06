@@ -7,14 +7,15 @@ import type {
 } from '../../shared/desktop-api'
 import { emptyTaskPoolSnapshot, newestTaskPoolSnapshot } from '../../domain/task-pool'
 import type { CursorUsageSnapshot } from '../../domain/cursor-usage'
-import { emptyTeamControlSnapshot, type TeamRunStatus } from '../../domain/team-control'
+import { emptyTeamControlSnapshot, type TeamRunStatus, type WorkspaceRunMode } from '../../domain/team-control'
 import { emptyTeamCollaborationSnapshot } from '../../domain/team-collaboration'
 import { DesktopShell, type AppModule } from './DesktopShell'
 import { SessionOverview } from './SessionOverview'
 import { SessionWorkspace } from './SessionWorkspace'
 import { SessionSidebar } from './SessionSidebar'
 import { WorkspaceInspector } from './WorkspaceInspector'
-import { LobbyPage, type ConfigurationSection } from './lobby/LobbyPage'
+import { RunPage } from './run/RunPage'
+import { LobbyAccountTile, type LobbyAccountTileProps } from './lobby/LobbyAccountTile'
 import { TeamSetupPage } from './team/TeamSetupPage'
 import { ManualHandoffDialog } from './team/ManualHandoffDialog'
 import { SessionHandoffDialog } from './SessionHandoffDialog'
@@ -100,16 +101,18 @@ export function App(): React.JSX.Element {
   const [teamControl, setTeamControl] = useState(emptyTeamControlSnapshot())
   const [collaboration, setCollaboration] = useState(emptyTeamCollaborationSnapshot())
   const [teamSetup, setTeamSetup] = useState<TeamSetupDraft>()
-  // URL hash 深链接优先；日常启动默认直达会话工作区。
+  // URL hash 深链接优先；日常启动默认直达会话工作区。`lobby` / `config` 是运行页的旧别名。
   const [activeModule, setActiveModule] = useState<AppModule>(() => {
     const [module] = window.location.hash.slice(1).split(':')
-    return module === 'lobby' || module === 'config' ? 'lobby' : 'sessions'
+    if (module === 'run' || module === 'lobby' || module === 'config') return 'run'
+    return module === 'account' ? 'account' : 'sessions'
   })
   const [selectedChannelId, setSelectedChannelId] = useState<string | undefined>(() => {
     const [module, channel] = window.location.hash.slice(1).split(':')
     return module === 'sessions' && channel ? channel : readLastSessionChannel()
   })
-  const [configurationSection, setConfigurationSection] = useState<ConfigurationSection>('team')
+  /** 运行页无活跃运行时预选的模式（会话总览的「创建独立会话」直达独立配置）。 */
+  const [runStartMode, setRunStartMode] = useState<WorkspaceRunMode>('team')
   const [sessionListRequested, setSessionListRequested] = useState(false)
   const [teamNotice, setTeamNotice] = useState('')
   const [handoffOptions, setHandoffOptions] = useState<TeamHandoffOptions>()
@@ -809,7 +812,7 @@ export function App(): React.JSX.Element {
     detected: boolean
   ): Promise<void> => {
     if ('cancelled' in result) return
-    setActiveModule('lobby')
+    setActiveModule('run')
     setSelectedChannelId(undefined)
     if (result.kind === 'setup') {
       setTeamSetup(result.draft)
@@ -834,6 +837,206 @@ export function App(): React.JSX.Element {
     await applyWorkspaceSelection(await window.sgDesktop.chooseTeamWorkspace(), false)
   }, [applyWorkspaceSelection])
 
+
+  const accountPanel: LobbyAccountTileProps = {
+    accounts: cursorAccounts,
+    busy: cursorAccountBusy,
+    error: cursorAccountError,
+    onSave: async (input) => {
+      setCursorAccountBusy(true); setCursorAccountError('')
+      try {
+        setCursorAccounts(await window.sgDesktop.saveCursorAccount(input))
+        // 新账号默认设为活跃（makeActive），一致性锚点变化 → 立即重算指示
+        void refreshRuntimeMatch()
+        // 新活跃账号档位未知，档位行同步重查
+        void refreshMembership()
+        void refreshAccountMemberships()
+      }
+      catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)); throw reason }
+      finally { setCursorAccountBusy(false) }
+    },
+    onSelect: async (accountId) => {
+      setCursorAccountBusy(true); setCursorAccountError('')
+      try { setCursorAccounts(await window.sgDesktop.selectCursorAccount(accountId)) }
+      catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+      finally { setCursorAccountBusy(false) }
+      // 换活跃账号会改变劈叉判定（Cursor 登录没变、锚点变了），立即刷新状态行
+      void refreshRuntimeMatch()
+      // 换活跃账号 = 档位锚点变化，同步重查
+      void refreshMembership()
+    },
+    onRemove: async (accountId) => {
+      setCursorAccountBusy(true); setCursorAccountError('')
+      try {
+        setCursorAccounts(await window.sgDesktop.removeCursorAccount(accountId))
+        // 删除活跃账号时 vault 会顺延活跃位，一致性锚点变化 → 立即重算指示
+        void refreshRuntimeMatch()
+        // 活跃位顺延后档位未知，同步重查
+        void refreshMembership()
+        void refreshAccountMemberships()
+      }
+      catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+      finally { setCursorAccountBusy(false) }
+    },
+    onImportFromLocal: async () => {
+      setCursorAccountBusy(true); setCursorAccountError('')
+      try {
+        setCursorAccounts(await window.sgDesktop.importCursorAccountFromLocalCursor())
+        void refreshRuntimeMatch()
+        void refreshMembership()
+        void refreshAccountMemberships()
+      }
+      catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+      finally { setCursorAccountBusy(false) }
+    },
+    onImportFromBrowser: async () => {
+      setCursorAccountBusy(true); setCursorAccountError('')
+      try {
+        setCursorAccounts(await window.sgDesktop.importCursorAccountFromBrowser())
+        void refreshRuntimeMatch()
+        void refreshMembership()
+        void refreshAccountMemberships()
+      }
+      catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+      finally { setCursorAccountBusy(false) }
+    },
+    onImportFromFingerprint: async () => {
+      setCursorAccountBusy(true); setCursorAccountError('')
+      try {
+        setCursorAccounts(await window.sgDesktop.importCursorAccountFromFingerprint())
+        void refreshRuntimeMatch()
+        void refreshMembership()
+        void refreshAccountMemberships()
+      }
+      catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+      finally { setCursorAccountBusy(false) }
+    },
+    // 提前登录：开窗导航 cursor.com（不关窗；失败提示走账号区错误条）
+    onOpenFingerprintLogin: async () => {
+      setCursorAccountBusy(true); setCursorAccountError('')
+      try { await window.sgDesktop.openFingerprintLoginPage() }
+      catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+      finally { setCursorAccountBusy(false) }
+    },
+    onCleanupFingerprintEnvironment: async () => {
+      // 清理只影响指纹浏览器 profile，不锁账号操作（面板内自有 busy/反馈态）。
+      await window.sgDesktop.cleanupFingerprintEnvironment()
+    },
+    onRestartWithAccount: async (accountId) => {
+      setCursorAccountBusy(true); setCursorAccountError('')
+      try {
+        const result = await window.sgDesktop.restartCursorWithAccount(accountId)
+        if (!result.switched) return
+        if (!result.runtimeVerified) {
+          setCursorAccountError('⚠️ Cursor 已重启，但运行时登录态尚未完成确认。')
+          return
+        }
+        if (result.tokenExpired) {
+          setCursorAccountError('⚠️ 该账号的 Token 已过期，请重新获取后再切换。')
+          return
+        }
+        const relaunchNote = result.relaunchMode === 'cdp'
+          ? result.cdpPortReady
+            ? '调试端口已就绪，会话创建能力立即可用。'
+            : '已带调试端口拉起，端口仍在启动中，稍候即可创建会话。'
+          : result.relaunchMode === 'failed'
+            ? '拉起 Cursor 失败，请手动启动 Cursor。'
+            : '已重新拉起 Cursor。'
+        setCursorAccountError(
+          `✅ Cursor 运行时已确认目标账号，登录态与机器码均已落库（${result.killedCursor ? '已重启' : 'Cursor 原先未运行'}；${relaunchNote}）`
+        )
+        // 切换成功 = 运行态与活跃账号重新对齐，立即刷新被动状态行
+        void refreshRuntimeMatch()
+        // 切换后运行账号变了，档位行同步重查
+        void refreshMembership()
+        void refreshAccountMemberships([accountId])
+      } catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
+      finally { setCursorAccountBusy(false) }
+    },
+    runtimeMatch,
+    membership: membershipStatus,
+    accountMemberships,
+    onRefreshMembership: async (accountId) => {
+      if (accountId) await refreshAccountMemberships([accountId])
+      else await refreshMembership()
+    },
+    aozaiStatus,
+    aozaiBusy,
+    aozaiError,
+    aozaiProgress,
+    aozaiFeedback,
+    onSaveAozaiCard: saveAozaiCard,
+    onClearAozaiCard: clearAozaiCard,
+    onRefreshAozaiBalance: refreshAozaiBalance,
+    onProcessAozaiAccount: processAozaiAccount,
+    automationSettings: accountAutomationSettings,
+    automationRun: accountAutomationRun,
+    bitProfiles,
+    bitProfilesMessage,
+    roxyApiKeyStatus,
+    onSaveRoxyApiKey: async (key) => {
+      const status = await window.sgDesktop.saveAccountAutomationRoxyApiKey(key)
+      setRoxyApiKeyStatus(status)
+      // Key 就绪后 Roxy 窗口列表立即可拉（此前缺 Key 时列表必失败）
+      void window.sgDesktop.listAccountAutomationBitProfiles()
+        .then((result) => {
+          if (result.ok) {
+            setBitProfiles(result.profiles ?? [])
+            setBitProfilesMessage('')
+          }
+        })
+        .catch(() => {})
+    },
+    onRefreshBitProfiles: () => {
+      void window.sgDesktop.listAccountAutomationBitProfiles()
+        .then((result) => {
+          if (result.ok) {
+            setBitProfiles(result.profiles ?? [])
+            setBitProfilesMessage('')
+          } else {
+            setBitProfilesMessage(result.message ?? '指纹浏览器不可达')
+          }
+        })
+        .catch((reason: unknown) => setBitProfilesMessage(userFacingErrorMessage(reason)))
+    },
+    cursorUpdatePreferences,
+    cursorUpdateBusy,
+    cursorUpdateError,
+    onSetCursorAutoUpdateDisabled: async (disabled) => {
+      setCursorUpdateBusy(true); setCursorUpdateError('')
+      try {
+        const result = await window.sgDesktop.setCursorAutoUpdateDisabled(disabled)
+        setCursorUpdatePreferences(result)
+      } catch (reason) {
+        setCursorUpdateError(userFacingErrorMessage(reason))
+      } finally {
+        setCursorUpdateBusy(false)
+      }
+    },
+    onSetModelDataPolicyAutoAcknowledge: async (enabled) => {
+      let message = '已关闭自动确认；官网已有确认保持不变'
+      if (enabled) {
+        const result = await window.sgDesktop.acknowledgeCursorModelDataPolicies()
+        // 政策导航若换发了 token，主进程已对同一活跃账号原地入库。
+        if (result.tokenUpdated) setCursorAccounts(await window.sgDesktop.listCursorAccounts())
+        message = `${result.message}；后续新账号将自动检查`
+      }
+      const saved = await window.sgDesktop.saveAccountAutomationSettings({
+        ...accountAutomationSettings,
+        autoAcknowledgeModelDataPolicies: enabled
+      })
+      setAccountAutomationSettings(saved)
+      return { message }
+    },
+    onSaveAutomationSettings: (settings) => {
+      void window.sgDesktop.saveAccountAutomationSettings(settings)
+        .then((saved) => setAccountAutomationSettings(saved))
+        .catch((reason: unknown) => setAozaiError(userFacingErrorMessage(reason)))
+    },
+    onCancelAutomation: () => {
+      void window.sgDesktop.cancelAccountAutomation().catch(() => {})
+    }
+  }
 
   return (
     <>
@@ -868,19 +1071,24 @@ export function App(): React.JSX.Element {
       ) : undefined}
       cursorWorkspace={cursorWorkspace}
       workspace={activeWorkspace}
-      wideContent={activeModule === 'lobby'}
+      wideContent={activeModule !== 'sessions'}
       teamChannelIds={memberChannelIds}
       cardOpacity={appearance.cardOpacity}
       colorMode={appearance.colorMode}
       onModuleChange={changeModule}
       onCardOpacityChange={(cardOpacity) => setAppearance((current) => ({ ...current, cardOpacity }))}
       onColorModeChange={(colorMode) => setAppearance((current) => ({ ...current, colorMode }))}
-      onOpenProjectConfiguration={() => {
-        setConfigurationSection('team')
-        changeModule('lobby')
-      }}
+      onOpenProjectConfiguration={() => changeModule('run')}
     >
-      {activeModule === 'lobby' && teamSetup ? (
+      {activeModule === 'account' ? (
+        <div className="lobby-page configuration-page">
+          <div className="configuration-frame">
+            <main className="configuration-panel" aria-label="账号与 Cursor 配置">
+              <LobbyAccountTile {...accountPanel} />
+            </main>
+          </div>
+        </div>
+      ) : activeModule === 'run' && teamSetup ? (
         <TeamSetupPage
           key={teamSetup.draftId}
           draft={teamSetup}
@@ -911,14 +1119,13 @@ export function App(): React.JSX.Element {
             setTeamSetup(undefined)
           }}
         />
-      ) : activeModule === 'lobby' ? (
-        <LobbyPage
-          section={configurationSection}
-          onSectionChange={setConfigurationSection}
+      ) : activeModule === 'run' ? (
+        <RunPage
           team={teamControl}
           detectedWorkspace={cursorWorkspace?.workspace}
-          collaboration={activeRunCollaboration}
           externalNotice={teamNotice}
+          startMode={runStartMode}
+          onStartModeChange={setRunStartMode}
           onChooseWorkspace={chooseWorkspace}
           onReconfigure={async () => {
             setTeamSetup(await window.sgDesktop.prepareActiveTeamSetup())
@@ -962,205 +1169,6 @@ export function App(): React.JSX.Element {
           }}
           onCancelCdpAutoHealCountdown={async () => {
             await window.sgDesktop.cancelCdpAutoHealCountdown()
-          }}
-          account={{
-            accounts: cursorAccounts,
-            busy: cursorAccountBusy,
-            error: cursorAccountError,
-            onSave: async (input) => {
-              setCursorAccountBusy(true); setCursorAccountError('')
-              try {
-                setCursorAccounts(await window.sgDesktop.saveCursorAccount(input))
-                // 新账号默认设为活跃（makeActive），一致性锚点变化 → 立即重算指示
-                void refreshRuntimeMatch()
-                // 新活跃账号档位未知，档位行同步重查
-                void refreshMembership()
-                void refreshAccountMemberships()
-              }
-              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)); throw reason }
-              finally { setCursorAccountBusy(false) }
-            },
-            onSelect: async (accountId) => {
-              setCursorAccountBusy(true); setCursorAccountError('')
-              try { setCursorAccounts(await window.sgDesktop.selectCursorAccount(accountId)) }
-              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
-              finally { setCursorAccountBusy(false) }
-              // 换活跃账号会改变劈叉判定（Cursor 登录没变、锚点变了），立即刷新状态行
-              void refreshRuntimeMatch()
-              // 换活跃账号 = 档位锚点变化，同步重查
-              void refreshMembership()
-            },
-            onRemove: async (accountId) => {
-              setCursorAccountBusy(true); setCursorAccountError('')
-              try {
-                setCursorAccounts(await window.sgDesktop.removeCursorAccount(accountId))
-                // 删除活跃账号时 vault 会顺延活跃位，一致性锚点变化 → 立即重算指示
-                void refreshRuntimeMatch()
-                // 活跃位顺延后档位未知，同步重查
-                void refreshMembership()
-                void refreshAccountMemberships()
-              }
-              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
-              finally { setCursorAccountBusy(false) }
-            },
-            onImportFromLocal: async () => {
-              setCursorAccountBusy(true); setCursorAccountError('')
-              try {
-                setCursorAccounts(await window.sgDesktop.importCursorAccountFromLocalCursor())
-                void refreshRuntimeMatch()
-                void refreshMembership()
-                void refreshAccountMemberships()
-              }
-              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
-              finally { setCursorAccountBusy(false) }
-            },
-            onImportFromBrowser: async () => {
-              setCursorAccountBusy(true); setCursorAccountError('')
-              try {
-                setCursorAccounts(await window.sgDesktop.importCursorAccountFromBrowser())
-                void refreshRuntimeMatch()
-                void refreshMembership()
-                void refreshAccountMemberships()
-              }
-              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
-              finally { setCursorAccountBusy(false) }
-            },
-            onImportFromFingerprint: async () => {
-              setCursorAccountBusy(true); setCursorAccountError('')
-              try {
-                setCursorAccounts(await window.sgDesktop.importCursorAccountFromFingerprint())
-                void refreshRuntimeMatch()
-                void refreshMembership()
-                void refreshAccountMemberships()
-              }
-              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
-              finally { setCursorAccountBusy(false) }
-            },
-            // 提前登录：开窗导航 cursor.com（不关窗；失败提示走账号区错误条）
-            onOpenFingerprintLogin: async () => {
-              setCursorAccountBusy(true); setCursorAccountError('')
-              try { await window.sgDesktop.openFingerprintLoginPage() }
-              catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
-              finally { setCursorAccountBusy(false) }
-            },
-            onCleanupFingerprintEnvironment: async () => {
-              // 清理只影响指纹浏览器 profile，不锁账号操作（面板内自有 busy/反馈态）。
-              await window.sgDesktop.cleanupFingerprintEnvironment()
-            },
-            onRestartWithAccount: async (accountId) => {
-              setCursorAccountBusy(true); setCursorAccountError('')
-              try {
-                const result = await window.sgDesktop.restartCursorWithAccount(accountId)
-                if (!result.switched) return
-                if (!result.runtimeVerified) {
-                  setCursorAccountError('⚠️ Cursor 已重启，但运行时登录态尚未完成确认。')
-                  return
-                }
-                if (result.tokenExpired) {
-                  setCursorAccountError('⚠️ 该账号的 Token 已过期，请重新获取后再切换。')
-                  return
-                }
-                const relaunchNote = result.relaunchMode === 'cdp'
-                  ? result.cdpPortReady
-                    ? '调试端口已就绪，会话创建能力立即可用。'
-                    : '已带调试端口拉起，端口仍在启动中，稍候即可创建会话。'
-                  : result.relaunchMode === 'failed'
-                    ? '拉起 Cursor 失败，请手动启动 Cursor。'
-                    : '已重新拉起 Cursor。'
-                setCursorAccountError(
-                  `✅ Cursor 运行时已确认目标账号，登录态与机器码均已落库（${result.killedCursor ? '已重启' : 'Cursor 原先未运行'}；${relaunchNote}）`
-                )
-                // 切换成功 = 运行态与活跃账号重新对齐，立即刷新被动状态行
-                void refreshRuntimeMatch()
-                // 切换后运行账号变了，档位行同步重查
-                void refreshMembership()
-                void refreshAccountMemberships([accountId])
-              } catch (reason) { setCursorAccountError(reason instanceof Error ? reason.message : String(reason)) }
-              finally { setCursorAccountBusy(false) }
-            },
-            runtimeMatch,
-            membership: membershipStatus,
-            accountMemberships,
-            onRefreshMembership: async (accountId) => {
-              if (accountId) await refreshAccountMemberships([accountId])
-              else await refreshMembership()
-            },
-            aozaiStatus,
-            aozaiBusy,
-            aozaiError,
-            aozaiProgress,
-            aozaiFeedback,
-            onSaveAozaiCard: saveAozaiCard,
-            onClearAozaiCard: clearAozaiCard,
-            onRefreshAozaiBalance: refreshAozaiBalance,
-            onProcessAozaiAccount: processAozaiAccount,
-            automationSettings: accountAutomationSettings,
-            automationRun: accountAutomationRun,
-            bitProfiles,
-            bitProfilesMessage,
-            roxyApiKeyStatus,
-            onSaveRoxyApiKey: async (key) => {
-              const status = await window.sgDesktop.saveAccountAutomationRoxyApiKey(key)
-              setRoxyApiKeyStatus(status)
-              // Key 就绪后 Roxy 窗口列表立即可拉（此前缺 Key 时列表必失败）
-              void window.sgDesktop.listAccountAutomationBitProfiles()
-                .then((result) => {
-                  if (result.ok) {
-                    setBitProfiles(result.profiles ?? [])
-                    setBitProfilesMessage('')
-                  }
-                })
-                .catch(() => {})
-            },
-            onRefreshBitProfiles: () => {
-              void window.sgDesktop.listAccountAutomationBitProfiles()
-                .then((result) => {
-                  if (result.ok) {
-                    setBitProfiles(result.profiles ?? [])
-                    setBitProfilesMessage('')
-                  } else {
-                    setBitProfilesMessage(result.message ?? '指纹浏览器不可达')
-                  }
-                })
-                .catch((reason: unknown) => setBitProfilesMessage(userFacingErrorMessage(reason)))
-            },
-            cursorUpdatePreferences,
-            cursorUpdateBusy,
-            cursorUpdateError,
-            onSetCursorAutoUpdateDisabled: async (disabled) => {
-              setCursorUpdateBusy(true); setCursorUpdateError('')
-              try {
-                const result = await window.sgDesktop.setCursorAutoUpdateDisabled(disabled)
-                setCursorUpdatePreferences(result)
-              } catch (reason) {
-                setCursorUpdateError(userFacingErrorMessage(reason))
-              } finally {
-                setCursorUpdateBusy(false)
-              }
-            },
-            onSetModelDataPolicyAutoAcknowledge: async (enabled) => {
-              let message = '已关闭自动确认；官网已有确认保持不变'
-              if (enabled) {
-                const result = await window.sgDesktop.acknowledgeCursorModelDataPolicies()
-                // 政策导航若换发了 token，主进程已对同一活跃账号原地入库。
-                if (result.tokenUpdated) setCursorAccounts(await window.sgDesktop.listCursorAccounts())
-                message = `${result.message}；后续新账号将自动检查`
-              }
-              const saved = await window.sgDesktop.saveAccountAutomationSettings({
-                ...accountAutomationSettings,
-                autoAcknowledgeModelDataPolicies: enabled
-              })
-              setAccountAutomationSettings(saved)
-              return { message }
-            },
-            onSaveAutomationSettings: (settings) => {
-              void window.sgDesktop.saveAccountAutomationSettings(settings)
-                .then((saved) => setAccountAutomationSettings(saved))
-                .catch((reason: unknown) => setAozaiError(userFacingErrorMessage(reason)))
-            },
-            onCancelAutomation: () => {
-              void window.sgDesktop.cancelAccountAutomation().catch(() => {})
-            }
           }}
           onCreateNextRun={async () => {
             const created = await window.sgDesktop.createNextTeamRun()
@@ -1224,10 +1232,10 @@ export function App(): React.JSX.Element {
       ) : (
         <SessionOverview
           snapshot={visibleSnapshot}
-          onOpenConfiguration={() => setActiveModule('lobby')}
+          onOpenConfiguration={() => setActiveModule('run')}
           onCreateIndependentSessions={() => {
-            setConfigurationSection('independent')
-            setActiveModule('lobby')
+            setRunStartMode('independent')
+            setActiveModule('run')
           }}
         />
       )}

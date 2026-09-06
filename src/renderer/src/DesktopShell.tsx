@@ -2,8 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DesktopSnapshot } from '../../shared/desktop-api'
 import type { CursorWorkspaceDetection } from '../../domain/cursor-workspace'
 import {
-  GridIcon,
+  AccountIcon,
   PanelIcon,
+  PlayIcon,
   SettingsIcon,
   SessionsIcon
 } from './UiIcons'
@@ -12,7 +13,8 @@ import { ResizableColumns } from './ResizableColumns'
 import { AppearanceSettings } from './AppearanceSettings'
 import { WorkspaceMenu } from './WorkspaceMenu'
 
-export type AppModule = 'lobby' | 'sessions'
+/** 会话（工作区）/ 运行（团队或独立批次的控制）/ 账号与 Cursor（右上角设置入口，不在主导航里）。 */
+export type AppModule = 'sessions' | 'run' | 'account'
 
 interface DesktopShellProps {
   snapshot: DesktopSnapshot
@@ -66,11 +68,12 @@ function cursorLinkState(snapshot: DesktopSnapshot): {
 }
 
 const MODULE_LABELS: Record<AppModule, string> = {
-  lobby: '配置',
-  sessions: 'Cursor 会话'
+  sessions: 'Cursor 会话',
+  run: '运行',
+  account: '账号与 Cursor'
 }
 
-const MODULE_ORDER: AppModule[] = ['sessions', 'lobby']
+const MODULE_ORDER: AppModule[] = ['sessions', 'run', 'account']
 const CONTEXT_SIDEBAR_SPECS = [{ defaultSize: 270, minSize: 220, maxSize: 500 }] as const
 const SESSION_SIDEBAR_SPECS = [{ defaultSize: 326, minSize: 286, maxSize: 420 }] as const
 const INSPECTOR_SPECS = [{ defaultSize: 420, minSize: 300, maxSize: 720 }] as const
@@ -196,10 +199,19 @@ export function DesktopShell({
 
         <nav className="topbar-nav" aria-label="主要功能">
           {navButton('sessions', <SessionsIcon />, '会话')}
-          {navButton('lobby', <GridIcon />, '配置')}
+          {navButton('run', <PlayIcon />, '运行')}
         </nav>
 
         <div className="topbar__actions">
+          <button
+            className={`account-button ${activeModule === 'account' ? 'is-active' : ''}`}
+            onClick={() => onModuleChange(activeModule === 'account' ? 'sessions' : 'account')}
+            title={`${MODULE_LABELS.account} ${MODULE_SWITCH_MODIFIER}${MODULE_ORDER.indexOf('account') + 1}`}
+            aria-label={MODULE_LABELS.account}
+            aria-pressed={activeModule === 'account'}
+          >
+            <AccountIcon />
+          </button>
           {activeModule === 'sessions' ? (
             <button
               className={`panel-button ${sidebarVisible ? 'is-active' : ''}`}

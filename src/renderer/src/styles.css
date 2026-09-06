@@ -276,16 +276,12 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 /* 信号橙主操作：悬浮时单向扫过一束克制高光，强化“启动”语义。 */
 :where(
   .primary-button,
-  .lobby-command__primary,
-  .lobby-launch__button,
   .lobby-account__save,
   .cursor-model-dialog > footer button,
   .team-setup-footer > button:last-child
 ) { position: relative; overflow: hidden; isolation: isolate; }
 :where(
   .primary-button,
-  .lobby-command__primary,
-  .lobby-launch__button,
   .lobby-account__save,
   .cursor-model-dialog > footer button,
   .team-setup-footer > button:last-child
@@ -301,8 +297,6 @@ body { line-height: var(--font-text-sm-line-height); letter-spacing: 0; }
 }
 :where(
   .primary-button,
-  .lobby-command__primary,
-  .lobby-launch__button,
   .lobby-account__save,
   .cursor-model-dialog > footer button,
   .team-setup-footer > button:last-child
@@ -390,7 +384,7 @@ html[data-platform="darwin"] .topbar__context { position: relative; left: -8px; 
 
 .topbar__actions { min-width: 0; justify-self: end; display: flex; align-items: center; gap: 8px; overflow: visible; }
 .appearance-control { position: relative; flex: 0 0 auto; display: grid; place-items: center; }
-.appearance-button, .panel-button {
+.appearance-button, .panel-button, .account-button {
   width: 36px; height: 36px;
   display: grid; place-items: center;
   padding: 0;
@@ -400,8 +394,8 @@ html[data-platform="darwin"] .topbar__context { position: relative; left: -8px; 
   border-radius: 10px;
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
 }
-.appearance-button:hover, .appearance-button.is-active, .panel-button:hover, .panel-button.is-active { color: var(--accent-deep); background: var(--surface-solid); border-color: var(--accent-border); }
-.appearance-button svg, .panel-button svg { width: 17px; height: 17px; }
+:is(.appearance-button, .panel-button, .account-button):is(:hover, .is-active) { color: var(--accent-deep); background: var(--surface-solid); border-color: var(--accent-border); }
+:is(.appearance-button, .panel-button, .account-button) svg { width: 17px; height: 17px; }
 .appearance-popover {
   position: absolute;
   top: calc(100% + 8px); right: 0;
@@ -950,13 +944,9 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 .timeline-empty h2 { margin: 0 0 6px; font-size: var(--fs-15); }
 .timeline-empty p { max-width: 470px; margin: 0; color: var(--muted); font-size: var(--fs-11); }
 
-/* ---------- CDP 自动保持（开关 + 可取消倒计时） ---------- */
-.lobby-launch .toggle-switch { margin-top: 8px; }
-.lobby-launch .toggle-switch__text { color: var(--muted); font-size: var(--fs-11); font-weight: 400; }
-.lobby-launch .toggle-switch:hover .toggle-switch__text { color: var(--text); }
-.cdp-autoheal-countdown { margin-top: 8px; display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--surface-amber); border: var(--border-width-regular) solid var(--amber-border); border-radius: 10px; color: var(--text-amber); font-size: var(--fs-11); }
-.cdp-autoheal-countdown.is-working { background: var(--blue-soft); border-color: var(--blue-border); color: var(--blue); }
-.cdp-autoheal-countdown button { flex: none; }
+/* ---------- CDP 自动保持开关（运行页席位区页脚） ---------- */
+.run-seats__footer .toggle-switch__text { color: var(--muted); font-size: var(--fs-11); font-weight: 400; }
+.run-seats__footer .toggle-switch:hover .toggle-switch__text { color: var(--text); }
 
 /* ---------- 消息工作台 ---------- */
 .workspace-composer { container: composer / inline-size; margin: 0 16px 12px; overflow: visible; background: var(--surface); border: var(--border-width-regular) solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow-2); transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
@@ -1473,7 +1463,7 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
   .rail-session-card__state i, .workspace-composer,
   .connection-chip--connected i, .typing-indicator i, .timeline-jump, .context-popover { transition: none; animation: none; }
   .workspace-composer:focus-within { transform: none; }
-  :where(.primary-button, .lobby-command__primary, .lobby-launch__button, .lobby-account__save, .cursor-model-dialog > footer button, .team-setup-footer > button:last-child)::after { display: none; }
+  :where(.primary-button, .lobby-account__save, .cursor-model-dialog > footer button, .team-setup-footer > button:last-child)::after { display: none; }
 }
 
 @media (max-width: 1200px) {

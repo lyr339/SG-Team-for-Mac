@@ -32,10 +32,10 @@ export function SessionOverview({
           ) : (
             <>
               <h2>还没有发现 Cursor 会话</h2>
-              <p>从配置页选择 Cursor 工程并创建会话，准备完成后会自动出现在这里。</p>
+              <p>在「运行」页开始一次运行——组建团队，或批量创建独立会话；就绪后会自动出现在这里。</p>
               <div className="fresh-empty__actions">
                 <button onClick={onCreateIndependentSessions}>批量创建独立会话</button>
-                <button onClick={onOpenConfiguration}>配置协作团队</button>
+                <button onClick={onOpenConfiguration}>组建协作团队</button>
               </div>
             </>
           )}

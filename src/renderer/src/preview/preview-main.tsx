@@ -23,9 +23,9 @@ import {
 } from './mock-data'
 import '../claude-theme.css'
 import '../styles.css'
-import '../team-v2.css'
 import '../team-setup.css'
 import '../lobby/lobby.css'
+import '../run/run.css'
 import '../controls.css'
 import '../workspace-inspector.css'
 
@@ -160,6 +160,34 @@ if (previewRunStatus && initialTeam.activeRun) {
     canLaunch: false,
     blockers: ['Agent MCP 尚未接入全部本轮通道', '并非所有 Agent 通道都已在线待命']
   }
+}
+// 运行页独立批次走查：?independent=live|mixed|ended（席位形态：全部待命 / 待命+执行中+离线+待确认 / 已结束）。
+const independentScene = (['live', 'mixed', 'ended'] as const).find((scene) => scene === previewParameters.get('independent'))
+if (independentScene && initialTeam.activeRun) {
+  const solo = initialTeam.members.find((member) => member.slot.solo === true)!
+  const shapes = independentScene === 'live'
+    ? ['waiting', 'waiting', 'waiting'] as const
+    : ['waiting', 'working', 'offline', 'unconfirmed'] as const
+  const status = independentScene === 'ended' ? 'completed' as const : 'running' as const
+  const run = { ...initialTeam.activeRun, name: 'wedge-demo · 独立批次 #3', templateId: 'independent-session-v1', status }
+  initialTeam.activeRun = run
+  initialTeam.runs = [run]
+  initialTeam.members = shapes.map((shape, index) => {
+    const channelId = String(index + 1)
+    const base = { channelId, queueDepth: 0, lastSeenAt: previewNow - (index + 1) * 40_000, healthEvidence: [], workingFiles: [] }
+    return {
+      ...solo,
+      slot: { ...solo.slot, id: `slot:solo-${channelId}`, name: `独立席 ${channelId}`, channelId },
+      binding: solo.binding ? { ...solo.binding, channelId } : undefined,
+      runtime: shape === 'unconfirmed'
+        ? undefined
+        : shape === 'waiting'
+          ? { ...base, status: 'waiting' as const, online: true, waiting: true, connectionPhase: 'waiting' }
+          : shape === 'working'
+            ? { ...base, status: 'running' as const, online: false, waiting: false, connectionPhase: 'processing' }
+            : { ...base, status: 'offline' as const, online: false, waiting: false, connectionPhase: 'offline' }
+    }
+  })
 }
 if (manualHandoffMode && initialTeam.activeRun) {
   initialTeam.activeRun = { ...initialTeam.activeRun, status: 'attention' }

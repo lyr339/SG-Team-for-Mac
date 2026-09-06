@@ -34,10 +34,6 @@ export function CrownIcon(props: IconProps): React.JSX.Element {
   return <Icon {...props}><path d="m3.5 7.5 4.2 3.1L12 5l4.3 5.6 4.2-3.1-1.4 9.2H4.9L3.5 7.5Z" fill="currentColor" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4" /><path d="M5.2 19h13.6" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" /></Icon>
 }
 
-export function GridIcon(props: IconProps): React.JSX.Element {
-  return <Icon {...props}><rect x="4" y="4" width="7" height="7" rx="1.4" {...stroke} /><rect x="13" y="4" width="7" height="7" rx="1.4" {...stroke} /><rect x="4" y="13" width="7" height="7" rx="1.4" {...stroke} /><rect x="13" y="13" width="7" height="7" rx="1.4" {...stroke} /></Icon>
-}
-
 export function SunIcon(props: IconProps): React.JSX.Element {
   return <Icon {...props}><circle cx="12" cy="12" r="4" {...stroke} /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" {...stroke} /></Icon>
 }
@@ -69,6 +65,22 @@ export function ChevronDownIcon(props: IconProps): React.JSX.Element {
 
 export function SettingsIcon(props: IconProps): React.JSX.Element {
   return <Icon {...props}><circle cx="12" cy="12" r="3.1" {...stroke} /><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.45 1.45M16.55 16.55 18 18M18 6l-1.45 1.45M7.45 16.55 6 18" {...stroke} /></Icon>
+}
+
+export function AccountIcon(props: IconProps): React.JSX.Element {
+  return <Icon {...props}><circle cx="12" cy="8.5" r="3.6" {...stroke} /><path d="M4.8 19.5c.9-3.6 3.7-5.5 7.2-5.5s6.3 1.9 7.2 5.5" {...stroke} /></Icon>
+}
+
+export function TeamIcon(props: IconProps): React.JSX.Element {
+  return <Icon {...props}><circle cx="9" cy="8.5" r="3" {...stroke} /><circle cx="16.5" cy="9.5" r="2.4" {...stroke} /><path d="M3.5 19c.7-3.2 2.9-5 5.5-5s4.8 1.8 5.5 5M15 14.2c2.6.1 4.6 1.6 5.5 4.8" {...stroke} /></Icon>
+}
+
+export function SoloIcon(props: IconProps): React.JSX.Element {
+  return <Icon {...props}><rect x="4" y="4.5" width="16" height="15" rx="2.4" {...stroke} /><path d="M8 9.5h8M8 13h5" {...stroke} /><circle cx="16.5" cy="15.5" r="1.2" fill="currentColor" /></Icon>
+}
+
+export function StopIcon(props: IconProps): React.JSX.Element {
+  return <Icon {...props}><rect x="6.5" y="6.5" width="11" height="11" rx="2" {...stroke} /></Icon>
 }
 
 export function PanelIcon({ side, ...props }: IconProps & { side: 'left' | 'right' }): React.JSX.Element {

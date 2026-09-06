@@ -189,33 +189,44 @@ describe('App 输入框草稿与附件按通道隔离', () => {
     localStorage.clear()
   })
 
-  it('无深链接时会话是首页，并在配置页往返后保留当前会话', async () => {
+  it('无深链接时会话是首页，并在运行页往返后保留当前会话', async () => {
     await renderApp('')
     expect(composerTextarea().getAttribute('aria-label')).toContain('CH-2')
-    expect(container.querySelector('.topbar-nav')?.textContent?.replace(/\s/g, '')).toBe('会话配置')
+    expect(container.querySelector('.topbar-nav')?.textContent?.replace(/\s/g, '')).toBe('会话运行')
     expect(container.querySelector<HTMLButtonElement>('.brand')?.getAttribute('aria-label')).toBe('返回拾光会话')
 
     await selectChannel('5')
-    await act(async () => clickButtonWithText('配置'))
-    expect(container.querySelector('nav[aria-label="配置分类"]')).toBeTruthy()
+    await act(async () => clickButtonWithText('运行'))
+    expect(container.querySelector('.run-page')).toBeTruthy()
     await act(async () => clickButtonWithText('会话'))
     expect(composerTextarea().getAttribute('aria-label')).toContain('CH-5')
     expect(localStorage.getItem('shiguang.lastSessionChannel.v1')).toBe('5')
   })
 
-  it('首次没有会话时留在会话首页，并可直接打开配置', async () => {
+  it('账号与 Cursor 从右上角入口进入，不占主导航；再点一次回到会话', async () => {
+    await renderApp('')
+    const accountButton = container.querySelector<HTMLButtonElement>('.account-button')!
+    expect(accountButton.getAttribute('aria-label')).toBe('账号与 Cursor')
+    await act(async () => accountButton.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })))
+    expect(container.querySelector('main[aria-label="账号与 Cursor 配置"]')).toBeTruthy()
+    expect(container.querySelector('.account-button')?.getAttribute('aria-pressed')).toBe('true')
+    await act(async () => container.querySelector<HTMLButtonElement>('.account-button')!.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })))
+    expect(composerTextarea().getAttribute('aria-label')).toContain('CH-2')
+  })
+
+  it('首次没有会话时留在会话首页，并可直接进入运行页组建团队', async () => {
     installDesktopMock({ ...snapshot, sessions: [], conversations: {} })
     await renderApp('')
     expect(container.textContent).toContain('还没有发现 Cursor 会话')
-    await act(async () => clickButtonWithText('配置协作团队'))
-    expect(container.querySelector('nav[aria-label="配置分类"]')).toBeTruthy()
+    await act(async () => clickButtonWithText('组建协作团队'))
+    expect(container.querySelector('.run-page')).toBeTruthy()
   })
 
-  it('空会话首页可直达独立批量创建分页', async () => {
+  it('空会话首页可直达独立批次配置', async () => {
     installDesktopMock({ ...snapshot, sessions: [], conversations: {} })
     await renderApp('')
     await act(async () => clickButtonWithText('批量创建独立会话'))
-    expect(container.querySelector('section[aria-label="独立会话配置"]')).toBeTruthy()
+    expect(container.querySelector('section[aria-label="独立批次配置"]')).toBeTruthy()
   })
 
   it('draft 按 channelId 保存：切换通道互不干扰，切回后恢复', async () => {

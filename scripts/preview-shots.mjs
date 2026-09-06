@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
  * 设计走查截图：用本机 Chromium 内核浏览器（Edge / Chrome）无头打开 `npm run preview:ui`
- * 的预览页，按场景矩阵（面板 × 深浅色 × 窄栏 × 透明模式 × reduced-motion × 悬停）
+ * 的预览页，按场景矩阵（右栏面板 / 运行页 × 深浅色 × 窄窗 × 透明模式 × reduced-motion × 交互）
  * 截图到 preview-screenshots/。只依赖 CDP 与 ws，不引入 Playwright。
  *
  *   npm run preview:ui                      # 另一个终端，端口 5174
  *   node scripts/preview-shots.mjs          # 全部场景
  *   node scripts/preview-shots.mjs --only review-light,plan-dark
+ *   node scripts/preview-shots.mjs --only run-team-active-light,run-independent-mixed-dark
  *   node scripts/preview-shots.mjs --list
  *
  * 可选环境变量：PREVIEW_BASE（默认 http://127.0.0.1:5174）、PREVIEW_BROWSER（浏览器可执行文件）、
@@ -95,11 +96,45 @@ const scenes = [
       })`
     }, { wait: 60 }]
   },
-  { name: 'inspector-opened', width: 1440, height: 900, colorScheme: 'light', storage: { ...baseStorage(), [INSPECTOR_OPEN_KEY]: '0' }, clip: null, actions: [{ click: '[aria-label="展开右侧工作区"]' }, { wait: 400 }] }
+  { name: 'inspector-opened', width: 1440, height: 900, colorScheme: 'light', storage: { ...baseStorage(), [INSPECTOR_OPEN_KEY]: '0' }, clip: null, actions: [{ click: '[aria-label="展开右侧工作区"]' }, { wait: 400 }] },
+
+  // ---------- 运行页（#run）：一个工程一个活跃运行，团队 / 独立两种模式 ----------
+  ...[['light', 'light'], ['dark', 'dark']].flatMap(([suffix, colorMode]) => [
+    // 无活跃运行：开始一次运行（模式选择）。
+    { name: `run-start-${suffix}`, run: true, query: 'setup=1', colorScheme: colorMode, storage: baseStorage({ colorMode }) },
+    { name: `run-start-independent-${suffix}`, run: true, query: 'setup=1', colorScheme: colorMode, storage: baseStorage({ colorMode }), actions: [{ click: '.run-mode-switch button[aria-checked="false"]' }, { wait: 300 }] },
+    // 团队：启动前（目标已填、MCP 待接入）/ 协作执行中 / 已结束。
+    { name: `run-team-prelaunch-${suffix}`, run: true, query: 'runStatus=ready', colorScheme: colorMode, storage: baseStorage({ colorMode }) },
+    { name: `run-team-active-${suffix}`, run: true, colorScheme: colorMode, storage: baseStorage({ colorMode }) },
+    { name: `run-team-completed-${suffix}`, run: true, query: 'runStatus=completed', colorScheme: colorMode, storage: baseStorage({ colorMode }) },
+    // 独立：全部待命 / 混合形态（待命 + 执行中 + 离线 + 待确认）/ 已结束。
+    { name: `run-independent-live-${suffix}`, run: true, query: 'independent=live', colorScheme: colorMode, storage: baseStorage({ colorMode }) },
+    { name: `run-independent-mixed-${suffix}`, run: true, query: 'independent=mixed', colorScheme: colorMode, storage: baseStorage({ colorMode }) },
+    { name: `run-independent-ended-${suffix}`, run: true, query: 'independent=ended', colorScheme: colorMode, storage: baseStorage({ colorMode }) }
+  ]),
+  // 切换模式的确认面（团队 → 独立，仍有在线席位）。
+  { name: 'run-switch-sheet', run: true, colorScheme: 'light', storage: baseStorage(), actions: [{ click: '.run-mode-switch button[aria-checked="false"]' }, { wait: 300 }] },
+  // 确认后进入独立批次配置（头部标注"正在配置"）。
+  { name: 'run-compose-after-switch', run: true, colorScheme: 'light', storage: baseStorage(), actions: [{ click: '.run-mode-switch button[aria-checked="false"]' }, { wait: 300 }, { click: '.run-sheet__confirm' }, { wait: 400 }] },
+  // 结束批次确认面 + 目标编辑器。
+  { name: 'run-end-sheet-dark', run: true, query: 'independent=live', colorScheme: 'dark', storage: baseStorage({ colorMode: 'dark' }), actions: [{ click: '.run-header__ghost.is-danger' }, { wait: 300 }] },
+  { name: 'run-goal-editing', run: true, query: 'runStatus=ready', colorScheme: 'light', storage: baseStorage(), actions: [{ click: '.run-panel--team .run-link' }, { wait: 300 }] },
+  // 窄窗口与透明模式。
+  { name: 'run-team-active-narrow', run: true, width: 900, height: 760, colorScheme: 'light', storage: baseStorage() },
+  { name: 'run-independent-mixed-narrow-dark', run: true, width: 900, height: 760, query: 'independent=mixed', colorScheme: 'dark', storage: baseStorage({ colorMode: 'dark' }) },
+  { name: 'run-team-active-clear', run: true, colorScheme: 'light', storage: baseStorage({ cardOpacity: 0 }) },
+  // 右上角设置入口：账号与 Cursor。
+  { name: 'account-page', hash: 'account', width: 1440, height: 900, colorScheme: 'light', storage: baseStorage(), clip: null }
 ]
 
 for (const scene of scenes) {
-  if (scene.clip === undefined && scene.name !== 'inspector-closed') scene.clip = '.workspace-inspector'
+  if (scene.run) {
+    scene.hash = 'run'
+    scene.width ??= 1440
+    scene.height ??= 900
+    scene.clip ??= '.run-page'
+  }
+  if (scene.clip === undefined && scene.name !== 'inspector-closed' && !scene.hash) scene.clip = '.workspace-inspector'
   if (scene.clip === null) delete scene.clip
 }
 
@@ -254,13 +289,17 @@ async function shoot(cdp, scene) {
       ]
     }, sessionId)
     // 先落到同源空页写 localStorage，再进正式页面：首帧即为目标状态，没有二次布局。
+    // bootstrap 页本身也会挂载应用并回写外观偏好（上一场景的深浅色）；等它写完再覆盖一次。
     await navigate(cdp, sessionId, `${BASE}/preview.html?bootstrap=1`)
-    await evaluate(cdp, sessionId, `(() => {
+    const seedStorage = `(() => {
       localStorage.clear()
       for (const [key, value] of Object.entries(${JSON.stringify(scene.storage ?? {})})) localStorage.setItem(key, value)
       return true
-    })()`)
-    await navigate(cdp, sessionId, `${BASE}/preview.html${scene.query ? `?${scene.query}` : ''}#sessions:${scene.channel ?? '2'}`)
+    })()`
+    await evaluate(cdp, sessionId, seedStorage)
+    await sleep(300)
+    await evaluate(cdp, sessionId, seedStorage)
+    await navigate(cdp, sessionId, `${BASE}/preview.html${scene.query ? `?${scene.query}` : ''}#${scene.hash ?? `sessions:${scene.channel ?? '2'}`}`)
     await sleep(scene.settleMs ?? 900)
     await runActions(cdp, sessionId, scene.actions)
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId)

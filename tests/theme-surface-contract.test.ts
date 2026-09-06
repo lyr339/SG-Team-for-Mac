@@ -6,6 +6,7 @@ const styles = readFileSync(join(process.cwd(), 'src/renderer/src/styles.css'), 
 const foundation = readFileSync(join(process.cwd(), 'src/renderer/src/claude-theme.css'), 'utf8')
 const controls = readFileSync(join(process.cwd(), 'src/renderer/src/controls.css'), 'utf8')
 const lobby = readFileSync(join(process.cwd(), 'src/renderer/src/lobby/lobby.css'), 'utf8')
+const run = readFileSync(join(process.cwd(), 'src/renderer/src/run/run.css'), 'utf8')
 
 describe('theme surface contracts', () => {
   it('keeps floating connection UI opaque even when card opacity is zero', () => {
@@ -40,11 +41,14 @@ describe('theme surface contracts', () => {
     expect(styles).toContain('shiguang-dark.png')
   })
 
-  it('keeps custom controls and lobby primary actions on the new signal-orange system', () => {
+  it('keeps custom controls and run-page primary actions on the new signal-orange system', () => {
     expect(controls).toMatch(/input\[type="checkbox"\]:checked\s*\{[^}]*background-color:\s*var\(--accent\)/)
     expect(controls).toMatch(/select:not\(\[multiple\]\):focus\s*\{[^}]*var\(--accent-border-strong\)/)
-    expect(lobby).toMatch(/\.lobby-command__primary\s*\{[^}]*background:\s*var\(--accent\)/)
-    expect(lobby).toMatch(/\.lobby-launch__button\s*\{[^}]*--lobby-launch-button-bg:\s*var\(--accent\)/)
+    // 运行页只用共享的 .primary-button（信号橙）；破坏性确认走红色，且不是主按钮样式。
+    expect(styles).toMatch(/\.primary-button\s*\{[^}]*background:\s*var\(--accent\)/)
+    expect(run).toMatch(/\.run-sheet__confirm\s*\{[^}]*background:\s*var\(--red\)/)
+    expect(run).toMatch(/\.run-header__ghost\.is-danger\s*\{[^}]*color:\s*var\(--red\)/)
+    expect(run).not.toContain('.lobby-command__primary')
   })
 
   it('defines distinct model-provider identities without reusing status colors', () => {
@@ -65,10 +69,14 @@ describe('theme surface contracts', () => {
     expect(styles).not.toContain('margin: 0 calc(var(--window-control-safe-right) / 2)')
   })
 
-  it('uses segmented lobby connectors and focus rings instead of decorative edge strips', () => {
-    expect(lobby).toMatch(/\.lobby-command__steps li:not\(:last-child\)::after\s*\{[^}]*left:\s*calc\(50% \+ 13px\)[^}]*right:\s*calc\(-50% - 4px \+ 13px\)/s)
-    expect(lobby).toContain('@keyframes lobby-current-pulse')
-    expect(lobby).not.toContain('box-shadow: inset 3px 0 0 var(--accent)')
+  it('uses segmented run-page step connectors and honours reduced motion', () => {
+    // 四步流程：连接线从节点右侧起、到下一节点前止，最后一步没有连接线。
+    expect(run).toMatch(/\.run-steps li::before\s*\{[^}]*left:\s*calc\(50% \+ 14px\)/s)
+    expect(run).toContain('.run-steps li:last-child::before { display: none; }')
+    // 模式分段控件：指示块用 transform 位移，reduced-motion 下不做过渡。
+    expect(run).toMatch(/\.run-mode-switch__indicator\s*\{[^}]*transition:\s*transform/s)
+    expect(run).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.run-mode-switch__indicator\s*\{\s*transition:\s*none/)
+    expect(run).not.toContain('box-shadow: inset 3px 0 0 var(--accent)')
     expect(lobby).toContain('.account-browser__connection-row')
   })
 
