@@ -2,15 +2,18 @@
 /**
  * 给正在运行的 Electron 开发版拍一张窗口截图（主进程需以 --remote-debugging-port 启动）：
  *   npx electron-vite dev -- --remote-debugging-port=9556
- *   node scripts/app-shot.mjs [port=9556] [out=preview-screenshots/app-window.png]
+ *   node scripts/app-shot.mjs [port=9556] [out=preview-screenshots/app-window.png] [--click=<css selector>]
+ * --click 会在截图前点击匹配到的第一个元素（如切换配置页签），等待 800ms 再拍。
  * 顺带把渲染进程 console 里的 error / warning 打印出来，用于启动健康检查。
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import WebSocket from 'ws'
 
-const port = Number(process.argv[2] || 9556)
-const out = resolve(process.argv[3] || 'preview-screenshots/app-window.png')
+const positional = process.argv.slice(2).filter((argument) => !argument.startsWith('--'))
+const clickSelector = process.argv.slice(2).find((argument) => argument.startsWith('--click='))?.slice('--click='.length)
+const port = Number(positional[0] || 9556)
+const out = resolve(positional[1] || 'preview-screenshots/app-window.png')
 
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
 const page = targets.find((target) => target.type === 'page' && !target.url.startsWith('devtools://'))
@@ -49,6 +52,14 @@ const send = (method, params = {}) => new Promise((done, reject) => {
 
 await send('Runtime.enable')
 await send('Page.enable')
+if (clickSelector) {
+  const clicked = await send('Runtime.evaluate', {
+    returnByValue: true,
+    expression: `(() => { const el = document.querySelector(${JSON.stringify(clickSelector)}); if (!el) return false; el.click(); return true })()`
+  })
+  console.log(`click ${clickSelector}: ${clicked.result.value ? 'ok' : 'not found'}`)
+  await new Promise((done) => setTimeout(done, 800))
+}
 await new Promise((done) => setTimeout(done, 1_500))
 const metrics = await send('Page.getLayoutMetrics')
 const { data } = await send('Page.captureScreenshot', { format: 'png' })
