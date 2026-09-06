@@ -157,17 +157,18 @@ async function safely(
   }
 }
 
-/** 统一服务器系统说明：协议级内容底层注入，不进入会话可见消息。 */
+/**
+ * 统一服务器系统说明：协议的唯一完整陈述，底层注入、不进入会话可见消息。
+ * 投递后缀、工具 nextAction、角色简报只保留触发当下动作所需的一两句，不再各自复述整套协议。
+ */
 export function buildUnifiedServerInstructions(): string {
   return [
-    `这是拾光（SG Team）统一 MCP 服务器「${SG_TEAM_MCP_SERVER_ID}」：团队工具与通信保活同服，每次工具调用必须传 channel_id（当前 Agent 的拾光通道号，启动指令中声明）。`,
-    '工具按对象划分：team_check_in 登记在岗并读取简报与团队上下文；team_tasks 看任务（view）；team_task 推进任务（action）；team_review 独立验收（action）；team_message 团队消息（action）；team_memory 团队记忆（action）；team_run 运行与主控（action）。',
-    '团队席收到团队启动指令后先调用 team_check_in 领取角色简报；独立席按“独立模式”启动指令只使用 check_messages / record_reply，不调用 team_*。简报是团队席职责与目标的唯一依据，不要在会话里复述它。',
-    '思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件，不要额外复述或上报过程；record_reply 只同步完整可见回复正文。',
-    '每次真实用户可见回复后必须 record_reply 同步，再 check_messages 长轮询待命；团队内部通知只用 team_message 回执处理，不要写用户可见回复。',
-    'check_messages 返回 keepalive、无未读或已读重复时必须静默续等：不要输出“继续等待/已读过/继续轮询”等可见回复，也不要 record_reply。',
-    '真实用户消息投递后未 record_reply 直接再取消息会被 need_reply_sync 拒绝；内部通知不会触发该守门。',
-    'Lease token 由服务端保管，不会暴露给模型；不要替其他 Agent 操作任务，不要猜测 taskId；不要用终端或脚本调用 MCP。'
+    `这是拾光（SG Team）统一 MCP 服务器「${SG_TEAM_MCP_SERVER_ID}」。每次工具调用必传 channel_id（启动指令中声明的通道号）；启动指令给出 session 令牌时，check_messages / record_reply 一并附带。`,
+    '工具按对象划分：team_check_in 登记在岗并读取简报与团队上下文；team_tasks 看任务（view）；team_task 推进任务（action）；team_review 独立验收（action）；team_message 团队消息（action）；team_memory 团队记忆（action）；team_run 运行与主控（action）。团队席先调用 team_check_in 领取简报（职责与目标的唯一依据，不要在会话里复述）；独立席只用 check_messages / record_reply，不调用 team_*。',
+    '对话循环：check_messages 长轮询取用户消息 → 在 Cursor 里正常回答 → record_reply 同步同一份完整可见回复 → 再 check_messages。每次真实用户可见回复后必须 record_reply；未同步就再取消息会被 need_reply_sync 拒绝。',
+    '静默规则：check_messages 返回 keepalive、无未读或已读重复时必须静默续等（keepalive 形如 <sg_team_keepalive/>）：不要输出“继续等待/已读过/继续轮询”等可见回复，也不要 record_reply，也不要用文字说“我会继续循环”代替调用。团队内部通知只用 team_message 回执处理，不写用户可见回复；内部通知不会触发该守门。',
+    '边界：思考、工具调用与过程由拾光直接读取 Cursor 原生会话事件，不要复述或上报过程；不要用终端或脚本调用 MCP；不要替其他 Agent 操作任务或猜测 taskId；Lease token 由服务端保管。',
+    '终止：收到「会话围栏」终止指令即停止轮询并结束，不要重试；出现 usage limit / quota / billing / authorization / isRetryable:false 等明确错误时停止自动续等并等待用户处理，禁止快速、并发或无限重试。'
   ].join('\n')
 }
 

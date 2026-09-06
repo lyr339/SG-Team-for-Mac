@@ -15,6 +15,7 @@ import {
   type ChannelPresence
 } from '../domain/channel-message'
 import {
+  sortConversationEntries,
   conversationTextIdentity,
   normalizeEscapedNewlines,
   sniffedAttachmentMimeType,
@@ -390,21 +391,8 @@ export class ChannelMessageRelay {
 
     this.conversations.clear()
     for (const [channelId, entries] of byChannel) {
-      this.conversations.set(channelId, entries
-        .sort((left, right) => (
-          left.timestamp - right.timestamp
-          || this.timelineRoleOrder(left.role) - this.timelineRoleOrder(right.role)
-          || left.id.localeCompare(right.id)
-        ))
-        .slice(-MAX_ENTRIES_PER_CHANNEL))
+      this.conversations.set(channelId, sortConversationEntries(entries).slice(-MAX_ENTRIES_PER_CHANNEL))
     }
-  }
-
-  private timelineRoleOrder(role: ConversationEntry['role']): number {
-    if (role === 'user') return 0
-    if (role === 'assistant') return 1
-    if (role === 'system') return 2
-    return 3
   }
 
   private entryFromOutbound(message: ChannelOutboundMessage): ConversationEntry | undefined {
@@ -518,7 +506,8 @@ export class ChannelMessageRelay {
         next[index] = { ...entry, deliveredAt, heldForNextSession: undefined }
       }
       if (next !== entries) {
-        this.conversations.set(channelId, next)
+        // 投递改变了排序时刻（排队 → 进入对话），重排一次让它落到前一回合的回复之后。
+        this.conversations.set(channelId, sortConversationEntries(next))
         changed = true
       }
     }
@@ -707,10 +696,14 @@ export class ChannelMessageRelay {
     return evidence
   }
 
+  /**
+   * 新条目按进入对话的时刻落位而不是追加到末尾：排队中的用户消息在末尾，回复落库
+   * 时插到它所回答的消息之后——即使用户在回复落库前就已经排了下一条消息。
+   */
   private appendEntry(entry: ConversationEntry): void {
     const current = this.conversations.get(entry.channelId) ?? []
     if (current.some((candidate) => isRecentDuplicateEntry(candidate, entry))) return
-    const entries = [...current, entry].slice(-MAX_ENTRIES_PER_CHANNEL)
+    const entries = sortConversationEntries([...current, entry]).slice(-MAX_ENTRIES_PER_CHANNEL)
     this.conversations.set(entry.channelId, entries)
     this.emit()
   }

@@ -3,22 +3,16 @@ export interface ChannelWaitBinding {
   communicationServerName: string
 }
 
-const terminalCursorErrors = [
-  'usage limit / quota / spend limit',
-  'billing / account / token / authorization',
-  'isRetryable:false',
-  '不可用模型或区域'
-].join('、')
-
+/**
+ * 工具返回后的待命动作说明：只说"现在做什么"。静默规则、终止条件等协议细则由
+ * 服务器说明承担，不在每次工具结果里重复。
+ */
 export function buildChannelWaitInstruction(binding: ChannelWaitBinding): string {
   const server = binding.communicationServerName
   const ch = `{channel_id:'${binding.channelId}'}`
   return [
-    `这是工具返回后的静默待命动作：不要向用户输出可见文字，不要调用 ${server}.record_reply。`,
-    `直接调用 ${server}.check_messages ${ch} 进入长轮询（启动指令给出了 session 令牌的话必须一并附带）。`,
-    `check_messages 返回 <sg_team_keepalive/>、无未读或已读重复时，仍然不要输出可见回复、不要 record_reply，只静默继续 check_messages。`,
-    `只有 check_messages 明确投递真实用户消息时，才开始新的可见回复回合；只有服务端返回 need_reply_sync 时，才补同步上一轮已输出的回复。`,
-    `普通 keepalive/timeout 且没有错误时，只能静默续等。`,
-    `一旦出现 ${terminalCursorErrors} 等明确错误，立即停止自动续等并等待用户处理；禁止快速、并发或无限重试。`
+    `这是工具返回后的静默待命动作：不要向用户输出可见文字，不要调用 ${server}.record_reply；`,
+    `直接调用 ${server}.check_messages ${ch} 进入长轮询（启动指令给出了 session 令牌的话一并附带）。`,
+    'keepalive、无未读或已读重复时继续静默 check_messages；只有投递真实用户消息才开始新的可见回复。'
   ].join('')
 }

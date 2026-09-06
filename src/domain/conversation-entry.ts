@@ -192,3 +192,51 @@ export interface ConversationEntry {
   /** 静默条目：系统内部协作通知不进入用户时间线，仅通过 DesktopSnapshot.commandReceipts 保留投递回执 */
   silent?: boolean
 }
+
+const ROLE_ORDER: Record<ConversationRole, number> = { user: 0, assistant: 1, system: 2, error: 3 }
+
+/**
+ * 会话时间线排序：以内容"进入对话"的时刻排位，而不是被创建的时刻。
+ *
+ * - 用户消息按投递时刻（deliveredAt）排位——它在被模型取走那一刻才成为对话的一部分；
+ * - 回复按落库时刻排位；
+ * - 仍在排队的用户消息排在一切已发生内容之后（彼此按创建时刻）。
+ *
+ * 否则「上一回合回复落库前就排队的消息」会按输入时刻插到该回复前面，回合投影
+ * 「回复位于本消息与下一条消息之间」的前提被打破，回复就会变成挂在下一回合过程流
+ * 下方的孤立条目。创建时刻（timestamp）只用于展示。
+ *
+ * 兼容不带投递时刻的旧数据：有回复明确指向它（replyToEntryId）的用户消息紧贴在
+ * 该回复之前；回复根本没有链路的旧会话退回创建时刻顺序。
+ *
+ * 同一时刻的条目保持传入顺序（稳定排序）：库里按 created_at, seq 读出，内存里按
+ * 追加顺序——同一毫秒连发的两条消息不会因为随机 id 而互换位置。
+ */
+export function sortConversationEntries(entries: readonly ConversationEntry[]): ConversationEntry[] {
+  const linkedReplyAt = new Map<string, number>()
+  let hasUnlinkedReply = false
+  for (const entry of entries) {
+    if (entry.role !== 'assistant') continue
+    if (!entry.replyToEntryId) {
+      hasUnlinkedReply = true
+      continue
+    }
+    const existing = linkedReplyAt.get(entry.replyToEntryId)
+    if (existing === undefined || entry.timestamp < existing) linkedReplyAt.set(entry.replyToEntryId, entry.timestamp)
+  }
+  const orderAt = (entry: ConversationEntry): number => {
+    if (entry.role !== 'user') return entry.timestamp
+    if (entry.deliveredAt !== undefined) return entry.deliveredAt
+    const replyAt = linkedReplyAt.get(entry.id)
+    if (replyAt !== undefined) return replyAt - 1
+    return hasUnlinkedReply ? entry.timestamp : Number.POSITIVE_INFINITY
+  }
+  return entries
+    .map((entry) => ({ entry, at: orderAt(entry) }))
+    .sort((left, right) => (
+      left.at - right.at
+      || left.entry.timestamp - right.entry.timestamp
+      || ROLE_ORDER[left.entry.role] - ROLE_ORDER[right.entry.role]
+    ))
+    .map(({ entry }) => entry)
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ConversationEntry } from '../src/domain/conversation-entry'
+import { sortConversationEntries, type ConversationEntry } from '../src/domain/conversation-entry'
 import { projectTurnTimeline } from '../src/renderer/src/timeline-view'
 
 function user(id: string, timestamp: number, deliveredAt?: number): ConversationEntry {
@@ -91,6 +91,59 @@ describe('projectTurnTimeline（阶段 F：统一回合身份）', () => {
       { key: `turn:prelude:cursor:native-long-turn`, phase: 'responding' },
       { key: 'turn:u1', phase: 'delivered' }
     ])
+  })
+
+  it('keeps a message queued before the previous reply landed below that reply, in both orderings (2026-09-06 报告)', () => {
+    // 用户在 A 的回复落库（1_500）之前就排队了 B（1_300）；B 在 1_800 才被取走并开始执行。
+    const a = user('u-a', 1_000, 1_100)
+    const replyA = assistant('reply-a', 1_500, 'u-a')
+    const bQueued = user('u-b', 1_300)
+    const bDelivered = user('u-b', 1_300, 1_800)
+
+    // 排队期：B 排在一切已发生内容之后，回复仍归 A。
+    const queuedEntries = sortConversationEntries([a, bQueued, replyA])
+    expect(queuedEntries.map((entry) => entry.id)).toEqual(['u-a', 'reply-a', 'u-b'])
+    const queued = projectTurnTimeline({ entries: queuedEntries, agentRunning: true })
+    expect(queued.map((item) => [item.key, item.phase])).toEqual([
+      ['turn:u-a', 'sealed'],
+      ['turn:u-b', 'queued']
+    ])
+
+    // 执行期：B 的过程流在自己的回合里，位于 A 的最终回复之下，不再产生孤立的 entry: 条目。
+    const runningEntries = sortConversationEntries([a, bDelivered, replyA])
+    expect(runningEntries.map((entry) => entry.id)).toEqual(['u-a', 'reply-a', 'u-b'])
+    const running = projectTurnTimeline({
+      entries: runningEntries,
+      liveProcess: process([{ id: 'work-b', startedAt: 1_900 }]),
+      agentRunning: true
+    })
+    expect(running.map((item) => [item.key, item.phase])).toEqual([
+      ['turn:u-a', 'sealed'],
+      ['turn:u-b', 'responding']
+    ])
+    expect(running[0]?.reply?.id).toBe('reply-a')
+    expect(running[1]?.process?.blocks.map((block) => block.id)).toEqual(['work-b'])
+  })
+
+  it('keeps legacy data without delivery timestamps in creation order', () => {
+    // 无 deliveredAt 的旧消息：有链路的回复证明它进过对话（紧贴回复之前）；
+    // 回复完全无链路的旧会话退回创建时刻顺序，不会整批被当成"排队中"沉到底部。
+    const linked = sortConversationEntries([assistant('a1', 1_500, 'u1'), user('u2', 2_000), user('u1', 1_000)])
+    expect(linked.map((entry) => entry.id)).toEqual(['u1', 'a1', 'u2'])
+    const unlinked = sortConversationEntries([assistant('a1', 1_500), user('u2', 2_000), user('u1', 1_000)])
+    expect(unlinked.map((entry) => entry.id)).toEqual(['u1', 'a1', 'u2'])
+  })
+
+  it('anchors a legacy reply without an outbound link to the user message right before it', () => {
+    // 无 replyToEntryId 的旧回复：锚到时间线上紧邻其前的用户消息，排队中的消息不会抢走它。
+    const items = projectTurnTimeline({
+      entries: [user('u1', 1_000, 1_100), assistant('legacy-1', 1_500), user('u2', 1_200)]
+    })
+    expect(items.map((item) => [item.key, item.phase])).toEqual([
+      ['turn:u1', 'sealed'],
+      ['turn:u2', 'queued']
+    ])
+    expect(items[0]?.reply?.id).toBe('legacy-1')
   })
 
   it('keeps error entries as standalone rows without hijacking turn grouping', () => {

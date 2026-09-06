@@ -44,15 +44,19 @@ export interface TurnTimelineInput {
   agentRunning?: boolean
 }
 
-/** 回复按 outboundId 精确关联用户消息；旧数据回退时间窗。 */
+/**
+ * 回复按 outboundId 精确关联用户消息；旧数据（无 replyToEntryId）回退为时间线上
+ * 紧邻其前的用户消息——entries 已按进入对话的时刻排序（sortConversationEntries），
+ * 排队中的消息在末尾，不会被误认成更早回复的锚点。
+ */
 function replyAnchorIndex(entries: readonly ConversationEntry[], reply: ConversationEntry): number {
   if (reply.replyToEntryId) {
     const index = entries.findIndex((entry) => entry.id === reply.replyToEntryId)
     if (index >= 0) return index
   }
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const candidate = entries[index]!
-    if (candidate.role === 'user' && candidate.timestamp < reply.timestamp) return index
+  const replyIndex = entries.indexOf(reply)
+  for (let index = (replyIndex >= 0 ? replyIndex : entries.length) - 1; index >= 0; index -= 1) {
+    if (entries[index]!.role === 'user') return index
   }
   return -1
 }

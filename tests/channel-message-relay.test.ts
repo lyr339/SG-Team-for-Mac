@@ -548,6 +548,62 @@ describe('ChannelMessageRelay', () => {
     }
   })
 
+  it('keeps a message queued before the previous reply landed after that reply, live and after restart (2026-09-06 报告)', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-order-')), 'channel.sqlite3')
+    const repository = new SqliteChannelMessageRepository(path)
+    let clock = 10_000
+    const relay = new ChannelMessageRelay(repository, () => clock)
+    const texts = (): string[] => relay.applyTo(baseSnapshot()).conversations['1']!.map((entry) => entry.text)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/a')
+      relay.resetScope('run-order', 10_000)
+      // 轮询节拍与生产一致：先同步投递时刻，再收回复。
+      const tick = (): void => { relay['refreshOutboundDeliveries'](); relay.pollReplies() }
+      // 回合 A：投递并处理中。
+      relay.sendMessage({ channelId: '1', text: '消息 A' })
+      const outboundA = repository.listPendingOutbound('1')[0]!
+      repository.markOutboundDelivered([outboundA.id], 10_500)
+      tick()
+      // Agent 还在呈现 A 的结果时，用户排队了 B（创建时刻早于 A 的回复落库时刻）。
+      clock = 11_000
+      relay.sendMessage({ channelId: '1', text: '消息 B' })
+      // A 的回复在 12_000 落库：必须落到 A 之后、排队中的 B 之前。
+      repository.recordReply({ channelId: '1', content: '回复 A', outboundId: outboundA.id }, 12_000)
+      clock = 12_000
+      tick()
+      expect(texts()).toEqual(['消息 A', '回复 A', '消息 B'])
+
+      // B 被取走开始执行：仍在 A 的回复之后（投递刷新只改 deliveredAt，排序必须跟上）。
+      const outboundB = repository.listPendingOutbound('1')[0]!
+      repository.markOutboundDelivered([outboundB.id], 13_000)
+      clock = 13_000
+      expect(relay['refreshOutboundDeliveries']()).toBe(true)
+      const entries = relay.applyTo(baseSnapshot()).conversations['1']!
+      expect(entries.map((entry) => [entry.text, entry.deliveredAt])).toEqual([
+        ['消息 A', 10_500],
+        ['回复 A', undefined],
+        ['消息 B', 13_000]
+      ])
+    } finally {
+      repository.close()
+    }
+
+    // 重启水合走另一条排序路径，结论必须一致。
+    const reopened = new SqliteChannelMessageRepository(path)
+    try {
+      const relayB = new ChannelMessageRelay(reopened, () => 20_000)
+      relayB.start(250)
+      try {
+        expect(relayB.applyTo(baseSnapshot()).conversations['1']?.map((entry) => entry.text))
+          .toEqual(['消息 A', '回复 A', '消息 B'])
+      } finally {
+        relayB.stop()
+      }
+    } finally {
+      reopened.close()
+    }
+  })
+
   it('rehydrates the persisted conversation scope on start after an app restart', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'sg-channel-restart-')), 'channel.sqlite3')
     const first = new SqliteChannelMessageRepository(path)

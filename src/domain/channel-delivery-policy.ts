@@ -24,63 +24,44 @@ export interface ChannelDeliveryContext {
  */
 export const CHANNEL_USER_DELIVERY_MARKER = '【真实用户消息处理完后进入 check_messages 待命】'
 
+/**
+ * 每次投递都带的两行提醒：只覆盖"这一轮结束时做什么"。协议全文在服务器说明与首次
+ * 投递里各出现一次，不在每条消息后重复。
+ */
 const CALL_REMINDER = [
   '',
   '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
   CHANNEL_USER_DELIVERY_MARKER,
   '━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-  '- 思考、工具调用与输出由拾光直接读取 Cursor 原生会话事件；不要额外复述或上报过程',
-  '- 处理真实用户消息并输出可见回复后，先 record_reply 同步完整可见回复，再调用 check_messages 待命',
-  '- 没有输出用户可见回复时，不要为了“继续等待”而 record_reply',
-  '- 不要用文字说「我会继续循环」代替调用 —— 那样本回合就结束了，用户端会看到对话中断',
-  '- Every user-visible reply must be synced once with record_reply({ content: "the same full reply you just showed the user" }) before calling check_messages again, otherwise SG Team cannot restore the session reliably after a disconnect.',
-  '- check_messages 返回 keepalive、无未读或已读重复时必须静默续等（keepalive 形如 <sg_team_keepalive/>）：不要向用户输出“继续等待/已读过/继续轮询”等可见回复，也不要 record_reply；直接再次调用 check_messages 静默待命。',
-  '- 不要使用终端、Shell、Node 脚本或本地命令来调用 MCP；必须使用 Cursor 原生 MCP 工具调用',
-  '- 启动指令给出了 session 令牌的话，check_messages / record_reply 每次都附带它；收到「会话围栏」终止指令即停止轮询并结束，不要重试',
-  '- 这是长连接协议，不是一次性查询；未收到用户「停止/退出」或会话围栏终止指令时一律继续轮询'
+  '- 处理真实用户消息并输出可见回复后，先 record_reply 同步同一份完整回复，再 check_messages 待命；没有输出用户可见回复时，不要为了“继续等待”而 record_reply',
+  '- check_messages 返回 keepalive、无未读或已读重复时必须静默续等：不输出可见回复、不 record_reply、不用文字说“继续循环”代替调用'
 ].join('\n')
 
-/**
- * 构建投递消息的系统后缀。首次投递附完整「持续对话协议」说明，
- * 后续投递只附精简的调用提醒。
- */
+/** 构建投递消息的系统后缀。首次投递附「持续对话协议」，后续投递只附两行提醒。 */
 export function buildDeliverySuffix(context: ChannelDeliveryContext): string {
   if (!context.isFirstDelivery) return `\n${CALL_REMINDER}`
-  const lines = [
-    '',
-    '---',
-    '## 持续对话协议',
-    ''
-  ]
+  const ch = `channel_id:'${context.channelId}'`
+  const lines = ['', '---', '## 持续对话协议', '']
   if (context.workspacePath) lines.push(`> 工作区：${context.workspacePath}`)
   if (context.channelId) lines.push(`> 当前通道：SG Team · CH-${context.channelId}`)
   lines.push(
     '',
-    '这是一条来自拾光的用户消息，系统正处于「持续对话」工作模式：',
-    '',
-    '1. 用户消息通过 check_messages（SG Team · 拾光）按顺序送达，每次调用获取一条',
-    '2. 你在 Cursor 窗口按平时的风格正常回答用户即可',
-    '3. 回答完毕后调用 record_reply({ content:"完整可见回复" }) 同步正文，再调用 check_messages（SG Team · 拾光）等待下一条；思考与工具过程由拾光直接读取 Cursor 原生会话事件',
-    '4. 用文字描述「我会继续循环」而不再实际调用工具 = 本回合终止，用户端会中断对话',
-    '5. check_messages 返回 keepalive、无未读或已读重复时必须静默续等：不要写可见消息，不要 record_reply',
-    '6. 不要打开终端、Shell、Node 脚本或本地命令来调用 MCP；只使用 Cursor 原生 MCP 工具调用',
-    '',
-    '（本协议说明仅在首次送达时出现，后续消息会简化提示。）',
+    '这是一条来自拾光的用户消息。用户消息经 check_messages 按顺序送达，每次一条；你在 Cursor 里按平时的风格回答即可。',
+    `回答完毕后调用 record_reply({ ${ch}, content:"完整可见回复" }) 同步正文，再调用 check_messages({ ${ch} }) 等待下一条；思考与工具过程由拾光直接读取 Cursor 原生会话事件，不用复述。`,
+    '静默规则、会话围栏与终止条件以 SG Team 服务器说明为准；本说明只在首次送达出现。',
     CALL_REMINDER
   )
   return lines.join('\n')
 }
 
-/** 内部协作通知投递后缀：只驱动 team_* 回执，不进入用户可见回复协议。 */
+/** 内部协作通知投递后缀：只驱动 team_message 回执，不进入用户可见回复协议。 */
 export function buildSilentDeliverySuffix(context: Pick<ChannelDeliveryContext, 'channelId'>): string {
   return [
     '',
     '---',
-    '【内部协作通知协议】',
-    `- 这是 CH-${context.channelId} 的团队内部调度通知，不是用户可见对话。`,
-    '- 按通知里的 messageId 调用 team_message({action:\'read\', messageId})；directive/question 处理后用 team_message({action:\'respond\', messageId, content}) 建立关联回应。',
-    '- 不要向用户输出可见文字，不要调用 record_reply；处理完直接调用 check_messages 静默待命。',
-    '- 只有 check_messages 明确投递真实用户消息，或服务端返回 need_reply_sync 时，才进入用户可见回复同步流程。'
+    `【内部协作通知协议】这是 CH-${context.channelId} 的团队内部调度通知，不是用户可见对话。`,
+    '按通知里的 messageId 调用 team_message({action:\'read\', messageId})；directive/question 处理后用 team_message({action:\'respond\', messageId, content}) 建立关联回应。',
+    '不要向用户输出可见文字，不要调用 record_reply；处理完直接 check_messages 静默待命。'
   ].join('\n')
 }
 

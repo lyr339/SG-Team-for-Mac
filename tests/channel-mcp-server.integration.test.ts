@@ -228,7 +228,10 @@ describe('SG Team unified MCP (通信三工具契约)', () => {
       const text = textOf(second)
       expect(text).toContain('第二条')
       expect(text).not.toContain('持续对话协议')
-      expect(text).toContain('check_messages 静默待命')
+      // 后续投递只带两行提醒：回合收尾动作 + 静默规则，其余协议不重复。
+      expect(text).toContain('先 record_reply 同步同一份完整回复，再 check_messages 待命')
+      expect(text).toContain('必须静默续等')
+      expect(text.split('\n').filter((line) => line.startsWith('- '))).toHaveLength(2)
     } finally {
       await close()
     }

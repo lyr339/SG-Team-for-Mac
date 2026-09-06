@@ -22,6 +22,21 @@ Schemas are flat objects with optional fields; a missing action-specific argumen
 
 The previous surface exposed 35 tools — one per service method (`team_list_mine`, `team_list_available`, `team_list_reviews`, `team_list_board`, `team_get_task` were five ways to "look at tasks"). Models pick tools by name; near-synonyms cost tokens and cause misfires. Grouping by object (tasks / task / review / message / memory / run) keeps each tool's `action` enum as the complete list of what that object can do, and keeps `readOnlyHint` meaningful (`team_tasks` is the only read-only team tool).
 
+## Prompt layering
+
+Every protocol rule is stated once, at the layer that owns it:
+
+| Layer | Text | Owns |
+| --- | --- | --- |
+| Server `instructions` (once per session) | `buildUnifiedServerInstructions` | the complete protocol: tool map, reply loop, silence rule, boundaries, termination |
+| Launch hint (once per seat) | `buildTeamLaunchHint` / `buildSoloLaunchHint` | identity, first call, session token |
+| First delivery suffix | `buildDeliverySuffix({ isFirstDelivery: true })` | the "持续对话协议" summary with the concrete `record_reply` / `check_messages` calls |
+| Every later delivery | two-line reminder under `CHANNEL_USER_DELIVERY_MARKER` | what to do when this turn ends |
+| Tool `nextAction` | `buildChannelWaitInstruction` | "go back to `check_messages` silently" |
+| `team_check_in` briefing | `buildTeamRoleBriefing` | role mission, boundaries, per-role workflow, collaboration rules — no protocol restatement |
+
+The marker line `【真实用户消息处理完后进入 check_messages 待命】` is also evidence for the Cursor process observer (it separates business thinking from polling noise), so it stays on every real user delivery.
+
 ## Install from the desktop app
 
 Open the lobby and press **安装团队 MCP**, then explicitly choose the Cursor workspace. The installer:
