@@ -9,6 +9,7 @@ import type { ConversationEntry } from '../../../domain/conversation-entry'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES, createConfiguredTeamBundle, emptyTeamControlSnapshot } from '../../../domain/team-control'
 import type { TeamRunStatus } from '../../../domain/team-control'
 import type { QingtianDesktopApi, TeamSetupDraft } from '../../../shared/desktop-api'
+import type { WorkspaceReviewSummary } from '../../../domain/workspace-review'
 import { estimateUsageFromReference, priceForModel } from '../../../domain/cursor-usage'
 import { App } from '../App'
 import { applyAppearancePreferences, readAppearancePreferences } from '../appearance-preferences'
@@ -53,6 +54,8 @@ const automationSceneRun: AccountAutomationRun | undefined = automationScene ? (
 } as const)[automationScene] : undefined
 const previewRunStatus = (['draft', 'ready', 'launching', 'running', 'attention', 'paused', 'completed'] as TeamRunStatus[])
   .find((status) => status === requestedRunStatus)
+// 右栏「变更」面板走查：?review=clean|not_git|error|many（缺省为两文件就绪态）。
+const reviewScene = (['clean', 'not_git', 'error', 'many'] as const).find((scene) => scene === previewParameters.get('review'))
 const setupSkill = (name: string, description: string, source: 'cursor' | 'workspace' | 'user' | 'vercel' | 'anthropic', installed = true) => ({
   id: installed ? `${source}:${name}` : `recommended:${source}:${name}`,
   name,
@@ -843,21 +846,55 @@ const api: QingtianDesktopApi = {
       lastTurnAt: previewNow
     }]] : []
   ))),
-  getWorkspaceReview: async (input) => ({
-    state: 'ready',
-    scope: input?.scope ?? 'uncommitted',
-    workspaceName: 'wedge-demo',
-    additions: 21,
-    deletions: 8,
-    revision: 'preview-review-1',
-    updatedAt: Date.now(),
-    branch: { current: 'feature/inspector', base: 'main' },
-    liveUpdates: true,
-    files: [
-      { path: 'src/renderer/src/SessionWorkspace.tsx', status: 'modified', staged: false, unstaged: true, additions: 14, deletions: 5 },
-      { path: 'src/renderer/src/styles.css', status: 'modified', staged: true, unstaged: false, additions: 7, deletions: 3 }
-    ]
-  }),
+  getWorkspaceReview: async (input) => {
+    const scope = input?.scope ?? 'uncommitted'
+    const base = {
+      scope,
+      workspaceName: 'wedge-demo',
+      revision: `preview-review-${reviewScene ?? 'ready'}`,
+      updatedAt: Date.now(),
+      branch: { current: 'feature/inspector', base: 'main' },
+      liveUpdates: true
+    }
+    if (reviewScene === 'clean') {
+      return { ...base, state: 'clean', additions: 0, deletions: 0, files: [], headCommit: { short: 'e944fd9', subject: 'Keep the Cursor process hook alive across in-place workbench reloads' } }
+    }
+    if (reviewScene === 'not_git') {
+      return { ...base, state: 'not_git', additions: 0, deletions: 0, files: [], branch: undefined, liveUpdates: false, detail: '该文件夹不在任何 Git 仓库内；初始化仓库后即可在这里审查变更。' }
+    }
+    if (reviewScene === 'error') {
+      return { ...base, state: 'error', additions: 0, deletions: 0, files: [], liveUpdates: false, detail: 'git status 退出码 128：fatal: not a git repository (or any of the parent directories)' }
+    }
+    if (reviewScene === 'many') {
+      const files: WorkspaceReviewSummary['files'] = [
+        { path: 'src/renderer/src/inspector/ReviewPanel.tsx', status: 'modified', staged: false, unstaged: true, additions: 96, deletions: 31 },
+        { path: 'src/renderer/src/inspector/InspectorShell.tsx', status: 'modified', staged: true, unstaged: true, additions: 12, deletions: 4 },
+        { path: 'src/renderer/src/inspector/activity-view.ts', status: 'added', staged: true, unstaged: false, additions: 215, deletions: 0 },
+        { path: 'src/renderer/src/workspace-inspector.css', status: 'modified', staged: false, unstaged: true, additions: 140, deletions: 22 },
+        { path: 'src/renderer/src/WorkspaceInspector.tsx', status: 'renamed', previousPath: 'src/renderer/src/WorkspacePanel.tsx', staged: true, unstaged: false, additions: 3, deletions: 3 },
+        { path: 'docs/UI-STRUCTURE.md', status: 'deleted', staged: false, unstaged: true, additions: 0, deletions: 30 },
+        { path: 'preview-screenshots/review-light.png', status: 'untracked', staged: false, unstaged: true, binary: true },
+        { path: 'tests/inspector-shell.test.tsx', status: 'untracked', staged: false, unstaged: true, additions: 123, deletions: 0 },
+        { path: 'src/renderer/src/lobby/a-very-long-directory-name/nested/deeper/still-going/components/IndependentSessionPage.tsx', status: 'modified', staged: false, unstaged: true, additions: 8, deletions: 8 }
+      ]
+      return {
+        ...base, state: 'ready',
+        additions: files.reduce((total, file) => total + (file.additions ?? 0), 0),
+        deletions: files.reduce((total, file) => total + (file.deletions ?? 0), 0),
+        files
+      }
+    }
+    return {
+      ...base,
+      state: 'ready',
+      additions: 21,
+      deletions: 8,
+      files: [
+        { path: 'src/renderer/src/SessionWorkspace.tsx', status: 'modified', staged: false, unstaged: true, additions: 14, deletions: 5 },
+        { path: 'src/renderer/src/styles.css', status: 'modified', staged: true, unstaged: false, additions: 7, deletions: 3 }
+      ]
+    }
+  },
   applyWorkspaceReviewAction: async ({ action, path }) => ({ ok: true, message: `预览环境：已模拟 ${action} ${path}` }),
   revealWorkspaceFile: async () => true,
   openWorkspaceFile: async () => ({ ok: true, method: 'editor' }),

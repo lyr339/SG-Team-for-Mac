@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "preview:ui": "vite --config vite.preview.config.ts",
+    "preview:shots": "node scripts/preview-shots.mjs",
     "build": "npm run typecheck && electron-vite build && npm run build:mcp",
     "build:mcp": "vite build --config mcp.vite.config.ts",
     "smoke:mcp": "tsx scripts/verify-built-mcp.ts",

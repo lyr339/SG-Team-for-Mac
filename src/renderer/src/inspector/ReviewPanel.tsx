@@ -27,6 +27,11 @@ export interface ReviewPanelProps {
   onQuote?: (text: string) => void
   /** 摘要更新回调（供产物面板复用同一份数据，不重复拉取）。 */
   onSummary?: (summary: WorkspaceReviewSummary | undefined) => void
+  /**
+   * 右栏收起但仍挂载：停掉兜底轮询，主进程推送只记一个「待刷新」标记；
+   * 重新展开时补拉一次。展开状态与已加载的差异原样保留。
+   */
+  paused?: boolean
   /** 测试注入：轮询间隔。 */
   pollIntervalMs?: { live: number; fallback: number }
 }
@@ -72,9 +77,18 @@ function gitScopeOf(scope: ReviewScopeId): WorkspaceReviewScope {
   return scope === 'branch' ? 'branch' : 'uncommitted'
 }
 
-function splitPath(path: string): { dir: string; name: string } {
+/**
+ * 路径拆成目录 / 文件名主干 / 扩展名三段：目录从头部截断，主干从尾部截断，扩展名永不截断——
+ * 窄栏里 `workspace-inspector…` 会变成 `workspace-insp….css`，类型信息不丢。
+ * 点开头的隐藏文件（.gitignore）与无扩展名文件整体视为主干。
+ */
+export function splitPath(path: string): { dir: string; stem: string; ext: string } {
   const index = path.lastIndexOf('/')
-  return index < 0 ? { dir: '', name: path } : { dir: path.slice(0, index + 1), name: path.slice(index + 1) }
+  const dir = index < 0 ? '' : path.slice(0, index + 1)
+  const name = index < 0 ? path : path.slice(index + 1)
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return { dir, stem: name, ext: '' }
+  return { dir, stem: name.slice(0, dot), ext: name.slice(dot) }
 }
 
 function hunkLineRange(hunk: WorkspaceDiffHunk): { from: number; to: number } | undefined {
@@ -196,7 +210,7 @@ function flashElement(element: HTMLElement): void {
   window.setTimeout(() => element.classList.remove('is-revealed'), 1_400)
 }
 
-export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollIntervalMs = DEFAULT_POLL }: ReviewPanelProps): React.JSX.Element {
+export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, paused = false, pollIntervalMs = DEFAULT_POLL }: ReviewPanelProps): React.JSX.Element {
   const [scope, setScope] = useState<ReviewScopeId>(readStoredScope)
   const [summary, setSummary] = useState<WorkspaceReviewSummary>()
   const [error, setError] = useState('')
@@ -212,6 +226,9 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
   const revisionRef = useRef('')
   const initializedWorkspace = useRef('')
   const listRef = useRef<HTMLDivElement>(null)
+  const pausedRef = useRef(paused)
+  /** 收起期间收到过主进程推送：展开时补拉。 */
+  const refreshWhenResumed = useRef(false)
 
   useEffect(() => {
     try { localStorage.setItem(SCOPE_STORAGE_KEY, scope) } catch { /* 当前窗口仍保持选择。 */ }
@@ -227,6 +244,8 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
       if (!api?.getWorkspaceReview) throw new Error('当前环境没有桌面 API，无法读取工作区变更')
       const next = await api.getWorkspaceReview({ scope: gitScopeOf(scope) })
       if (id !== requestId.current) return
+      // IPC 返回空值（主进程尚未注册该通道 / 预览环境未 mock）按读取失败处理，不让空对象进入投影。
+      if (!next || typeof next !== 'object' || typeof next.state !== 'string') throw new Error('工作区变更摘要不可用')
       setError('')
       setSummary((current) => current?.revision === next.revision && current.state === next.state && current.scope === next.scope
         ? { ...current, updatedAt: next.updatedAt, detail: next.detail, liveUpdates: next.liveUpdates, headCommit: next.headCommit }
@@ -239,8 +258,17 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
     }
   }, [scope])
 
-  const loadDiff = useCallback(async (path: string, revision: string): Promise<void> => {
-    setDiffs((current) => ({ ...current, [path]: 'loading' }))
+  /**
+   * 读取单文件差异。`keepStale`（revision 刷新时）让旧差异留在屏幕上直到新差异到达——
+   * Agent 连续写文件时监听会高频推送，若每次都先切回骨架屏，已展开的差异会不停闪动。
+   * 首次展开没有旧差异，仍显示骨架。
+   */
+  const loadDiff = useCallback(async (path: string, revision: string, options: { keepStale?: boolean } = {}): Promise<void> => {
+    setDiffs((current) => (
+      options.keepStale && current[path] !== undefined && current[path] !== 'loading'
+        ? current
+        : { ...current, [path]: 'loading' }
+    ))
     try {
       const api = inspectorDesktopApi()
       if (!api?.getWorkspaceReviewFile) throw new Error('当前环境没有桌面 API')
@@ -268,7 +296,10 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
     setDiffs({})
     setConfirm(undefined)
     void loadSummary()
-    const unsubscribe = inspectorDesktopApi()?.onWorkspaceReviewChanged?.(() => void loadSummary()) ?? (() => {})
+    const unsubscribe = inspectorDesktopApi()?.onWorkspaceReviewChanged?.(() => {
+      if (pausedRef.current) refreshWhenResumed.current = true
+      else void loadSummary()
+    }) ?? (() => {})
     return () => {
       requestId.current += 1
       summaryInFlight.current = false
@@ -276,14 +307,24 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
     }
   }, [loadSummary, workspaceKey])
 
+  // 收起 → 展开：补拉一次（收起期间的推送只记了标记，兜底轮询也停了）。
+  useEffect(() => {
+    const wasPaused = pausedRef.current
+    pausedRef.current = paused
+    if (paused || !wasPaused) return
+    refreshWhenResumed.current = false
+    void loadSummary()
+  }, [loadSummary, paused])
+
   const liveUpdates = summary?.liveUpdates === true
   useEffect(() => {
+    if (paused) return
     const interval = liveUpdates ? pollIntervalMs.live : pollIntervalMs.fallback
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void loadSummary()
     }, interval)
     return () => window.clearInterval(timer)
-  }, [liveUpdates, loadSummary, pollIntervalMs.fallback, pollIntervalMs.live])
+  }, [liveUpdates, loadSummary, paused, pollIntervalMs.fallback, pollIntervalMs.live])
 
   const visible = useMemo(() => (
     summary && scope === 'turn' ? filterSummaryToPaths(summary, turnPaths) : summary
@@ -293,23 +334,30 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
     onSummary?.(summary)
   }, [onSummary, summary])
 
-  // revision 变化 → 差异缓存失效并重拉已展开文件；首次加载默认展开第一个文件。
+  // revision 变化 → 已展开文件的差异就地重拉（旧差异保留到新差异到达），
+  // 不再出现在摘要里的文件才丢缓存；首次加载默认展开第一个文件。
   useEffect(() => {
     if (!visible?.revision || visible.state !== 'ready') return
     const revisionChanged = revisionRef.current !== visible.revision
+    const firstForWorkspace = initializedWorkspace.current !== workspaceKey
+    if (!revisionChanged && !firstForWorkspace) return
     revisionRef.current = visible.revision
-    if (revisionChanged) setDiffs({})
     let open = expanded
-    if (initializedWorkspace.current !== workspaceKey) {
+    if (firstForWorkspace) {
       initializedWorkspace.current = workspaceKey
       open = visible.files[0] ? new Set([visible.files[0].path]) : new Set()
       setExpanded(open)
     }
-    if (!revisionChanged && Object.keys(diffs).length) return
+    // 只有正展开着的文件才值得保留旧差异（避免闪动）；收起的文件下次展开时重新读取。
+    const listed = new Set(visible.files.map((file) => file.path))
+    setDiffs((current) => {
+      const kept = Object.entries(current).filter(([path]) => listed.has(path) && open.has(path))
+      return kept.length === Object.keys(current).length ? current : Object.fromEntries(kept)
+    })
     for (const file of visible.files) {
-      if (open.has(file.path)) void loadDiff(file.path, visible.revision)
+      if (open.has(file.path)) void loadDiff(file.path, visible.revision, { keepStale: true })
     }
-  }, [diffs, expanded, loadDiff, visible, workspaceKey])
+  }, [expanded, loadDiff, visible, workspaceKey])
 
   const ensureDiff = (path: string): void => {
     if (visible && diffs[path] === undefined) void loadDiff(path, visible.revision)
@@ -426,8 +474,9 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
             </button>
           ))}
         </div>
-        <div className="inspector-review__totals" aria-label={`新增 ${visible?.additions ?? 0} 行，删除 ${visible?.deletions ?? 0} 行`}>
-          <b>+{visible?.additions ?? 0}</b><em>−{visible?.deletions ?? 0}</em>
+        <div className="inspector-review__totals" aria-label={visible?.state === 'ready' ? `新增 ${visible.additions} 行，删除 ${visible.deletions} 行` : undefined}>
+          {/* 只有真有变更时才显示合计；干净 / 出错态的 +0 −0 是噪音。 */}
+          {visible?.state === 'ready' ? <><b>+{visible.additions}</b><em>−{visible.deletions}</em></> : null}
           <button type="button" className={`inspector-icon-button${refreshing ? ' is-spinning' : ''}`} aria-label="刷新工作区变更" title={liveUpdates ? '正在实时监听工作区；点击立即刷新' : '刷新'} onClick={() => void loadSummary(true)}>
             <RefreshIcon />
           </button>
@@ -436,7 +485,7 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
       <div className="inspector-review__meta">
         <span className="inspector-review__workspace" title={summary?.workspaceName}>{summary?.workspaceName || '等待识别工程'}</span>
         {branchLabel ? <code className="inspector-review__branch" title={branch?.base ? `基线分支：${branch.base}` : '当前分支'}>{branchLabel}</code> : null}
-        {liveUpdates ? <span className="inspector-review__live" title="主进程正在监听文件系统变化，改动会即时出现"><i />实时</span> : null}
+        {liveUpdates ? <span className="inspector-review__live" title="主进程正在监听文件系统变化，改动会即时出现"><i /><b>实时</b></span> : null}
         {visible?.state === 'ready' ? (
           <span className="inspector-review__count">
             {visible.files.length} 个文件
@@ -481,7 +530,7 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
           {visible.files.map((file) => {
             const open = expanded.has(file.path)
             const diff = diffs[file.path]
-            const { dir, name } = splitPath(file.path)
+            const { dir, stem, ext } = splitPath(file.path)
             const availability = fileActionAvailability(file)
             const hunkActions = scope === 'branch' ? { stage: false, unstage: false, revert: false } : hunkActionAvailability(file)
             const busy = busyPath === file.path
@@ -489,16 +538,21 @@ export function ReviewPanel({ workspaceKey, turnPaths, onQuote, onSummary, pollI
             const touchedThisTurn = highlightTurn && fileTouchedBy(file, turnPaths)
             const stateLabel = file.committed ? '已提交' : file.staged && file.unstaged ? '部分暂存' : file.staged ? '已暂存' : ''
             const gitActions = scope !== 'branch'
+            const headTitle = [
+              file.previousPath ? `${file.previousPath} → ${file.path}` : file.path,
+              STATUS_TITLES[file.status],
+              stateLabel
+            ].filter(Boolean).join(' · ')
             return (
               <article className={`review-file is-${file.status}${open ? ' is-open' : ''}${busy ? ' is-busy' : ''}${confirming ? ' is-confirming' : ''}${touchedThisTurn ? ' is-turn' : ''}`} key={file.path}>
                 <div className="review-file__row">
-                  <button className="review-file__head" type="button" onClick={() => toggleFile(file)} aria-expanded={open} title={file.previousPath ? `${file.previousPath} → ${file.path}` : file.path}>
+                  <button className="review-file__head" type="button" onClick={() => toggleFile(file)} aria-expanded={open} title={headTitle}>
                     <i title={STATUS_TITLES[file.status]}>{STATUS_LABELS[file.status]}</i>
                     <span className="review-file__path">
                       {dir ? <small><bdi>{dir}</bdi></small> : null}
-                      <strong>{name}</strong>
+                      <strong><span>{stem}</span>{ext ? <b>{ext}</b> : null}</strong>
                       {touchedThisTurn ? <em className="is-turn" title="本轮 Agent 改动过这个文件">本轮</em> : null}
-                      {stateLabel ? <em>{stateLabel}</em> : null}
+                      {stateLabel ? <em className="review-file__state">{stateLabel}</em> : null}
                     </span>
                     <span className="review-file__counts">
                       {file.binary ? <small>BIN</small> : <><b>+{file.additions ?? 0}</b><em>−{file.deletions ?? 0}</em></>}

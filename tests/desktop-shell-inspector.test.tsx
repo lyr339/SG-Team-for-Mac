@@ -29,14 +29,89 @@ describe('DesktopShell right workspace dock', () => {
     localStorage.clear()
   })
 
-  it('opens and closes the fixed right pane from the topbar while persisting the preference', async () => {
+  /** 右栏收起 = 停靠栏轨道收到 0、面板 inert 且对辅助技术隐藏；子树保持挂载。 */
+  function expectInspectorCollapsed(collapsed: boolean): void {
+    const dock = container.querySelector('.workspace-dock.is-fixed-end')
+    const pane = container.querySelector('.workspace-inspector-pane')
+    expect(dock).toBeTruthy()
+    expect(pane).toBeTruthy()
+    expect(dock!.classList.contains('is-end-pane-collapsed')).toBe(collapsed)
+    expect(pane!.hasAttribute('inert')).toBe(collapsed)
+    expect(pane!.getAttribute('aria-hidden')).toBe(collapsed ? 'true' : 'false')
+    expect(container.querySelector('.workspace-dock > .resizable-divider')?.getAttribute('aria-hidden')).toBe(collapsed ? 'true' : null)
+  }
+
+  it('slides the right pane open and closed without remounting the session stage or the panel', async () => {
+    const visibility: boolean[] = []
     const root = createRoot(container)
     await act(async () => root.render(
       <DesktopShell
         snapshot={snapshot}
         activeModule="sessions"
         sidebar={<aside>会话栏</aside>}
-        rightPanel={(close) => <aside><span>Review 内容</span><button onClick={close}>关闭 Review</button></aside>}
+        rightPanel={(close, visible) => {
+          visibility.push(visible)
+          return <aside><span>Review 内容</span><button onClick={close}>关闭 Review</button></aside>
+        }}
+        cardOpacity={1}
+        colorMode="light"
+        onModuleChange={() => {}}
+        onOpenProjectConfiguration={() => {}}
+        onCardOpacityChange={() => {}}
+        onColorModeChange={() => {}}
+      >
+        <section data-testid="stage">会话内容</section>
+      </DesktopShell>
+    ))
+    expect(container.textContent).toContain('会话栏')
+    expect(container.querySelectorAll('.panel-button')).toHaveLength(2)
+    const stage = container.querySelector('[data-testid="stage"]')
+    const panel = container.querySelector('.workspace-inspector-pane > aside')
+    expect(stage).toBeTruthy()
+    // 默认收起：面板已在 DOM 里（状态常驻），但不可交互、不可见于辅助技术。
+    expect(panel?.textContent).toContain('Review 内容')
+    expectInspectorCollapsed(true)
+    expect(visibility.at(-1)).toBe(false)
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="收起会话列表"]')!.click())
+    expect(container.textContent).not.toContain('会话栏')
+    expect(localStorage.getItem('qingtian-team.layout:v1:shell.sessions.v2:collapsed')).toBe('1')
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
+    expect(container.textContent).toContain('会话栏')
+    expectInspectorCollapsed(true)
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开右侧工作区"]')!.click())
+    expectInspectorCollapsed(false)
+    expect(visibility.at(-1)).toBe(true)
+    expect(localStorage.getItem('qingtian-team.layout:v1:workspace-inspector:open')).toBe('1')
+    // 开合前后中栏与面板都是同一个 DOM 节点：滚动位置、打字机缓冲、展开态得以保留。
+    expect(container.querySelector('[data-testid="stage"]')).toBe(stage)
+    expect(container.querySelector('.workspace-inspector-pane > aside')).toBe(panel)
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="收起会话列表"]')!.click())
+    expect(container.textContent).not.toContain('会话栏')
+    expectInspectorCollapsed(false)
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
+    expect(container.textContent).toContain('会话栏')
+    expect(container.querySelector('[data-testid="stage"]')).toBe(stage)
+
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '关闭 Review')!.click())
+    expectInspectorCollapsed(true)
+    expect(visibility.at(-1)).toBe(false)
+    expect(localStorage.getItem('qingtian-team.layout:v1:workspace-inspector:open')).toBe('0')
+    expect(container.querySelector('[data-testid="stage"]')).toBe(stage)
+    expect(container.querySelector('.workspace-inspector-pane > aside')).toBe(panel)
+    await act(async () => root.unmount())
+  })
+
+  it('toggles the right pane with Ctrl/⌘+\\ and ignores the shortcut without a right panel', async () => {
+    const root = createRoot(container)
+    const render = (withPanel: boolean): Promise<void> => act(async () => root.render(
+      <DesktopShell
+        snapshot={snapshot}
+        activeModule="sessions"
+        sidebar={<aside>会话栏</aside>}
+        rightPanel={withPanel ? () => <aside>Review 内容</aside> : undefined}
         cardOpacity={1}
         colorMode="light"
         onModuleChange={() => {}}
@@ -47,28 +122,17 @@ describe('DesktopShell right workspace dock', () => {
         <section>会话内容</section>
       </DesktopShell>
     ))
-    expect(container.textContent).toContain('会话栏')
-    expect(container.querySelectorAll('.panel-button')).toHaveLength(2)
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="收起会话列表"]')!.click())
-    expect(container.textContent).not.toContain('会话栏')
-    expect(localStorage.getItem('qingtian-team.layout:v1:shell.sessions.v2:collapsed')).toBe('1')
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
-    expect(container.textContent).toContain('会话栏')
-    expect(container.textContent).not.toContain('Review 内容')
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开右侧工作区"]')!.click())
-    expect(container.textContent).toContain('Review 内容')
-    expect(container.textContent).toContain('会话栏')
-    expect(container.querySelector('.workspace-dock.is-fixed-end')).toBeTruthy()
-    expect(localStorage.getItem('qingtian-team.layout:v1:workspace-inspector:open')).toBe('1')
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="收起会话列表"]')!.click())
-    expect(container.textContent).toContain('Review 内容')
-    expect(container.textContent).not.toContain('会话栏')
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]')!.click())
-    expect(container.textContent).toContain('Review 内容')
-    expect(container.textContent).toContain('会话栏')
-    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '关闭 Review')!.click())
-    expect(container.textContent).not.toContain('Review 内容')
-    expect(localStorage.getItem('qingtian-team.layout:v1:workspace-inspector:open')).toBe('0')
+    await render(true)
+    expectInspectorCollapsed(true)
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', ctrlKey: true })) })
+    expectInspectorCollapsed(false)
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', metaKey: true })) })
+    expectInspectorCollapsed(true)
+    // 没有可停靠的面板（未选中会话）时快捷键无效，停靠栏保持收起且为空。
+    await render(false)
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '\\', ctrlKey: true })) })
+    expectInspectorCollapsed(true)
+    expect(container.querySelector('.workspace-inspector-pane')?.childElementCount).toBe(0)
     await act(async () => root.unmount())
   })
 })

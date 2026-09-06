@@ -533,6 +533,19 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 .content-stage { min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas); border-radius: var(--r-xl); box-shadow: var(--shadow-1); }
 .context-sidebar { min-width: 0; min-height: 0; overflow: hidden; background: var(--surface); border-radius: var(--r-xl); box-shadow: var(--shadow-1); }
 .workspace-dock, .workspace-inspector-pane { min-width: 0; min-height: 0; overflow: hidden; }
+/* 右栏开合 = 末栏轨道 420px ↔ 0 的滑动过渡（轨道数不变才可插值）；分隔条同步收到 0。
+   末栏内容固定为真实宽度并右对齐，收合时被裁切而不是被挤压，文字不会中途重排。
+   visibility 延迟到过渡结束再隐藏，展开时立即可见；inert / aria-hidden 由 DesktopShell 设置。 */
+.workspace-dock { transition: grid-template-columns 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.workspace-dock.is-end-pane-collapsed { grid-template-columns: minmax(var(--resizable-final-min), 1fr) 0px minmax(0, 0px); }
+.workspace-dock.is-end-pane-collapsed > .resizable-divider { visibility: hidden; pointer-events: none; }
+.workspace-inspector-pane { position: relative; visibility: visible; transition: visibility 0s linear 0s; }
+.workspace-inspector-pane > * { position: absolute; inset: 0 0 0 auto; width: var(--resizable-pane-0); }
+.workspace-dock.is-end-pane-collapsed > .workspace-inspector-pane { visibility: hidden; transition-delay: 240ms; }
+@media (prefers-reduced-motion: reduce) {
+  .workspace-dock { transition: none; }
+  .workspace-dock.is-end-pane-collapsed > .workspace-inspector-pane { transition-delay: 0s; }
+}
 
 /* ============================================================
    会话侧栏（session pane）

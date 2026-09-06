@@ -20,4 +20,13 @@ npm run smoke:channel   # 通道角色 stdio 冒烟（构建产物）
 npm run verify:mac
 ```
 
+Design walkthrough (pure-browser preview with a mocked desktop API, plus a
+headless screenshot matrix over the right-hand inspector: panels × light/dark ×
+narrow × transparent × reduced-motion × hover states):
+
+```bash
+npm run preview:ui      # http://127.0.0.1:5174/preview.html
+npm run preview:shots   # writes preview-screenshots/*.png (needs Chrome or Edge)
+```
+
 Architecture and protocol decisions live in `docs/`.

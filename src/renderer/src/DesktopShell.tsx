@@ -18,8 +18,12 @@ interface DesktopShellProps {
   snapshot: DesktopSnapshot
   activeModule: AppModule
   sidebar: ReactNode
-  /** 会话页的按需右侧工作区；传入时顶栏出现停靠开关。 */
-  rightPanel?: (close: () => void) => ReactNode
+  /**
+   * 会话页的按需右侧工作区；传入时顶栏出现停靠开关。
+   * 右栏收起时子树仍保持挂载（展开状态、滚动位置、已加载的差异都保留），
+   * `visible=false` 让面板自行暂停轮询之类的后台工作。
+   */
+  rightPanel?: (close: () => void, visible: boolean) => ReactNode
   cursorWorkspace?: CursorWorkspaceDetection
   workspace?: { id: string; name: string; path: string }
   wideContent?: boolean
@@ -297,19 +301,21 @@ export function DesktopShell({
             firstPaneCollapsed={activeModule === 'sessions' && sessionSidebarCollapsed}
           >
             {sidebar}
-            {inspectorVisible ? (
-              <ResizableColumns
-                className="workspace-dock"
-                dividerLabels={['调整右侧工作区宽度']}
-                finalPaneMinSize={400}
-                fixedPaneSide="end"
-                paneSpecs={INSPECTOR_SPECS}
-                storageKey="shell.workspace-inspector"
-              >
-                <main className="content-stage">{children}</main>
-                <div className="workspace-inspector-pane">{rightPanel?.(() => setInspectorVisible(false))}</div>
-              </ResizableColumns>
-            ) : <main className="content-stage">{children}</main>}
+            {/* 停靠栏常驻：开合只收放末栏轨道（滑动过渡），中栏与右栏子树都不重挂载。 */}
+            <ResizableColumns
+              className="workspace-dock"
+              dividerLabels={['调整右侧工作区宽度']}
+              finalPaneMinSize={400}
+              fixedPaneSide="end"
+              paneSpecs={INSPECTOR_SPECS}
+              storageKey="shell.workspace-inspector"
+              endPaneCollapsed={!inspectorVisible}
+            >
+              <main className="content-stage">{children}</main>
+              <div className="workspace-inspector-pane" inert={!inspectorVisible} aria-hidden={!inspectorVisible}>
+                {rightPanel?.(() => setInspectorVisible(false), inspectorVisible)}
+              </div>
+            </ResizableColumns>
           </ResizableColumns>
         )}
       </div>

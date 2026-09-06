@@ -119,6 +119,8 @@ describe('WorkspaceReviewReader', () => {
     const root = mkdtempSync(join(tmpdir(), 'sg-review-'))
     roots.push(root)
     execFileSync('git', ['init', '-q'], { cwd: root })
+    // 夹具断言字节级内容；本机全局 core.autocrlf=true（Windows 常见）会让 checkout 写回 CRLF。
+    execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: root })
     writeFileSync(join(root, 'app.ts'), 'const value = 1\n')
     execFileSync('git', ['add', 'app.ts'], { cwd: root })
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial'], { cwd: root })

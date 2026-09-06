@@ -862,7 +862,7 @@ export function App(): React.JSX.Element {
           onSelectSession={selectSession}
         />
       ) : null}
-      rightPanel={selectedSession ? (close) => (
+      rightPanel={selectedSession ? (close, visible) => (
         <WorkspaceInspector
           session={selectedSession}
           entries={snapshot.conversations[selectedSession.channelId] ?? []}
@@ -870,6 +870,7 @@ export function App(): React.JSX.Element {
           workspaceId={activeWorkspace?.id}
           workspaceName={activeProjectName}
           workspacePath={activeWorkspace?.path}
+          hidden={!visible}
           onQuoteToComposer={(text) => {
             const channelId = selectedSession.channelId
             setComposerDrafts((current) => {

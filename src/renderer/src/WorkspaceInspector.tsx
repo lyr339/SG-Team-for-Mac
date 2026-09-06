@@ -26,6 +26,8 @@ interface WorkspaceInspectorProps {
   workspacePath?: string
   /** 把引用文本追加到该会话的输入框（「反馈给 Agent」）。 */
   onQuoteToComposer?: (text: string) => void
+  /** 右栏已收起但仍挂载：面板保留状态，暂停轮询等后台工作，重新展开时补拉一次。 */
+  hidden?: boolean
   onClose: () => void
 }
 
@@ -43,6 +45,7 @@ export function WorkspaceInspector({
   workspaceName,
   workspacePath,
   onQuoteToComposer,
+  hidden = false,
   onClose
 }: WorkspaceInspectorProps): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<InspectorTabId>(readStoredInspectorTab)
@@ -67,7 +70,7 @@ export function WorkspaceInspector({
   return (
     <InspectorShell tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} onClose={onClose}>
       <InspectorPanel tab="review">
-        <ReviewPanel workspaceKey={workspaceKey} turnPaths={turnPaths} onQuote={onQuoteToComposer} onSummary={onSummary} />
+        <ReviewPanel workspaceKey={workspaceKey} turnPaths={turnPaths} paused={hidden} onQuote={onQuoteToComposer} onSummary={onSummary} />
       </InspectorPanel>
       <InspectorPanel tab="plan">
         <PlanPanel todos={todos} onOpenTab={setActiveTab} />

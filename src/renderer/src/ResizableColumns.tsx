@@ -27,6 +27,13 @@ interface ResizableColumnsProps {
   fixedPaneSide?: 'start' | 'end'
   /** 首栏收起态由外层导航控制；组件只负责布局。 */
   firstPaneCollapsed?: boolean
+  /**
+   * 末栏收起（仅 fixedPaneSide='end' 的两栏布局）：末栏与分隔条的轨道收到 0，但都留在网格里，
+   * 轨道数不变，CSS 才能对 grid-template-columns 做滑动过渡；末栏子树保持挂载，
+   * 由调用方设置 inert / aria-hidden。`--resizable-pane-0` 仍是末栏的真实宽度，
+   * 末栏内容据此保持固定宽度，收合过程是被裁切而不是被挤压。
+   */
+  endPaneCollapsed?: boolean
 }
 
 const STORAGE_PREFIX = 'qingtian-team.layout:v1:'
@@ -65,6 +72,7 @@ export function ResizableColumns({
   storageKey,
   fixedPaneSide = 'start',
   firstPaneCollapsed = false,
+  endPaneCollapsed = false
 }: ResizableColumnsProps): React.JSX.Element {
   const items = Children.toArray(children)
   const [committedSizes, setCommittedSizes] = useState(() => readStoredSizes(storageKey, paneSpecs))
@@ -210,10 +218,11 @@ export function ResizableColumns({
     ...Object.fromEntries(sizesRef.current.map((size, index) => [`--resizable-pane-${index}`, `${size}px`]))
   } as CSSProperties
   const collapsed = items.length === 2 && firstPaneCollapsed && !compactLayout
+  const endCollapsed = items.length === 2 && fixedPaneSide === 'end' && endPaneCollapsed
 
   return (
     <div
-      className={`resizable-columns resizable-columns--${items.length}${fixedPaneSide === 'end' && items.length === 2 ? ' is-fixed-end' : ''}${collapsed ? ' is-first-pane-collapsed' : ''} ${className}`.trim()}
+      className={`resizable-columns resizable-columns--${items.length}${fixedPaneSide === 'end' && items.length === 2 ? ' is-fixed-end' : ''}${collapsed ? ' is-first-pane-collapsed' : ''}${endCollapsed ? ' is-end-pane-collapsed' : ''} ${className}`.trim()}
       ref={containerRef}
       style={style}
     >
@@ -228,10 +237,12 @@ export function ResizableColumns({
               aria-valuemax={spec?.maxSize}
               aria-valuemin={spec?.minSize}
               aria-valuenow={Math.round(sizesRef.current[index] ?? spec?.defaultSize ?? 0)}
+              aria-hidden={endCollapsed || undefined}
               className="resizable-divider"
               data-resize-divider={index}
               key={`divider-${index}`}
               role="separator"
+              tabIndex={endCollapsed ? -1 : undefined}
               title="拖拽调整宽度；双击恢复默认"
               onDoubleClick={() => resetDivider(index)}
               onKeyDown={(event) => resizeWithKeyboard(index, event)}

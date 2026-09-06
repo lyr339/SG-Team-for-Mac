@@ -17,6 +17,31 @@ export function formatRelativeTime(timestamp?: number): string {
   return `${hours} 小时前活动`
 }
 
+/**
+ * 列表里的时间标签：近一小时说相对（刚刚 / 12 分钟前），再远就回到时钟——
+ * 今天只给 HH:mm，昨天与更早补上日期，读者不必心算。绝对时间由调用方放进 title。
+ */
+export function formatRelativeClock(timestamp: number, now = Date.now()): string {
+  const elapsed = now - timestamp
+  if (elapsed >= 0 && elapsed < 45_000) return '刚刚'
+  if (elapsed >= 0 && elapsed < 60 * 60_000) return `${Math.max(1, Math.floor(elapsed / 60_000))} 分钟前`
+  const date = new Date(timestamp)
+  const today = new Date(now)
+  const sameDay = date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth() && date.getDate() === today.getDate()
+  if (sameDay) return formatClock(timestamp)
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+  const isYesterday = date.getFullYear() === yesterday.getFullYear() && date.getMonth() === yesterday.getMonth() && date.getDate() === yesterday.getDate()
+  if (isYesterday) return `昨天 ${formatClock(timestamp)}`
+  const sameYear = date.getFullYear() === today.getFullYear()
+  return `${sameYear ? '' : `${date.getFullYear()}/`}${date.getMonth() + 1}/${date.getDate()} ${formatClock(timestamp)}`
+}
+
+/** 完整时间（title / aria）：YYYY/M/D HH:mm:ss。 */
+export function formatFullClock(timestamp: number): string {
+  const date = new Date(timestamp)
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+}
+
 export function formatTokenCount(tokens: number): string {
   const value = Math.max(0, Math.round(tokens))
   const compact = (amount: number): string => amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2).replace(/\.0+$|(?<=\.[0-9])0+$/, '')

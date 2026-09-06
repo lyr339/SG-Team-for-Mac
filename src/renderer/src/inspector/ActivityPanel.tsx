@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { formatClock } from '../format'
+import { formatFullClock, formatRelativeClock } from '../format'
 import type { ActivityBlockStatus, ActivityCommand, ActivityTurn, ActivityView } from './activity-view'
 import { Collapsible } from './Collapsible'
 import { ActivityIcon, ChevronIcon, CopyIcon, FileGlyph, GlobeGlyph, PlugGlyph, SearchGlyph, TargetGlyph, TerminalGlyph } from './InspectorIcons'
 import type { InspectorTabId } from './InspectorShell'
 import { InspectorGroupLabel, InspectorSectionHeader, InspectorState, InspectorToast, useTransientFeedback } from './InspectorState'
+import { useNow } from './use-now'
 import { useWorkspaceFileActions, type WorkspaceFileActions } from './use-workspace-file-actions'
 
 function statusClass(status: ActivityBlockStatus): string {
@@ -65,7 +66,7 @@ function CommandRow({ command, actions }: { command: ActivityCommand; actions: W
   )
 }
 
-function TurnSection({ turn, defaultOpen, actions }: { turn: ActivityTurn; defaultOpen: boolean; actions: WorkspaceFileActions }): React.JSX.Element {
+function TurnSection({ turn, defaultOpen, now, actions }: { turn: ActivityTurn; defaultOpen: boolean; now: number; actions: WorkspaceFileActions }): React.JSX.Element {
   const [open, setOpen] = useState(defaultOpen)
   const summary = [
     turn.files.length ? `${turn.files.length} 个文件` : '',
@@ -83,7 +84,7 @@ function TurnSection({ turn, defaultOpen, actions }: { turn: ActivityTurn; defau
           <strong>{turn.prompt ?? '过程记录'}</strong>
         </span>
         <span className="activity-turn__meta">
-          {turn.at ? <time>{formatClock(turn.at)}</time> : null}
+          {turn.at ? <time dateTime={new Date(turn.at).toISOString()} title={formatFullClock(turn.at)}>{formatRelativeClock(turn.at, now)}</time> : null}
           <ChevronIcon open={open} />
         </span>
       </button>
@@ -177,6 +178,7 @@ function TurnSection({ turn, defaultOpen, actions }: { turn: ActivityTurn; defau
 export function ActivityPanel({ view, onOpenTab }: { view: ActivityView; onOpenTab?: (tab: InspectorTabId) => void }): React.JSX.Element {
   const [feedback, flash] = useTransientFeedback()
   const actions = useWorkspaceFileActions(flash)
+  const now = useNow()
   const { totals, turns } = view
   const stats = [
     totals.files ? `${totals.files} 个文件` : '',
@@ -189,7 +191,7 @@ export function ActivityPanel({ view, onOpenTab }: { view: ActivityView; onOpenT
       <InspectorSectionHeader title="活动" hint={stats || '本会话的文件、命令、来源与工具调用'} aside={turns.length ? <b className="inspector-activity__turns">{turns.length} 轮</b> : null} />
       {turns.length ? (
         <div className="inspector-activity__turns-list">
-          {turns.map((turn, index) => <TurnSection key={turn.key} turn={turn} defaultOpen={index === 0} actions={actions} />)}
+          {turns.map((turn, index) => <TurnSection key={turn.key} turn={turn} defaultOpen={index === 0} now={now} actions={actions} />)}
         </div>
       ) : (
         <InspectorState

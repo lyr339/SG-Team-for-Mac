@@ -3,11 +3,42 @@ import {
   badgeTone,
   executionBadges,
   formatAgentSessionDuration,
+  formatClock,
   formatContextUsage,
   formatExecutionProfile,
+  formatRelativeClock,
   formatSessionDuration,
   formatTokenCount
 } from '../src/renderer/src/format'
+
+describe('relative clock labels', () => {
+  // 固定在本地时间正午，避免跨日边界让「今天 / 昨天」判定随运行时刻漂移。
+  const noon = new Date(2026, 8, 6, 12, 0, 0).getTime()
+
+  it('speaks relatively inside the last hour and falls back to the clock afterwards', () => {
+    expect(formatRelativeClock(noon - 10_000, noon)).toBe('刚刚')
+    expect(formatRelativeClock(noon - 44_000, noon)).toBe('刚刚')
+    expect(formatRelativeClock(noon - 45_000, noon)).toBe('1 分钟前')
+    expect(formatRelativeClock(noon - 12 * 60_000, noon)).toBe('12 分钟前')
+    expect(formatRelativeClock(noon - 59 * 60_000, noon)).toBe('59 分钟前')
+    const threeHoursAgo = noon - 3 * 60 * 60_000
+    expect(formatRelativeClock(threeHoursAgo, noon)).toBe(formatClock(threeHoursAgo))
+  })
+
+  it('names yesterday and older dates explicitly', () => {
+    const yesterday = new Date(2026, 8, 5, 16, 47).getTime()
+    expect(formatRelativeClock(yesterday, noon)).toBe(`昨天 ${formatClock(yesterday)}`)
+    const lastMonth = new Date(2026, 7, 30, 9, 5).getTime()
+    expect(formatRelativeClock(lastMonth, noon)).toBe(`8/30 ${formatClock(lastMonth)}`)
+    const lastYear = new Date(2025, 11, 24, 20, 0).getTime()
+    expect(formatRelativeClock(lastYear, noon)).toBe(`2025/12/24 ${formatClock(lastYear)}`)
+  })
+
+  it('never reports a future timestamp as relative', () => {
+    const future = noon + 5 * 60_000
+    expect(formatRelativeClock(future, noon)).toBe(formatClock(future))
+  })
+})
 
 describe('session duration formatting', () => {
   it('keeps live sessions advancing against the supplied current time', () => {

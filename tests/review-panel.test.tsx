@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspaceReviewFileDiff, WorkspaceReviewSummary } from '../src/domain/workspace-review'
-import { buildFileQuote, buildHunkQuote, ReviewPanel } from '../src/renderer/src/inspector/ReviewPanel'
+import { buildFileQuote, buildHunkQuote, ReviewPanel, splitPath } from '../src/renderer/src/inspector/ReviewPanel'
 
 const hunk: WorkspaceReviewFileDiff['hunks'][number] = {
   header: '@@ -10,3 +10,3 @@ function login()',
@@ -146,6 +146,84 @@ describe('ReviewPanel', () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="暂存代码块 L10"]')!.click())
     expect(api.applyWorkspaceReviewAction).toHaveBeenLastCalledWith({ path: 'src/login.tsx', action: 'stage', hunkHeader: hunk.header })
     await act(async () => root.unmount())
+  })
+
+  it('keeps the expanded diff on screen while a new revision is being read instead of flashing a skeleton', async () => {
+    const api = installApi()
+    let release: ((diff: WorkspaceReviewFileDiff) => void) | undefined
+    api.getWorkspaceReviewFile.mockImplementation(async ({ path }: { path: string }) => {
+      // 第二次读取挂起：模拟 git diff 尚未返回的窗口。
+      if (api.getWorkspaceReviewFile.mock.calls.length > 1) {
+        return new Promise<WorkspaceReviewFileDiff>((done) => { release = done })
+      }
+      return { state: 'ready', path, truncated: false, hunks: [hunk] }
+    })
+    const root = createRoot(container)
+    await act(async () => root.render(<ReviewPanel workspaceKey="ws" turnPaths={[]} />))
+    expect(container.querySelector('.review-line')).toBeTruthy()
+    const lineBefore = container.querySelector('.review-line')
+
+    await act(async () => api.fireChange())
+    // 新 revision 已到、差异还在路上：旧差异原样留在屏幕上，没有骨架屏。
+    expect(container.querySelector('.review-file__loading')).toBeNull()
+    expect(container.querySelector('.review-line')).toBe(lineBefore)
+    expect(release).toBeTypeOf('function')
+
+    const replaced: WorkspaceReviewFileDiff = {
+      state: 'ready', path: 'src/login.tsx', truncated: false,
+      hunks: [{ ...hunk, lines: [{ kind: 'addition', text: 'const color = theme.midnight', newLine: 11 }] }]
+    }
+    await act(async () => { release!(replaced) })
+    expect(container.textContent).toContain('theme.midnight')
+    expect(container.textContent).not.toContain('theme.light')
+
+    // 收起状态的文件不会沿用旧差异：展开时重新读取（骨架屏出现在首次展开）。
+    const heads = Array.from(container.querySelectorAll<HTMLButtonElement>('.review-file__head'))
+    const callsBefore = api.getWorkspaceReviewFile.mock.calls.length
+    await act(async () => heads[1]!.click())
+    expect(api.getWorkspaceReviewFile.mock.calls.length).toBe(callsBefore + 1)
+    expect(container.querySelector('.review-file__loading')).toBeTruthy()
+    await act(async () => root.unmount())
+  })
+
+  it('pauses polling while hidden, defers pushed changes and catches up once visible again', async () => {
+    vi.useFakeTimers()
+    try {
+      const api = installApi()
+      const root = createRoot(container)
+      const render = (paused: boolean): Promise<void> => act(async () => root.render(
+        <ReviewPanel workspaceKey="ws" turnPaths={[]} paused={paused} pollIntervalMs={{ live: 1_000, fallback: 500 }} />
+      ))
+      await render(false)
+      const afterMount = api.getWorkspaceReview.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_050) })
+      expect(api.getWorkspaceReview.mock.calls.length).toBe(afterMount + 1)
+
+      await render(true)
+      const whenPaused = api.getWorkspaceReview.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      expect(api.getWorkspaceReview.mock.calls.length).toBe(whenPaused)
+      // 收起期间的推送只记标记，不发请求。
+      await act(async () => api.fireChange())
+      expect(api.getWorkspaceReview.mock.calls.length).toBe(whenPaused)
+
+      // 展开：补拉一次，并恢复轮询。
+      await render(false)
+      expect(api.getWorkspaceReview.mock.calls.length).toBe(whenPaused + 1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_050) })
+      expect(api.getWorkspaceReview.mock.calls.length).toBe(whenPaused + 2)
+      await act(async () => root.unmount())
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('splits paths so the extension survives truncation', () => {
+    expect(splitPath('src/renderer/workspace-inspector.css')).toEqual({ dir: 'src/renderer/', stem: 'workspace-inspector', ext: '.css' })
+    expect(splitPath('README')).toEqual({ dir: '', stem: 'README', ext: '' })
+    expect(splitPath('.gitignore')).toEqual({ dir: '', stem: '.gitignore', ext: '' })
+    expect(splitPath('docs/notes.')).toEqual({ dir: 'docs/', stem: 'notes.', ext: '' })
+    expect(splitPath('tests/inspector-shell.test.tsx')).toEqual({ dir: 'tests/', stem: 'inspector-shell.test', ext: '.tsx' })
   })
 
   it('builds plain-text quotes for files and hunks', () => {

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { AttachmentThumbnail } from '../AttachmentImageViewer'
-import { formatClock } from '../format'
+import { formatFullClock, formatRelativeClock } from '../format'
 import type { ArtifactItem, ArtifactsView } from './artifacts-view'
 import { ArtifactIcon, CopyIcon, FileGlyph, FolderIcon, OpenExternalIcon, TargetGlyph } from './InspectorIcons'
 import type { InspectorTabId } from './InspectorShell'
 import { InspectorGroupLabel, InspectorSectionHeader, InspectorState, InspectorToast, useTransientFeedback } from './InspectorState'
+import { useNow } from './use-now'
 import { useWorkspaceFileActions, type WorkspaceFileActions } from './use-workspace-file-actions'
 
 const SOURCE_LABELS: Record<ArtifactItem['source'], string> = {
@@ -13,7 +14,7 @@ const SOURCE_LABELS: Record<ArtifactItem['source'], string> = {
   worktree: '工作区新增'
 }
 
-function ImageCard({ item, actions }: { item: ArtifactItem; actions: WorkspaceFileActions }): React.JSX.Element | null {
+function ImageCard({ item, now, actions }: { item: ArtifactItem; now: number; actions: WorkspaceFileActions }): React.JSX.Element | null {
   const [broken, setBroken] = useState(false)
   const source = item.attachment.previewUrl
   // 工作区新增图片按「工作区路径 + 仓库相对路径」拼装，工作区位于仓库子目录时可能
@@ -36,7 +37,7 @@ function ImageCard({ item, actions }: { item: ArtifactItem; actions: WorkspaceFi
         <strong title={item.attachment.path ?? item.name}>{item.name}</strong>
         <span>
           {SOURCE_LABELS[item.source]}
-          {item.at ? ` · ${formatClock(item.at)}` : ''}
+          {item.at ? <> · <time dateTime={new Date(item.at).toISOString()} title={formatFullClock(item.at)}>{formatRelativeClock(item.at, now)}</time></> : null}
         </span>
       </figcaption>
       {/* 缩略图上方的悬停动作：会话来源可定位回消息；工作区新增可打开 / 复制路径 / 显示。 */}
@@ -59,6 +60,7 @@ function ImageCard({ item, actions }: { item: ArtifactItem; actions: WorkspaceFi
 export function ArtifactsPanel({ view, onOpenTab }: { view: ArtifactsView; onOpenTab?: (tab: InspectorTabId) => void }): React.JSX.Element {
   const [feedback, flash] = useTransientFeedback()
   const actions = useWorkspaceFileActions(flash)
+  const now = useNow()
   const total = view.images.length + view.files.length
   return (
     <section className="inspector-artifacts" aria-label="会话产物">
@@ -80,7 +82,7 @@ export function ArtifactsPanel({ view, onOpenTab }: { view: ArtifactsView; onOpe
             <>
               <InspectorGroupLabel count={view.images.length}>图片</InspectorGroupLabel>
               <div className="artifact-grid">
-                {view.images.map((item) => <ImageCard key={item.id} item={item} actions={actions} />)}
+                {view.images.map((item) => <ImageCard key={item.id} item={item} now={now} actions={actions} />)}
               </div>
             </>
           ) : null}

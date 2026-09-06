@@ -15,7 +15,8 @@
   color-scheme: light dark;
 
   --font-sans: "Anthropic Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  /* ui-monospace 只在 macOS 有映射；Windows 若不列 Cascadia / Consolas 会落到 Courier New。 */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Code", "Cascadia Mono", Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
   --font-numeric: "SG Numeric", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 
   --font-weight-normal: 400;
