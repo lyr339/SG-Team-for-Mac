@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { AgentLaunchPlan } from '../../../domain/agent-launch'
 import type { CdpAutoHealEvent } from '../../../domain/cursor-cdp'
 import type { CursorModelOption, CursorModelSelection } from '../../../domain/cursor-model'
@@ -109,12 +109,16 @@ export function RunSeats({
       ) : null}
 
       <ul className="run-seats__list" aria-label="逐会话模型配置">
-        {rows.map((row) => {
+        {rows.map((row, index) => {
           const selection = selections[row.channelId]
           const option = cursorModels.find((model) => model.modelId === selection?.modelId)
           const progress = planByChannel.get(row.channelId)
           return (
-            <li key={row.channelId} className={`run-seat${row.pending ? ' is-pending' : ''}${row.state ? ` is-${row.state}` : ''}`}>
+            <li
+              key={row.channelId}
+              className={`run-seat${row.pending ? ' is-pending' : ''}${row.state ? ` is-${row.state}` : ''}`}
+              style={{ '--seat-index': Math.min(index, 8) } as CSSProperties}
+            >
               <button
                 type="button"
                 aria-label={`配置 CH-${row.channelId} 会话`}

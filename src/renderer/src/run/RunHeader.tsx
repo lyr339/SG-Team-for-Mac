@@ -6,6 +6,8 @@ import type { RunView } from './run-view'
 interface RunHeaderProps {
   view: RunView
   busy: boolean
+  /** 正在执行的动作名（页面级），用于在对应按钮上显示进行中文案。 */
+  busyAction?: string
   /** 正在为另一种模式做配置（尚未创建）：分段控件预选它并提示后果。 */
   composingMode?: WorkspaceRunMode
   onSwitchMode: (to: WorkspaceRunMode) => void
@@ -27,10 +29,11 @@ function compactRunName(runName: string, workspaceName: string): string {
  * 运行头部：工程 → 模式 → 状态 → 动作。不管哪种模式，这一条都在同一位置，
  * 用同一套词汇；模式切换只有这一个入口。
  */
-export function RunHeader({ view, busy, composingMode, onSwitchMode, onCancelCompose, onEnd, onOpenSessions }: RunHeaderProps): React.JSX.Element {
+export function RunHeader({ view, busy, busyAction, composingMode, onSwitchMode, onCancelCompose, onEnd, onOpenSessions }: RunHeaderProps): React.JSX.Element {
   const run = view.run
   const mode = view.mode ?? 'team'
   const ended = view.phase === 'completed'
+  const ending = busyAction === 'end-run'
   const workspaceName = view.workspace?.name ?? '未绑定工程'
   const runName = run ? compactRunName(run.name, workspaceName) : ''
 
@@ -73,9 +76,10 @@ export function RunHeader({ view, busy, composingMode, onSwitchMode, onCancelCom
           type="button"
           className="run-header__ghost is-danger"
           disabled={busy || ended || !run}
+          aria-busy={ending}
           onClick={onEnd}
         >
-          <StopIcon />{mode === 'independent' ? '结束批次' : '结束运行'}
+          <StopIcon />{ending ? '结束中…' : mode === 'independent' ? '结束批次' : '结束运行'}
         </button>
       </div>
     </header>

@@ -39,8 +39,9 @@ describe('RunPage（一个工程一个活跃运行：团队 / 独立两种模式
     if (!button) throw new Error(`mode "${label}" not found`)
     return button
   }
-  const sheet = (): HTMLElement | null => container.querySelector('[role="alertdialog"]')
-  const status = (): HTMLElement | null => container.querySelector('.run-feedback')
+  // 确认面与提示条住在可折叠插槽里；收起后内容会为过渡再停留一会（inert），只有展开的插槽算"显示中"。
+  const sheet = (): HTMLElement | null => container.querySelector('.run-slot.is-open [role="alertdialog"]')
+  const status = (): HTMLElement | null => container.querySelector('.run-slot.is-open .run-feedback')
   const click = async (button: HTMLButtonElement): Promise<void> => { await act(async () => button.click()) }
 
   const render = async (team: TeamControlSnapshot, overrides: Partial<RunPageProps> = {}) => {

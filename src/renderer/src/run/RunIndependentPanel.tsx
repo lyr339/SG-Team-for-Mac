@@ -63,7 +63,7 @@ export function RunIndependentPanel({
           <div className="run-field__value"><small>一次创建 {INDEPENDENT_MIN_SESSIONS}–{INDEPENDENT_MAX_SESSIONS} 个，创建后分别对话</small></div>
           <div className="run-stepper" role="group" aria-label="会话数量">
             <button type="button" aria-label="减少" disabled={busy || count <= INDEPENDENT_MIN_SESSIONS} onClick={() => onCountChange(Math.max(INDEPENDENT_MIN_SESSIONS, count - 1))}>−</button>
-            <output aria-live="polite">{count}</output>
+            <output key={count} aria-live="polite">{count}</output>
             <button type="button" aria-label="增加" disabled={busy || count >= INDEPENDENT_MAX_SESSIONS} onClick={() => onCountChange(Math.min(INDEPENDENT_MAX_SESSIONS, count + 1))}>+</button>
           </div>
         </div>

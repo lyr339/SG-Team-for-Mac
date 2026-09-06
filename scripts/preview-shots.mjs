@@ -119,9 +119,26 @@ const scenes = [
   // 结束批次确认面 + 目标编辑器。
   { name: 'run-end-sheet-dark', run: true, query: 'independent=live', colorScheme: 'dark', storage: baseStorage({ colorMode: 'dark' }), actions: [{ click: '.run-header__ghost.is-danger' }, { wait: 300 }] },
   { name: 'run-goal-editing', run: true, query: 'runStatus=ready', colorScheme: 'light', storage: baseStorage(), actions: [{ click: '.run-panel--team .run-link' }, { wait: 300 }] },
-  // 窄窗口与透明模式。
-  { name: 'run-team-active-narrow', run: true, width: 900, height: 760, colorScheme: 'light', storage: baseStorage() },
-  { name: 'run-independent-mixed-narrow-dark', run: true, width: 900, height: 760, query: 'independent=mixed', colorScheme: 'dark', storage: baseStorage({ colorMode: 'dark' }) },
+  // 宽度阶梯：容器查询断点 1120 / 920 / 680 两侧各取一档，头部与席位行的重排必须在每一档都成立。
+  ...[1180, 1000, 860, 720, 600].flatMap((width) => [
+    { name: `run-team-active-w${width}`, run: true, width, height: 820, colorScheme: 'light', storage: baseStorage(), clip: null },
+    { name: `run-independent-mixed-w${width}`, run: true, width, height: 820, query: 'independent=mixed', colorScheme: 'dark', storage: baseStorage({ colorMode: 'dark' }), clip: null }
+  ]),
+  { name: 'run-start-independent-w600', run: true, width: 600, height: 900, query: 'setup=1', colorScheme: 'light', storage: baseStorage(), clip: null, actions: [{ click: '.run-mode-switch button[aria-checked="false"]' }, { wait: 300 }] },
+  { name: 'run-compose-w720', run: true, width: 720, height: 900, colorScheme: 'light', storage: baseStorage(), clip: null, actions: [{ click: '.run-mode-switch button[aria-checked="false"]' }, { wait: 300 }, { click: '.run-sheet__confirm' }, { wait: 400 }] },
+  // 确认面的展开是高度过渡：中途帧应看到插槽行高在插值，而不是 0 → 满高跳变。
+  {
+    name: 'run-sheet-opening', run: true, colorScheme: 'light', storage: baseStorage(), clip: null,
+    actions: [{
+      label: 'run-slot grid-template-rows 采样（0/60/120/200/320ms）',
+      probe: `new Promise((done) => {
+        const samples = []
+        document.querySelector('.run-mode-switch button[aria-checked="false"]').click()
+        const slot = () => document.querySelector('.run-slot')
+        for (const at of [0, 60, 120, 200, 320]) setTimeout(() => { samples.push(at + 'ms ' + getComputedStyle(slot()).gridTemplateRows); if (at === 320) done(samples) }, at)
+      })`
+    }, { wait: 40 }]
+  },
   { name: 'run-team-active-clear', run: true, colorScheme: 'light', storage: baseStorage({ cardOpacity: 0 }) },
   // 右上角设置入口：账号与 Cursor。
   { name: 'account-page', hash: 'account', width: 1440, height: 900, colorScheme: 'light', storage: baseStorage(), clip: null }
@@ -132,7 +149,7 @@ for (const scene of scenes) {
     scene.hash = 'run'
     scene.width ??= 1440
     scene.height ??= 900
-    scene.clip ??= '.run-page'
+    scene.clip ??= '.run-page__inner'
   }
   if (scene.clip === undefined && scene.name !== 'inspector-closed' && !scene.hash) scene.clip = '.workspace-inspector'
   if (scene.clip === null) delete scene.clip

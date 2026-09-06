@@ -8,6 +8,8 @@ interface RunTeamPanelProps {
   primary: TeamPrimaryAction
   steps: RunFlowStep[]
   busy: boolean
+  /** 正在执行的动作名：主按钮显示进行中文案。 */
+  busyAction?: string
   /** 页面要求打开目标编辑器（主按钮「填写团队目标」）。 */
   editingGoal: boolean
   onEditingGoalChange: (editing: boolean) => void
@@ -28,6 +30,7 @@ export function RunTeamPanel({
   primary,
   steps,
   busy,
+  busyAction,
   editingGoal,
   onEditingGoalChange,
   onSaveGoal,
@@ -42,6 +45,10 @@ export function RunTeamPanel({
   const [saving, setSaving] = useState(false)
   const goalLocked = view.phase !== 'prelaunch'
   const goalMissing = !goal.trim()
+  const primaryBusy = busyAction === 'launch' || busyAction === 'next-run'
+  const primaryLabel = primaryBusy
+    ? primary.kind === 'new-round' ? '正在建立新一轮…' : primary.kind === 'launch' ? '正在启动…' : '处理中…'
+    : primary.label
 
   useEffect(() => {
     setDraft(goal)
@@ -115,8 +122,9 @@ export function RunTeamPanel({
             type="button"
             className="primary-button run-primary"
             disabled={busy || (primary.kind === 'launch' && goalMissing)}
+            aria-busy={primaryBusy}
             onClick={onPrimary}
-          ><PlayIcon />{primary.label}</button>
+          ><PlayIcon />{primaryLabel}</button>
         ) : allowNewRound ? (
           <button type="button" className="secondary-button" disabled={busy} onClick={onNewRound}>结束本轮并新建</button>
         ) : null}

@@ -4,17 +4,51 @@
    与大厅同一套 Claude 式语言：三层字号、两级字重、hairline 边框、克制阴影、一个强调色。
    ============================================================ */
 
+/* 页面自己承担滚动（content-stage 是 overflow:hidden），并作为容器查询的基准：
+   断点看的是页面实际宽度，不是窗口宽度，将来加侧栏也不会错位。 */
 .run-page {
+  container: run-page / inline-size;
+  height: 100%;
+  overflow-y: auto;
+  color: var(--text);
+  scrollbar-gutter: stable both-edges;
+}
+.run-page__inner {
   display: grid;
-  gap: 14px;
   align-content: start;
   max-width: 1180px;
   margin: 0 auto;
   padding: 16px 20px 32px;
-  color: var(--text);
 }
+/* 间距用相邻边距而不是 grid gap：折叠中的插槽（确认面 / 提示条）不占位。 */
+.run-page__inner > * { min-width: 0; }
+.run-page__inner > * + * { margin-top: 14px; }
+.run-page__inner > .run-slot { margin-top: 0; }
 
-.run-page > * { min-width: 0; }
+/* 可折叠插槽：0fr ↔ 1fr 让内容高度参与过渡，出现与消失都是滑动，不跳。 */
+.run-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.run-slot.is-open { grid-template-rows: 1fr; }
+.run-slot__inner { min-height: 0; overflow: hidden; }
+.run-slot__inner > * { margin-top: 14px; }
+.run-slot:not(.is-open) .run-slot__inner > * { opacity: 0; transition: opacity 160ms ease; }
+.run-slot.is-open .run-slot__inner > * { opacity: 1; transition: opacity 200ms ease 60ms; }
+
+/* ---------- 共用：焦点环 / 按压反馈 ---------- */
+.run-page :is(button, textarea, [role="radio"]):focus-visible {
+  outline: 2px solid var(--accent-border-strong);
+  outline-offset: 2px;
+}
+.run-page .run-mode-switch button:focus-visible { outline-offset: -2px; }
+.run-page :is(.primary-button, .secondary-button, .run-header__ghost, .run-sheet__confirm, .run-stepper button):active:not(:disabled) {
+  transform: translateY(0.5px) scale(0.995);
+}
+.run-page :is(.primary-button, .secondary-button, .run-header__ghost, .run-sheet__confirm) {
+  transition: filter 140ms ease, background 140ms ease, border-color 140ms ease, color 140ms ease, transform 80ms ease;
+}
 
 /* ---------- 共用：卡片 / 节标题 / 链接按钮 / 反馈 ---------- */
 .run-card,
@@ -58,17 +92,37 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
 .run-link:disabled { opacity: 0.45; }
 
 .run-feedback {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
   margin: 0;
-  padding: 10px 14px;
+  padding: 10px 10px 10px 14px;
   color: var(--text-soft);
   background: var(--surface-soft);
   border: 1px solid var(--line);
   border-radius: 11px;
   font-size: var(--fs-12);
   line-height: 1.5;
-  animation: run-fade-in 200ms ease both;
 }
+.run-feedback > i { width: 7px; height: 7px; margin-top: 6px; background: var(--color-text-success); border-radius: 50%; }
+.run-feedback > span { min-width: 0; overflow-wrap: anywhere; }
+.run-feedback > button {
+  width: 24px;
+  height: 24px;
+  margin: -3px 0;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: var(--fs-15);
+  line-height: 1;
+}
+.run-feedback > button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
 .run-feedback.is-error { color: var(--red); background: var(--red-soft); border-color: var(--red-border-soft); }
+.run-feedback.is-error > i { background: var(--red); }
+.run-feedback.is-error > button { color: var(--red); }
 
 .run-callout {
   margin: 0;
@@ -123,24 +177,36 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
 .run-header__composing {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   color: var(--amber);
   font-size: var(--fs-11);
   line-height: 1.4;
+  animation: run-fade-in 200ms ease both;
 }
 .run-header__composing button {
-  padding: 1px 6px;
+  min-height: 22px;
+  padding: 0 8px;
   color: var(--amber);
   background: transparent;
   border: 1px solid var(--amber-border-soft);
-  border-radius: 6px;
+  border-radius: 7px;
   font-size: var(--fs-10);
   font-weight: 600;
+  transition: background 120ms ease;
 }
 .run-header__composing button:hover:not(:disabled) { background: var(--amber-soft); }
 
 .run-header__status { display: grid; gap: 4px; justify-items: start; min-width: 0; }
-.run-header__status small { overflow: hidden; color: var(--muted); font-size: var(--fs-11); line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.run-header__status small {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 
 .run-state-chip {
   display: inline-flex;
@@ -230,7 +296,7 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
 .run-mode-switch button span { display: grid; gap: 2px; min-width: 0; }
 .run-mode-switch button b { font-size: var(--fs-13); font-weight: 650; }
 .run-mode-switch button small { overflow: hidden; color: var(--muted); font-size: var(--fs-11); font-weight: 500; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.run-mode-switch button:hover:not(:disabled):not(.is-active) { color: var(--text-soft); }
+.run-mode-switch button:hover:not(:disabled):not(.is-active) { color: var(--text-soft); background: color-mix(in srgb, var(--surface-solid) 45%, transparent); }
 .run-mode-switch button.is-active { color: var(--text); }
 .run-mode-switch button.is-active svg { color: var(--accent-deep); }
 .run-mode-switch button:disabled { cursor: default; opacity: 0.6; }
@@ -256,6 +322,8 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
   align-content: start;
   padding: 18px 20px 16px;
 }
+/* 席位卡以自身宽度决定行布局：两栏正文里变窄时把模型摘要折到名字下方，而不是砍掉。 */
+.run-seats { container: run-seats / inline-size; }
 
 .run-panel__actions {
   display: flex;
@@ -279,6 +347,7 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
   overflow-wrap: anywhere;
 }
 .run-goal.is-empty { color: var(--faint); }
+.run-goal, .run-goal-editor { animation: run-fade-in 200ms ease both; }
 
 .run-goal-editor { display: grid; gap: 10px; }
 .run-goal-editor textarea {
@@ -377,7 +446,8 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
 }
 .run-stepper button:hover:not(:disabled) { background: var(--surface-soft); color: var(--text); }
 .run-stepper button:disabled { color: var(--faint); }
-.run-stepper output { min-width: 40px; text-align: center; font: 650 var(--fs-15)/1 var(--mono); }
+.run-stepper output { min-width: 40px; text-align: center; font: 650 var(--fs-15)/1 var(--mono); font-variant-numeric: tabular-nums; animation: run-pop 180ms ease both; }
+@keyframes run-pop { from { transform: scale(0.82); opacity: 0.4; } to { transform: none; opacity: 1; } }
 
 .run-batch { display: flex; align-items: flex-end; gap: 22px; }
 .run-batch__count { display: inline-flex; align-items: baseline; gap: 5px; }
@@ -412,9 +482,11 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
   border: 1px solid var(--line);
   border-radius: 12px;
   transition: border-color 140ms ease, box-shadow 140ms ease;
+  animation: run-fade-in 240ms ease both;
+  animation-delay: calc(var(--seat-index, 0) * 28ms);
 }
 html[data-card-transparency="clear"] .run-seat { background: color-mix(in srgb, var(--surface-solid) 40%, transparent); }
-.run-seat:hover { border-color: var(--color-border-primary); }
+.run-seat:hover { border-color: var(--color-border-primary); box-shadow: var(--shadow-hairline); }
 .run-seat.is-pending { border-style: dashed; }
 .run-seat__main {
   display: grid;
@@ -431,7 +503,28 @@ html[data-card-transparency="clear"] .run-seat { background: color-mix(in srgb, 
 }
 .run-seat__main:hover:not(:disabled) { background: var(--surface-soft); }
 .run-seat__main:disabled { cursor: default; }
-.run-seat__channel { color: var(--accent-deep); font: 700 var(--fs-11)/1 var(--mono); letter-spacing: 0.02em; }
+.run-seat__channel { grid-area: channel; color: var(--accent-deep); font: 700 var(--fs-11)/1 var(--mono); letter-spacing: 0.02em; }
+.run-seat__who { grid-area: who; }
+.run-seat__model { grid-area: model; }
+.run-seat__main > i { grid-area: chevron; }
+.run-seat__main { grid-template-areas: "channel who model chevron"; }
+@container run-seats (max-width: 640px) {
+  .run-seat__main {
+    grid-template-columns: 52px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "channel who chevron"
+      "channel model chevron";
+    row-gap: 4px;
+    align-items: start;
+  }
+  .run-seat__channel { padding-top: 3px; }
+  .run-seat__model strong { font-size: var(--fs-11); font-weight: 500; color: var(--text-soft); }
+  .run-seat__main > i { align-self: center; }
+  .run-seat__state { min-width: 0; }
+}
+@container run-seats (max-width: 440px) {
+  .run-seat__badge small { display: none; }
+}
 .run-seat__who,
 .run-seat__model { display: grid; gap: 2px; min-width: 0; }
 .run-seat__who strong { overflow: hidden; font-size: var(--fs-13); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
@@ -523,7 +616,6 @@ html[data-card-transparency="clear"] .run-seat { background: color-mix(in srgb, 
   border-left: 3px solid var(--amber);
   border-radius: 14px;
   box-shadow: var(--shadow-sm);
-  animation: run-sheet-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 .run-sheet__body { display: grid; gap: 4px; min-width: 0; }
 .run-sheet__body strong { font-size: var(--fs-13); font-weight: 650; }
@@ -548,12 +640,15 @@ html[data-card-transparency="clear"] .run-seat { background: color-mix(in srgb, 
 .run-start {
   display: grid;
   justify-items: center;
-  gap: 22px;
   max-width: 760px;
   margin: 28px auto 0;
   padding: 40px 32px 30px;
   text-align: center;
 }
+/* 与页面同一套"相邻边距"：折叠的插槽（团队说明 / 提示条）不留空行。 */
+.run-start > * + * { margin-top: 22px; }
+.run-start > .run-slot { margin-top: 0; }
+.run-start .run-slot__inner > * { margin-top: 22px; }
 .run-start__intro { display: grid; justify-items: center; gap: 8px; }
 .run-start__mark {
   display: grid;
@@ -575,37 +670,53 @@ html[data-card-transparency="clear"] .run-seat { background: color-mix(in srgb, 
 .run-start .run-mode-switch button { align-items: start; padding: 12px 16px; }
 .run-start .run-mode-switch button svg { margin-top: 2px; }
 .run-start .run-mode-switch button small { white-space: normal; }
+.run-start .run-slot { width: 100%; }
+.run-start .run-slot__inner { display: grid; justify-items: center; }
 .run-start__team { display: grid; justify-items: center; gap: 14px; max-width: 460px; }
 .run-start__team p { margin: 0; color: var(--muted); font-size: var(--fs-12); line-height: 1.55; }
 .run-start .run-feedback { width: 100%; text-align: left; }
 
 /* ---------- 动效 ---------- */
 @keyframes run-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-@keyframes run-sheet-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 @keyframes run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {
-  .run-body > *, .run-feedback, .run-sheet { animation: none; }
-  .run-mode-switch__indicator { transition: none; }
+  .run-body > *, .run-feedback, .run-sheet, .run-seat, .run-header__composing, .run-goal, .run-goal-editor, .run-stepper output { animation: none; }
+  .run-mode-switch__indicator, .run-slot, .run-slot__inner > * { transition: none; }
   .run-state-chip i, .run-seat__badge i { animation: none; }
+  .run-page :is(.primary-button, .secondary-button, .run-header__ghost, .run-sheet__confirm, .run-stepper button):active:not(:disabled) { transform: none; }
 }
 
-/* ---------- 响应式 ---------- */
-@media (max-width: 1120px) {
-  .run-header { grid-template-columns: minmax(0, 1fr) auto; }
+/* ---------- 响应式（容器查询，以页面宽度为准） ---------- */
+/* 宽：四栏头部（工程 / 模式 / 状态 / 动作），两栏正文。 */
+@container run-page (max-width: 1120px) {
+  /* 头部两行：工程 + 模式 / 状态 + 动作。 */
+  .run-header { grid-template-columns: minmax(0, 1fr) auto; row-gap: 14px; }
   .run-header__status { grid-column: 1; }
   .run-header__actions { grid-column: 2; grid-row: 2; }
 }
-@media (max-width: 920px) {
+@container run-page (max-width: 1000px) {
+  /* 正文单栏：模式区在上，席位在下。 */
   .run-body { grid-template-columns: minmax(0, 1fr); }
+  .run-steps li::before { left: calc(50% + 16px); right: calc(-50% + 2px); }
 }
-@media (max-width: 680px) {
-  .run-page { padding: 12px 12px 24px; }
-  .run-seat__main { grid-template-columns: 52px minmax(0, 1fr) auto; }
-  .run-seat__model { display: none; }
-  .run-seat__state { min-width: 0; }
+@container run-page (max-width: 680px) {
+  .run-page__inner { padding: 12px 12px 24px; }
   .run-header { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px; }
-  .run-header__actions { grid-column: 1; grid-row: auto; justify-content: start; }
+  .run-header__mode { justify-items: stretch; }
+  .run-header__mode .run-mode-switch { width: 100%; }
+  .run-header__actions { grid-column: 1; grid-row: auto; justify-content: stretch; }
+  .run-header__actions .run-header__ghost { flex: 1 1 0; justify-content: center; }
+  .run-panel, .run-seats { padding: 16px 16px 14px; }
+  .run-seats__footer { flex-direction: column; align-items: stretch; }
+  .run-seats__create { flex-direction: column; align-items: stretch; margin-left: 0; }
+  .run-seats__create small { text-align: left; }
+  .run-seats__create .primary-button { width: 100%; }
   .run-steps li span { white-space: normal; }
+  .run-field { grid-template-columns: minmax(0, 1fr) auto; }
+  .run-field__label { grid-column: 1 / -1; }
+  .run-batch { flex-wrap: wrap; gap: 14px 22px; }
+  .run-sheet { grid-template-columns: minmax(0, 1fr); }
+  .run-sheet__actions { justify-content: end; }
   .run-start { padding: 28px 18px 22px; }
   .run-start .run-mode-switch { grid-auto-flow: row; }
   .run-start .run-mode-switch__indicator { display: none; }

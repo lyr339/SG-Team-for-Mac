@@ -13,6 +13,7 @@ import { RunHeader } from './RunHeader'
 import { RunIndependentPanel } from './RunIndependentPanel'
 import { RunModeSwitch } from './RunModeSwitch'
 import { RunSeats, type RunSeatRow } from './RunSeats'
+import { RunSlot } from './RunSlot'
 import { RunTeamPanel } from './RunTeamPanel'
 import {
   buildRunView,
@@ -376,6 +377,13 @@ export function RunPage({
     : undefined
   const isBusy = Boolean(busy)
   const feedback = error || notice
+  const feedbackStrip = feedback ? (
+    <p className={`run-feedback${error ? ' is-error' : ''}`} role="status" aria-live="polite">
+      <i aria-hidden="true" />
+      <span>{feedback}</span>
+      <button type="button" aria-label="关闭提示" onClick={() => { setError(''); setNotice('') }}>×</button>
+    </p>
+  ) : null
 
   const seats = (seatRows.length > 0 || composingIndependent) && (composingIndependent ? Boolean(targetWorkspace) : true) ? (
     <RunSeats
@@ -401,51 +409,57 @@ export function RunPage({
   if (view.phase === 'none') {
     return (
       <div className="run-page">
-        <section className="run-start" aria-label="开始运行">
-          <div className="run-start__intro">
-            <span className="run-start__mark"><BrandMark /></span>
-            <h1>开始一次运行</h1>
-            <p>
-              {detectedWorkspace
-                ? <>Cursor 当前打开的工程：<strong title={detectedWorkspace.path}>{detectedWorkspace.name}</strong></>
-                : '先在 Cursor 中打开一个工程，或在下方手动选择。'}
-            </p>
-          </div>
-          <RunModeSwitch value={startMode} disabled={isBusy} onChange={setStartMode} />
-          {startMode === 'team' ? (
-            <div className="run-start__team">
-              <p>选择工程后为每个席位挑选角色、模型与技能；主控会按目标拆解任务并分派给成员。</p>
-              <button type="button" className="primary-button run-primary" disabled={isBusy} onClick={() => void run('workspace', onChooseWorkspace)}>
-                <TeamIcon />{busy === 'workspace' ? '正在选择…' : '选择工程并组建团队'}
-              </button>
+        <div className="run-page__inner">
+          <section className="run-start" aria-label="开始运行">
+            <div className="run-start__intro">
+              <span className="run-start__mark"><BrandMark /></span>
+              <h1>开始一次运行</h1>
+              <p>
+                {detectedWorkspace
+                  ? <>Cursor 当前打开的工程：<strong title={detectedWorkspace.path}>{detectedWorkspace.name}</strong></>
+                  : '先在 Cursor 中打开一个工程，或在下方手动选择。'}
+              </p>
+            </div>
+            <RunModeSwitch value={startMode} disabled={isBusy} onChange={setStartMode} />
+            <RunSlot>
+              {startMode === 'team' ? (
+                <div className="run-start__team">
+                  <p>选择工程后为每个席位挑选角色、模型与技能；主控会按目标拆解任务并分派给成员。</p>
+                  <button type="button" className="primary-button run-primary" disabled={isBusy} onClick={() => void run('workspace', onChooseWorkspace)}>
+                    <TeamIcon />{busy === 'workspace' ? '正在选择…' : '选择工程并组建团队'}
+                  </button>
+                </div>
+              ) : null}
+            </RunSlot>
+            <RunSlot>{feedbackStrip}</RunSlot>
+          </section>
+          {startMode === 'independent' ? (
+            <div className="run-body">
+              <RunIndependentPanel
+                view={view}
+                composing
+                targetWorkspace={targetWorkspace}
+                count={count}
+                busy={isBusy}
+                onCountChange={setCount}
+                onChooseWorkspace={chooseIndependentWorkspace}
+                onNewBatch={newBatch}
+              />
+              {seats ?? <div className="run-empty">Cursor 工程识别完成后即可配置独立会话。</div>}
             </div>
           ) : null}
-          {feedback ? <p className={`run-feedback${error ? ' is-error' : ''}`} role="status" aria-live="polite">{feedback}</p> : null}
-        </section>
-        {startMode === 'independent' ? (
-          <div className="run-body">
-            <RunIndependentPanel
-              view={view}
-              composing
-              targetWorkspace={targetWorkspace}
-              count={count}
-              busy={isBusy}
-              onCountChange={setCount}
-              onChooseWorkspace={chooseIndependentWorkspace}
-              onNewBatch={newBatch}
-            />
-            {seats ?? <div className="run-empty">Cursor 工程识别完成后即可配置独立会话。</div>}
-          </div>
-        ) : null}
+        </div>
       </div>
     )
   }
 
   return (
     <div className="run-page">
+      <div className="run-page__inner">
       <RunHeader
         view={view}
         busy={isBusy}
+        busyAction={busy}
         composingMode={compose ? 'independent' : undefined}
         onSwitchMode={switchMode}
         onCancelCompose={compose ? () => setCompose(null) : undefined}
@@ -453,16 +467,18 @@ export function RunPage({
         onOpenSessions={onOpenSessions}
       />
 
-      {sheet ? (
-        <ReplaceRunSheet
-          consequence={sheet.consequence}
-          busy={isBusy}
-          onCancel={() => setSheet(null)}
-          onConfirm={() => { const { perform } = sheet; setSheet(null); perform() }}
-        />
-      ) : null}
+      <RunSlot>
+        {sheet ? (
+          <ReplaceRunSheet
+            consequence={sheet.consequence}
+            busy={isBusy}
+            onCancel={() => setSheet(null)}
+            onConfirm={() => { const { perform } = sheet; setSheet(null); perform() }}
+          />
+        ) : null}
+      </RunSlot>
 
-      {feedback ? <p className={`run-feedback${error ? ' is-error' : ''}`} role="status" aria-live="polite">{feedback}</p> : null}
+      <RunSlot>{feedbackStrip}</RunSlot>
 
       <div className="run-body" key={composingIndependent ? 'compose' : view.mode}>
         {composingIndependent ? (
@@ -492,6 +508,7 @@ export function RunPage({
             primary={primary}
             steps={steps}
             busy={isBusy}
+            busyAction={busy}
             editingGoal={editingGoal}
             onEditingGoalChange={setEditingGoal}
             onSaveGoal={saveGoal}
@@ -502,6 +519,7 @@ export function RunPage({
           />
         )}
         {seats}
+      </div>
       </div>
     </div>
   )

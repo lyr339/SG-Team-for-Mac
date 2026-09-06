@@ -75,7 +75,10 @@ describe('theme surface contracts', () => {
     expect(run).toContain('.run-steps li:last-child::before { display: none; }')
     // 模式分段控件：指示块用 transform 位移，reduced-motion 下不做过渡。
     expect(run).toMatch(/\.run-mode-switch__indicator\s*\{[^}]*transition:\s*transform/s)
-    expect(run).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.run-mode-switch__indicator\s*\{\s*transition:\s*none/)
+    expect(run).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.run-mode-switch__indicator[^{]*\{\s*transition:\s*none/)
+    // 可折叠插槽（确认面 / 提示条）靠 grid-template-rows 过渡展开，reduced-motion 下同样直接落位。
+    expect(run).toMatch(/\.run-slot\s*\{[^}]*transition:\s*grid-template-rows/s)
+    expect(run).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.run-slot[^{]*\{\s*transition:\s*none/)
     expect(run).not.toContain('box-shadow: inset 3px 0 0 var(--accent)')
     expect(lobby).toContain('.account-browser__connection-row')
   })
