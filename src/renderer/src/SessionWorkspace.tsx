@@ -13,6 +13,7 @@ import { SessionUsageStat } from './SessionUsageStat'
 import { suggestedActionsFromText } from './process-turn-view'
 import { projectTurnTimeline, type TurnTimelineItem } from './timeline-view'
 import { useBottomFollow } from './use-bottom-follow'
+import { revealAfterPaint, subscribeReveal } from './inspector/reveal-bus'
 
 interface SessionWorkspaceProps {
   session: AgentSession
@@ -245,6 +246,13 @@ export function SessionWorkspace({
     return () => clearTimeout(timer)
   }, [copiedId])
 
+  // 右栏「在时间线中定位」：滚到对应过程步骤 / 消息并短暂高亮；用户由此离开底部，
+  // 贴底跟随按既有意图模型自动暂停。等过程卡把目标步骤展开提交后再定位，并把
+  // 「是否找到」回给右栏——找不到时右栏会给出提示，而不是静默无事发生。
+  useEffect(() => subscribeReveal((target) => (
+    revealAfterPaint(() => follow.viewportRef.current, target)
+  )), [follow.viewportRef])
+
   const pendingBelow = follow.awayFromBottom ? Math.max(0, visibleEntries.length - seenCount.current) : 0
 
   const jumpToBottom = (): void => {
@@ -343,7 +351,7 @@ export function SessionWorkspace({
         {needDivider && (
           <div className="chat-divider"><span>{dividerLabel(entry.timestamp)}</span></div>
         )}
-        <div className={`chat-row chat-row--mine ${grouped ? 'is-grouped' : ''}`}>
+        <div className={`chat-row chat-row--mine ${grouped ? 'is-grouped' : ''}`} data-entry-id={entry.id}>
           <span className="chat-gutter" aria-hidden={grouped}>
             {!grouped && <i className="chat-face chat-face--mine">你</i>}
           </span>
@@ -457,7 +465,7 @@ export function SessionWorkspace({
       grouped ? 'is-grouped' : ''
     ].filter(Boolean).join(' ')
     return (
-      <div key={`${turnKey}:agent`} className={className}>
+      <div key={`${turnKey}:agent`} className={className} data-entry-id={reply?.id}>
         <span className="chat-gutter" aria-hidden={grouped}>
           {!grouped
             ? <span className="chat-face-avatar"><AgentAvatar avatarId={session.avatarId} name={session.displayName} crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'} size="sm" /></span>

@@ -79,4 +79,35 @@ describe('MessageContent', () => {
     expect(glob).toContain('src/**/tests')
     expect(messagePlainText('**结论**：完成了 **一半')).toBe('结论：完成了 一半')
   })
+
+  it('renders Markdown images: local paths through sg-image, remote as links, unknown targets as raw text', () => {
+    const text = [
+      '## 1. 输入区',
+      '',
+      '![自适应增高](/tmp/sg-composer-grow.png)',
+      '',
+      '行内也可以 ![缩略](/Users/lyr/Desktop/a b.jpg "标题") 混排，远程 ![站图](https://example.com/x.png) 只给链接。',
+      '',
+      '![不是图片](/etc/passwd)'
+    ].join('\n')
+    const blocks = parseMessageBlocks(text)
+    expect(blocks[1]).toEqual({ type: 'image', alt: '自适应增高', target: '/tmp/sg-composer-grow.png' })
+    expect(blocks[3]).toEqual({ type: 'image', alt: '不是图片', target: '/etc/passwd' })
+    const html = renderToStaticMarkup(<MessageContent text={text} />)
+    // 独占一行的图片成为 figure，且经 sg-image 协议加载，可点击查看
+    expect(html).toContain('<figure class="message-figure">')
+    expect(html).toContain('src="sg-image://local/%2Ftmp%2Fsg-composer-grow.png"')
+    expect(html).toContain('attachment-thumb message-image__thumb')
+    expect(html).toContain('<small class="message-image__caption">自适应增高</small>')
+    // 行内图片带标题也能解析；空格路径原样编码
+    expect(html).toContain('src="sg-image://local/%2FUsers%2Flyr%2FDesktop%2Fa%20b.jpg"')
+    // 远程图片不加载，只给外链
+    expect(html).toContain('href="https://example.com/x.png"')
+    expect(html).not.toContain('src="https://example.com/x.png"')
+    // 非图片目标原样保留为文本，不留破图
+    expect(html).toContain('![不是图片](/etc/passwd)')
+    expect(html).not.toContain('sg-image://local/%2Fetc%2Fpasswd')
+    // 纯文本预览用 alt 代替语法
+    expect(messagePlainText('看图 ![自适应增高](/tmp/a.png) 和 ![](/tmp/b.png)')).toBe('看图 [图片：自适应增高] 和 [图片]')
+  })
 })

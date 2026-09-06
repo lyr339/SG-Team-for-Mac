@@ -74,6 +74,7 @@ import { registerWorkspaceReviewIpc } from './register-workspace-review-ipc'
 import { SessionHandoffService } from '../application/session-handoff-service'
 import { RevealPathPolicy } from '../application/reveal-path-policy'
 import { registerSessionHandoffIpc } from './register-session-handoff-ipc'
+import { installLocalImageProtocol, registerLocalImageScheme } from './local-image-protocol'
 import { homedir } from 'node:os'
 
 let mainWindow: BrowserWindow | undefined
@@ -104,8 +105,8 @@ let teamControlService: TeamControlService | undefined
 let desktopSessionService: DesktopSessionService | undefined
 let cursorStreamObserver: CursorStreamObserver | undefined
 let cursorUsageTrackerRef: CursorUsageTracker | undefined
-/** CDP 内存态 contextTokensUsed 曾供水的 composer：遥测落盘采样源对其让位（双源互斥）。 */
-const cdpContextSampledComposers = new Set<string>()
+/** 当前 run 已绑定的 composer；窗口中的其他会话不进入本轮账。 */
+let usageComposerIds = new Set<string>()
 let teamCollaborationRepository: SqliteTeamCollaborationRepository | undefined
 let teamMessageDispatcher: TeamMessageDispatcher | undefined
 let teamMemoryRepository: SqliteTeamMemoryRepository | undefined
@@ -122,6 +123,9 @@ let teamOrchestrator: TeamOrchestrator | undefined
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 if (!hasSingleInstanceLock) app.quit()
+
+// 会话正文里的本地图片（`![说明](/tmp/shot.png)`）经 sg-image:// 协议读盘；标准协议必须在 ready 前注册。
+registerLocalImageScheme()
 
 // safeStorage 的 macOS Keychain 服务名绑定 app name。先固定到首发名称，
 // 待 ready 后加载旧钥匙，再恢复当前品牌名；否则品牌升级会使历史密文全部失效。
@@ -206,6 +210,7 @@ app.on('second-instance', () => {
 
 if (hasSingleInstanceLock) app.whenReady().then(() => {
   initializeSafeStorageNamespace(safeStorage)
+  installLocalImageProtocol()
   // Explicitly set the running Dock tile as well as the bundle icon. macOS can
   // otherwise keep showing a cached icon from an older build with the same ID.
   setMacDockIcon()
@@ -286,49 +291,17 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     cursorTelemetry,
     channelMessageRelay,
     cursorCdpCreator,
-    // CDP 轮询捎带的用量（同一 evidence 两条数据源，分派互斥防双计）：
-    // - 四桶（turnTokenUsage，仅 turnEnded 写入、回合开始清空）：非零 = 回合
-    //   确已结束、精确计费数据（含 cache 拆分）在场 → 快照通道优先；
-    // - contextTokensUsed（请求级采样，长会话主通道）：持续对话模式下回合
-    //   永不结束、四桶恒空，ctx 随每次模型请求刷新——唯一活水源。
-    // 实时性来自 inspect 的既有节流循环 + writeSignal 事件驱动，零新增开销。
-    // 经 ref 间接引用：tracker 在本服务之后创建。
+    // 原生 composer 计数：write hook 实时推送，既有 inspect 为同源补充；无新轮询。
     (input) => {
       const tracker = cursorUsageTrackerRef
-      if (!tracker) return
       const usage = input.usage
+      if (!tracker || !usage.generationId || !usageComposerIds.has(input.composerId)) return
       if (usage.inputTokens || usage.outputTokens || usage.cacheReadTokens || usage.cacheWriteTokens) {
-        tracker.recordTurnSnapshot({
-          composerId: input.composerId,
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          cacheReadTokens: usage.cacheReadTokens,
-          cacheWriteTokens: usage.cacheWriteTokens,
-          occurredAt: input.observedAt
-        })
-        return
+        tracker.recordTurnSnapshot({ composerId: input.composerId, ...usage, occurredAt: input.observedAt })
+      } else if (usage.contextTokensUsed) {
+        tracker.recordRequestSample({ composerId: input.composerId, generationId: usage.generationId,
+          modelId: usage.modelId, used: usage.contextTokensUsed, stopped: usage.stopped, occurredAt: input.observedAt })
       }
-      if (usage.contextTokensUsed) {
-        // CDP 内存态读数在场：该 composer 的采样由 CDP 源独占，遥测落盘源让位。
-        cdpContextSampledComposers.add(input.composerId)
-        tracker.recordRequestSample({
-          composerId: input.composerId,
-          used: usage.contextTokensUsed,
-          occurredAt: input.observedAt
-        })
-      }
-    },
-    // 遥测落盘态 contextTokensUsed（state.vscdb，250ms 轮询持续有值）：长会话近实时
-    // 用量的实际活水源（CDP 内存态在当前 Cursor 版本恒空）。两源读数有时间差，同一
-    // composer 同时记账会把同一请求记两次——同一时刻只允许一源：CDP 曾供水则遥测让位。
-    (sample) => {
-      const tracker = cursorUsageTrackerRef
-      if (!tracker || cdpContextSampledComposers.has(sample.composerId)) return
-      tracker.recordRequestSample({
-        composerId: sample.composerId,
-        used: sample.used,
-        occurredAt: sample.observedAt
-      })
     }
   )
   desktopSessionService.startWatcher()
@@ -343,9 +316,13 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     const snapshot = teamControlSnapshotForObserver.getSnapshot()
     return snapshot.workspaces.find((workspace) => workspace.id === snapshot.activeWorkspaceId)?.path
   }
-  const workspaceReviewReader = new WorkspaceReviewReader(activeTeamWorkspacePath)
+  // 右栏「撤销」新增文件走系统回收站而非 rm，可找回。
+  const workspaceReviewReader = new WorkspaceReviewReader(activeTeamWorkspacePath, {
+    trashItem: (absolutePath) => shell.trashItem(absolutePath)
+  })
   const cursorUsageStore = new CursorUsageStore(join(app.getPath('userData'), 'cursor-usage.json'))
   const initialUsageTeam = teamControlService.getSnapshot()
+  usageComposerIds = new Set(initialUsageTeam.members.flatMap((member) => member.binding?.composerId ? [member.binding.composerId] : []))
   let usageRunId = initialUsageTeam.activeRun?.id
   let usageRunStatus = initialUsageTeam.activeRun?.status
   const initialUsageDecision = cursorUsageRunDecision(
@@ -368,7 +345,8 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     fetchPageSocketUrl: () => cursorCdpCreator.resolveWorkbenchSocket(activeTeamWorkspacePath()),
     onWriteSignal: (composerId) => streamService.notifyComposerWriteSignal(composerId),
     onProcessEvent: (event) => streamService.notifyNativeProcessSnapshot(event),
-    onUsageEvent: (event) => cursorUsageTracker.record(event),
+    onUsageEvent: (event) => { if (usageComposerIds.has(event.composerId)) cursorUsageTracker.record(event) },
+    onUsageSample: (sample) => { if (usageComposerIds.has(sample.composerId)) cursorUsageTracker.recordRequestSample(sample) },
     onStatus: (status) => streamService.setNativeProcessStreamStatus(status)
   })
   void cursorStreamObserver.attach()
@@ -563,14 +541,11 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     if (usageDecision.reset) usageRunId = nextRunId
     if (usageDecision.reset) {
       cursorUsageTracker.reset()
-      cdpContextSampledComposers.clear()
+      cursorUsageTracker.setCollecting(true)
     }
     usageRunStatus = nextRunStatus
-    // 用量采集与 TeamRun 状态解耦：run 被误判结束/暂停期间 Composer 仍在
-    // 真实消耗 token（2026-09-01 实证：run 14:32 被收尾后 14:45 事件仍到达
-    // 却被 collecting=false 丢弃）。生命周期归 Composer——只有 run 切换 reset，
-    // 不再按 run 状态停采。
-    cursorUsageTracker.setCollecting(true)
+    usageComposerIds = new Set(snapshot.members.flatMap((member) => member.binding?.composerId ? [member.binding.composerId] : []))
+    // 不跟随短暂在线/离线状态停采；用户明确结束时由 IPC 回调冻结。
   })
   disposeIpc = registerSessionIpc(desktopSessionService, () => mainWindow)
   const cursorCdpSettingsStore = new CursorCdpSettingsStore(join(app.getPath('userData'), 'cursor-cdp.json'))
@@ -637,7 +612,13 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   )
   disposeCdpKeeperIpc = registerCdpKeeperIpc(cursorCdpKeeper, cursorCdpSettingsStore, () => mainWindow)
   disposeCursorUsageIpc = registerCursorUsageIpc(cursorUsageTracker, () => mainWindow)
-  disposeWorkspaceReviewIpc = registerWorkspaceReviewIpc(workspaceReviewReader, () => mainWindow)
+  disposeWorkspaceReviewIpc = registerWorkspaceReviewIpc(workspaceReviewReader, () => mainWindow, {
+    // 工作区文件系统监听推送刷新信号；活动工作区切换时重绑。
+    watchWorkspace: {
+      workspacePath: activeTeamWorkspacePath,
+      subscribeWorkspaceChange: (listener) => teamControlService!.subscribe(() => listener())
+    }
+  })
   // 会话交接：上下文文档 = Cursor 转录（遥测读取器定位），拾光会话记录落 userData/handoff。
   const handoffRoot = join(app.getPath('userData'), 'handoff')
   const sessionHandoffService = new SessionHandoffService({
@@ -653,7 +634,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     handoffRoot,
     process.env.QINGTIAN_CURSOR_PROJECTS_ROOT?.trim() || join(homedir(), '.cursor', 'projects'),
     join(app.getPath('userData'), 'channel-attachments')
-  ])
+  ], { allowImageFiles: true })
   disposeSessionHandoffIpc = registerSessionHandoffIpc(
     sessionHandoffService,
     desktopSessionService,
@@ -688,7 +669,33 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     desktopSessionService,
     cursorWorkspaceDetector,
     () => mainWindow,
-    { isSessionLaunchRunning: () => agentSessionLauncher.getPlan()?.state === 'running' }
+    { isSessionLaunchRunning: () => agentSessionLauncher.getPlan()?.state === 'running',
+      detectCurrentWorkspace: () => cursorCdpCreator.detectCurrentWorkspace(),
+      onRunEnded: async (ended) => {
+        const endedRunId = ended.activeRun?.id
+        const workspace = ended.workspaces.find((item) => item.id === ended.activeWorkspaceId)
+        const ids = ended.members.flatMap((member) => member.binding?.composerId ? [member.binding.composerId] : [])
+        try {
+          // 用户结束前最后一次上下文可能尚未推送；只读补收，再冻结。探针自带超时。
+          if (!workspace || usageRunId !== endedRunId) return
+          const evidence = await cursorCdpCreator.inspectComposerRuntime(workspace.path, ids)
+          if (usageRunId !== endedRunId) return
+          for (const [composerId, row] of Object.entries(evidence)) {
+            const usage = row.usage
+            if (!usage?.generationId || !usageComposerIds.has(composerId)) continue
+            if (usage.inputTokens || usage.outputTokens || usage.cacheReadTokens || usage.cacheWriteTokens) {
+              cursorUsageTracker.recordTurnSnapshot({ composerId, ...usage, occurredAt: row.observedAt })
+            } else if (usage.contextTokensUsed) {
+              cursorUsageTracker.recordRequestSample({ composerId, generationId: usage.generationId,
+                modelId: usage.modelId, used: usage.contextTokensUsed, stopped: true, occurredAt: row.observedAt })
+            }
+          }
+        } catch {
+          // 用量探测异常不影响已成功结束的运行，保留最后一笔数值。
+        } finally {
+          if (usageRunId === endedRunId) cursorUsageTracker.setCollecting(false)
+        }
+      } }
   )
   disposeTeamCollaborationIpc = registerTeamCollaborationIpc(
     teamCollaborationService,

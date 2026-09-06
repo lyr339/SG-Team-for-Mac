@@ -1,5 +1,6 @@
 import WebSocket from 'ws'
-import type { CursorUsageEvent } from '../../domain/cursor-usage'
+import type { CursorUsageEvent, CursorUsageSample } from '../../domain/cursor-usage'
+import { nativeUsagePayload } from './cursor-native-usage'
 import { CHANNEL_USER_DELIVERY_MARKER } from '../../domain/channel-delivery-policy'
 import { parseProcessStream, type CursorProcessStream } from './cursor-cdp-session-creator'
 
@@ -38,7 +39,7 @@ export const CURSOR_STREAM_BINDING_NAME = 'sgTeamStream'
 export const CURSOR_USAGE_BINDING_NAME = '__sgTeamUsage'
 export const CURSOR_PROCESS_BINDING_NAME = 'sgTeamProcess'
 /** 页面内 hook 版本：不一致时 install 会先还原旧 wrapper 再重装（拾光强退后遗留的旧版）。 */
-export const CURSOR_STREAM_HOOK_VERSION = 20
+export const CURSOR_STREAM_HOOK_VERSION = 22
 const RETRY_BASE_MS = 5_000
 const RETRY_MAX_MS = 60_000
 const ATTACH_TIMEOUT_MS = 8_000
@@ -452,6 +453,11 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       for (const id of pendingSnapshots) {
         try {
           const data = service?.getComposerDataIfLoaded?.(id)
+          // 独立 usage binding：过程块裁剪/过滤不会吞掉计数。
+          try {
+            const usage = (${nativeUsagePayload.toString()})(data, id)
+            if (usage && globalThis.${CURSOR_USAGE_BINDING_NAME}) globalThis.${CURSOR_USAGE_BINDING_NAME}(JSON.stringify(usage))
+          } catch (usageError) { /* 计数链路异常不阻断过程流 */ }
           const snapshot = processSnapshot(data)
           if (snapshot && globalThis.${CURSOR_PROCESS_BINDING_NAME}) {
             let payload = JSON.stringify({ composerId: id, observedAt: Date.now(), ...snapshot })
@@ -611,6 +617,7 @@ export interface CursorStreamObserverOptions {
   onWriteSignal?: (composerId: string, at: number) => void
   /** 用量事件回调：bundle 补丁在每个回合 turnEnded 推送真实计费 token。 */
   onUsageEvent?: (event: CursorUsageEvent) => void
+  onUsageSample?: (sample: CursorUsageSample) => void
   /** Cursor 内存模型写后直接推送的原生顺序过程快照。 */
   onProcessEvent?: (event: CursorNativeProcessEvent) => void
   onStatus?: (status: { state: 'connected' | 'reconnecting' | 'unavailable'; detail: string; updatedAt: number }) => void
@@ -652,6 +659,7 @@ export class CursorStreamObserver {
   private readonly openSocket: NonNullable<CursorStreamObserverOptions['openSocket']>
   private readonly onWriteSignal: NonNullable<CursorStreamObserverOptions['onWriteSignal']>
   private readonly onUsageEvent: NonNullable<CursorStreamObserverOptions['onUsageEvent']>
+  private readonly onUsageSample: NonNullable<CursorStreamObserverOptions['onUsageSample']>
   private readonly onProcessEvent: NonNullable<CursorStreamObserverOptions['onProcessEvent']>
   private readonly onStatus: NonNullable<CursorStreamObserverOptions['onStatus']>
   private socket?: StreamObserverSocket
@@ -678,6 +686,7 @@ export class CursorStreamObserver {
     this.openSocket = options.openSocket ?? defaultOpenSocket
     this.onWriteSignal = options.onWriteSignal ?? (() => {})
     this.onUsageEvent = options.onUsageEvent ?? (() => {})
+    this.onUsageSample = options.onUsageSample ?? (() => {})
     this.onProcessEvent = options.onProcessEvent ?? (() => {})
     this.onStatus = options.onStatus ?? (() => {})
   }
@@ -934,18 +943,32 @@ export class CursorStreamObserver {
     }
   }
 
-  /** 解析 bundle 补丁推送的 {c,i,o,r,w,t} JSON 并转发；坏载荷静默丢弃。 */
+  /** 写后样本/结算共用 binding；旧补丁无 generation 的事件仅兼容解析。 */
   private dispatchUsagePayload(payload: string): void {
     try {
       const raw = JSON.parse(payload) as Record<string, unknown>
       const composerId = typeof raw.c === 'string' ? raw.c.trim() : ''
       if (!composerId) return
+      const generationId = typeof raw.g === 'string' && raw.g.length <= 200 ? raw.g : undefined
+      const modelId = typeof raw.m === 'string' ? raw.m.slice(0, 160) : undefined
+      if (raw.kind === 'sample') {
+        if (generationId && typeof raw.used === 'number' && Number.isSafeInteger(raw.used) && raw.used > 0) {
+          this.onUsageSample({ composerId, generationId, modelId, used: raw.used,
+            ...(raw.stopped === true ? { stopped: true } : {}),
+            occurredAt: typeof raw.t === 'number' ? raw.t : Date.now() })
+        }
+        return
+      }
+      if ([raw.i, raw.o, raw.r, raw.w].some((value) => value !== undefined
+        && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0))) return
       const toCount = (value: unknown): number => {
         const num = Number(value ?? 0)
         return Number.isFinite(num) && num > 0 ? num : 0
       }
       this.onUsageEvent({
         composerId,
+        ...(generationId ? { generationId } : {}),
+        ...(modelId ? { modelId } : {}),
         inputTokens: toCount(raw.i),
         outputTokens: toCount(raw.o),
         cacheReadTokens: toCount(raw.r),

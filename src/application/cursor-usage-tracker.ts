@@ -1,11 +1,4 @@
-import {
-  accumulateUsage,
-  applyRequestSample,
-  applyTurnUsage,
-  type CursorSessionUsage,
-  type CursorUsageEvent,
-  type CursorUsageSnapshot
-} from '../domain/cursor-usage'
+import { reduceUsage, upgradeUsageEstimate, type CursorUsageSample, type UsageObservation, type CursorSessionUsage, type CursorUsageEvent, type CursorUsageSnapshot } from '../domain/cursor-usage'
 import type { TeamRunStatus } from '../domain/team-control'
 
 export interface CursorUsageRunState {
@@ -18,12 +11,9 @@ export function cursorUsageRunDecision(
   next: CursorUsageRunState
 ): { reset: boolean; collecting: boolean } {
   const runChanged = previous.runId !== next.runId
-  const sameRunRestarted = !runChanged
-    && next.status === 'launching'
-    && previous.status !== 'launching'
-    && previous.status !== 'running'
   return {
-    reset: runChanged || sameRunRestarted,
+    // 新批次有新 runId；同 run 的 attention/launching 抖动不清账。
+    reset: runChanged,
     collecting: next.status === 'launching' || next.status === 'running' || next.status === 'attention'
   }
 }
@@ -36,11 +26,10 @@ export function cursorUsageRunDecision(
  * 输出：composerId → 累积用量快照（含按模型牌价估算的等价 API 成本），
  * 经 IPC 推送渲染层，与会话卡按 composerId 关联展示。
  *
- * 模型归属：事件本身不带模型——记录时向 DesktopSessionService 快照
- * 查该 composer 当前模型（resolveModelForComposer 注入），查不到按默认档。
- * 快照为深拷贝（structuredClone 同构的浅复制即可：值均为原始类型）。
+ * 模型归属：优先使用事件模型，缺失时查会话快照；每个原生回合固化一份牌价。
+ * 快照深拷贝，隔离内部逐回合账本。
  *
- * 快照由调用方按 TeamRun 持久化；团队运行时采集，结束/暂停后冻结。
+ * 快照按 run 持久化；显式结束时冻结，在线状态变化不影响计数。
  */
 export interface CursorUsageTrackerOptions {
   /** composerId → 当前模型 id（费用估算用；缺省走默认价格档）。 */
@@ -65,10 +54,6 @@ export class CursorUsageTracker {
   private readonly now: () => number
   private readonly persistSnapshot: (snapshot: CursorUsageSnapshot) => void
   private readonly sessions = new Map<string, CursorSessionUsage>()
-  /** 快照通道已覆盖的 composer：事件通道对其让位（防双计）。 */
-  private readonly polledComposers = new Set<string>()
-  /** 请求级采样已接管的 composer：快照与事件通道均让位（口径一致，双计防护）。 */
-  private readonly requestSampledComposers = new Set<string>()
   private readonly listeners = new Set<(snapshot: CursorUsageSnapshot) => void>()
   private notifyTimer?: ReturnType<typeof setTimeout>
   private disposed = false
@@ -81,66 +66,45 @@ export class CursorUsageTracker {
     this.persistSnapshot = options.persistSnapshot ?? (() => {})
     this.collecting = options.collecting ?? true
     for (const [composerId, usage] of Object.entries(options.initialSnapshot ?? {})) {
-      if (usage.turns > 0) this.sessions.set(composerId, { ...usage })
+      this.sessions.set(composerId, structuredClone(usage.ledger ? upgradeUsageEstimate(usage) : { ...usage, quality: 'legacy' as const }))
     }
   }
 
-  /** 记录一回合用量并调度快照推送（节流合并密集回合）。 */
+  /** 同一 generation 的权威结算，优先替换该回合的临时估算。 */
   record(event: CursorUsageEvent): void {
-    if (this.disposed || !this.collecting) return
-    // 轮询/采样通道已接管该 composer（CDP 在场、实时读数更全）：事件只作降级
-    // 兜底，双通道同时记账会重复计数。轮询中断（CDP 退出）后事件自动恢复接管。
-    if (this.polledComposers.has(event.composerId)
-      || this.requestSampledComposers.has(event.composerId)
-      // 基线存在 = 采样曾接管（含跨进程重启恢复的会话），事件通道持续让位
-      || this.sessions.get(event.composerId)?.contextLastUsed !== undefined) return
-    const model = this.resolveModelForComposer(event.composerId)
-    this.sessions.set(event.composerId, accumulateUsage(
-      this.sessions.get(event.composerId),
-      event,
-      model ?? ''
-    ))
-    this.scheduleNotify()
+    if (!event.generationId) return // 旧补丁没有归属 ID；由带 ID 的内存快照结算。
+    this.observe({ kind: 'checkpoint', value: { ...event, generationId: event.generationId } })
   }
 
-  /**
-   * CDP 轮询快照通道（turnTokenUsage 同源值，生成中单调增长）：
-   * 覆盖语义见 domain applyTurnUsage。接管后事件通道对该 composer 让位；
-   * 请求级采样已接管的 composer 同样让位（口径一致，双通道会重复计费）。
-   */
-  recordTurnSnapshot(event: CursorUsageEvent): void {
-    if (this.disposed || !this.collecting) return
-    if (this.requestSampledComposers.has(event.composerId)
-      || this.sessions.get(event.composerId)?.contextLastUsed !== undefined) return
-    const model = this.resolveModelForComposer(event.composerId)
-    this.sessions.set(event.composerId, applyTurnUsage(
-      this.sessions.get(event.composerId),
-      event,
-      model ?? ''
-    ))
-    this.polledComposers.add(event.composerId)
-    this.scheduleNotify()
+  recordTurnSnapshot(event: CursorUsageEvent): void { this.record(event) }
+
+  recordRequestSample(sample: CursorUsageSample): void {
+    this.observe({ kind: 'sample', value: sample })
   }
 
-  /**
-   * 请求级上下文采样通道（长会话主通道）：contextTokensUsed 随每次模型请求
-   * 刷新，算法见 domain applyRequestSample。接管后快照与事件通道均让位
-   * （单向不可逆，run 切换才重置——基线持久化于快照，跨重启延续不双计）。
-   */
-  recordRequestSample(sample: { composerId: string; used: number; occurredAt: number }): void {
+  private observe(observation: UsageObservation): void {
     if (this.disposed || !this.collecting) return
-    const model = this.resolveModelForComposer(sample.composerId)
-    this.sessions.set(sample.composerId, applyRequestSample(
-      this.sessions.get(sample.composerId),
-      sample,
-      model ?? ''
-    ))
-    this.polledComposers.add(sample.composerId)
-    this.requestSampledComposers.add(sample.composerId)
+    const event = observation.value
+    const previous = this.sessions.get(event.composerId)
+    const hasPrice = previous?.ledger && Object.hasOwn(previous.ledger.turns, event.generationId)
+    const next = reduceUsage(previous, { ...observation, value: {
+      ...event, modelId: event.modelId || (hasPrice ? undefined : this.resolveModelForComposer(event.composerId))
+    } } as UsageObservation)
+    if (!next || next === previous) return
+    this.sessions.set(event.composerId, next)
+    if (observation.kind === 'checkpoint' || observation.value.stopped) this.persist()
     this.scheduleNotify()
   }
 
   setCollecting(collecting: boolean): void {
+    if (this.disposed) return
+    if (this.collecting && !collecting) {
+      for (const [id, usage] of this.sessions) {
+        if (usage.ledger) this.sessions.set(id, { ...usage, ledger: { ...usage.ledger, frozenAt: this.now() } })
+      }
+      this.persist()
+      this.scheduleNotify()
+    }
     this.collecting = collecting
   }
 
@@ -148,8 +112,6 @@ export class CursorUsageTracker {
   reset(): void {
     if (this.disposed) return
     this.sessions.clear()
-    this.polledComposers.clear()
-    this.requestSampledComposers.clear()
     this.persist()
     this.scheduleNotify()
   }
@@ -157,7 +119,7 @@ export class CursorUsageTracker {
   /** 当前全量快照（浅复制值对象，调用方可安全持有）。 */
   getSnapshot(): CursorUsageSnapshot {
     const snapshot: CursorUsageSnapshot = {}
-    for (const [composerId, usage] of this.sessions) snapshot[composerId] = { ...usage }
+    for (const [composerId, usage] of this.sessions) snapshot[composerId] = structuredClone(usage)
     return snapshot
   }
 

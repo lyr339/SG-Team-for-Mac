@@ -23,11 +23,13 @@
  *
  * 用法：npx tsx scripts/patch-cursor-usage-hook.ts [--restore] [--bundle <path>]
  */
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 
 // Cursor 默认安装路径（macOS）；如装在别处可用 --bundle 覆盖。
 const DEFAULT_BUNDLE = '/Applications/Cursor.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js'
-const MARKER = '__SG_TEAM_USAGE_PATCH__'
+const MARKER = '__SG_TEAM_USAGE_PATCH_V3__'
 
 /** 本地路径锚点：AgentResponseAdapter turnEnded（拾光会话走这条）。 */
 const LOCAL_ANCHOR = '(d.inputTokens!==void 0||d.outputTokens!==void 0||d.cacheReadTokens!==void 0||d.cacheWriteTokens!==void 0)&&o.updateComposerDataSetStore(this.composerDataHandle'
@@ -36,18 +38,21 @@ const CLOUD_ANCHOR = 'if(V.message.case==="turnEnded"){await D(),E(),e.setData("
 
 /** 本地注入：composerId 取自 handle.data；d.* 为 BigInt，Number() 收敛。 */
 const LOCAL_INJECT = [
-  '/* __SG_TEAM_USAGE_PATCH__ */',
+  '/* __SG_TEAM_USAGE_PATCH_V3__ */',
   'try{const __sg=globalThis.__sgTeamUsage;',
   '__sg&&__sg(JSON.stringify({c:String((this.composerDataHandle&&this.composerDataHandle.data&&this.composerDataHandle.data.composerId)||""),',
+  'g:String(this.generationUUID||this.composerDataHandle?.data?.chatGenerationUUID||this.composerDataHandle?.data?.latestChatGenerationUUID||""),',
+  'm:this.composerDataHandle?.data?.modelConfig?.modelName,',
   'i:Number(d.inputTokens||0),o:Number(d.outputTokens||0),',
   'r:Number(d.cacheReadTokens||0),w:Number(d.cacheWriteTokens||0),t:Date.now()}))}catch(__q){}'
 ].join('')
 
 /** 云端注入：e 为 composerDataHandle。 */
 const CLOUD_INJECT = [
-  '/* __SG_TEAM_USAGE_PATCH__ */',
+  '/* __SG_TEAM_USAGE_PATCH_V3__ */',
   'try{const __sg=globalThis.__sgTeamUsage;',
   '__sg&&e&&e.data&&__sg(JSON.stringify({c:String(e.data.composerId||""),',
+  'g:String(e.data.chatGenerationUUID||e.data.latestChatGenerationUUID||""),m:e.data.modelConfig?.modelName,',
   'i:Number(V.message.value.inputTokens||0),',
   'o:Number(V.message.value.outputTokens||0),',
   'r:Number(V.message.value.cacheReadTokens||0),',
@@ -59,9 +64,24 @@ function applyAnchor(source: string, anchor: string, inject: string, label: stri
   const hits = source.split(anchor).length - 1
   if (hits !== 1) {
     console.error(`[patch] ${label} 锚点命中 ${hits} 次（预期 1）——Cursor 版本可能已变化，中止`)
-    process.exit(1)
+    throw new Error(`${label} usage anchor mismatch`)
   }
   return source.replace(anchor, inject + anchor)
+}
+
+export function patchUsageSource(source: string): string {
+  if (source.includes(MARKER)) {
+    if (!source.includes(LOCAL_INJECT) || !source.includes(CLOUD_INJECT)) throw new Error('usage V3 patch incomplete')
+    return source
+  }
+  if (source.includes('__SG_TEAM_USAGE_PATCH__')) {
+    const old = /\/\* __SG_TEAM_USAGE_PATCH__ \*\/try\{const __sg=globalThis\.__sgTeamUsage;[\s\S]*?\}catch\(__q\)\{\}/g
+    const matches = source.match(old)
+    if (matches?.length !== 2) throw new Error('legacy usage patch mismatch')
+    source = source.replace(old, '')
+  }
+  source = applyAnchor(source, LOCAL_ANCHOR, LOCAL_INJECT, 'local')
+  return applyAnchor(source, CLOUD_ANCHOR, CLOUD_INJECT, 'cloud')
 }
 
 function main(): void {
@@ -89,18 +109,12 @@ function main(): void {
 
   let source = readFileSync(bundlePath, 'utf8')
 
-  if (source.includes(MARKER)) {
-    console.log('[patch] 已打过补丁，跳过（--restore 可还原）')
-    return
-  }
-
-  source = applyAnchor(source, LOCAL_ANCHOR, LOCAL_INJECT, 'local')
-  source = applyAnchor(source, CLOUD_ANCHOR, CLOUD_INJECT, 'cloud')
-
-  copyFileSync(bundlePath, backupPath)
+  source = patchUsageSource(source)
+  // 保留首次原始备份；升级补丁不覆盖它。
+  if (!existsSync(backupPath)) copyFileSync(bundlePath, backupPath)
   writeFileSync(bundlePath, source, 'utf8')
   console.log(`[patch] 完成：local+cloud 双锚点注入；备份 → ${backupPath}（--restore 可还原）`)
   console.log('[patch] 请完全退出并重启 Cursor 生效')
 }
 
-main()
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main()

@@ -4,6 +4,9 @@ import WebSocket from 'ws'
 import { sanitizeModelDisplayText } from '../../domain/model-output-sanitizer'
 import { CHANNEL_USER_DELIVERY_MARKER } from '../../domain/channel-delivery-policy'
 import type { CursorModelSelection } from '../../domain/cursor-model'
+import type { CursorWorkspaceDetection } from '../../domain/cursor-workspace'
+import { workspaceIdentityOf } from './workspace-identity'
+import { nativeUsagePayload } from './cursor-native-usage'
 
 /**
  * 通过 Chrome DevTools Protocol 直连 Cursor 渲染进程创建 Agent 会话。
@@ -138,6 +141,9 @@ export interface CursorComposerRuntimeEvidence {
 
 /** CDP 运行时探针捎带的用量快照（turnTokenUsage + 上下文窗口）。 */
 export interface CursorRuntimeTurnUsage {
+  generationId?: string
+  modelId?: string
+  stopped?: boolean
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
@@ -267,6 +273,19 @@ const WINDOW_PROBE_EXPRESSION = `({
   scope: String(window.__qtBatchWorkspaceScopeId || ''),
   title: String(document.title || '')
 })`
+
+// Electron preload 暴露的窗口配置：读取真实工作区身份，不使用标题/最近记录推测。
+export const CURRENT_WORKSPACE_EXPRESSION = `(() => {
+  const config = window.vscode?.context?.configuration?.();
+  if (!config) return { state: 'loading' };
+  if (config.remoteAuthority) return { state: 'remote' };
+  const workspace = config.workspace;
+  if (!workspace) return { state: 'empty' };
+  const uri = workspace.uri;
+  if (!uri) return { state: 'workspace-file' };
+  if (uri.scheme !== 'file') return { state: 'remote' };
+  return { state: 'folder', path: uri.path, authority: uri.authority || '', id: workspace.id };
+})()`
 
 function buildCreateExpression(input: {
   name: string
@@ -589,34 +608,14 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
           responseText = String(status && status.lastAiText || '');
           responseId = String(status && (status.lastAiBubbleId || status.chatGenerationUUID) || '');
         }
-        // 用量捎带：turnTokenUsage（本回合真实计费，与 turnEnded 事件同源）+
-        // contextTokensUsed/Limit（上下文窗口实时占用）。四桶全零时仍输出 context
-        // 读数——持续对话模式下回合永不结束、四桶恒空，contextTokensUsed 是唯一
-        // 的请求级活水源（每次模型请求实时刷新）；两者皆无才省略，保持 evidence
-        // 指纹稳定（零会话不触发无谓的快照推送）。
+        // 直接读原生 composer，而非 bridge 的精简摘要；与写后 hook 共用载荷口径。
         let usage = null;
         try {
-          const data = bridge.getComposerData ? bridge.getComposerData(composerId) : undefined;
-          const t = data && data.turnTokenUsage;
-          const toNum = function (v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
-          const ctx = data ? toNum(data.contextTokensUsed) : 0;
-          if (t) {
-            const i = toNum(t.inputTokens), o = toNum(t.outputTokens),
-              r = toNum(t.cacheReadTokens), w = toNum(t.cacheWriteTokens);
-            if (i || o || r || w || ctx) {
-              usage = {
-                inputTokens: i, outputTokens: o, cacheReadTokens: r, cacheWriteTokens: w,
-                contextTokensUsed: ctx || undefined,
-                contextTokenLimit: toNum(data.contextTokenLimit) || undefined
-              };
-            }
-          } else if (ctx) {
-            usage = {
-              inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-              contextTokensUsed: ctx,
-              contextTokenLimit: toNum(data.contextTokenLimit) || undefined
-            };
-          }
+          const data = window.__qtComposerService?.composerDataService?.getComposerDataIfLoaded?.(composerId);
+          const raw = (${nativeUsagePayload.toString()})(data, composerId);
+          if (raw) usage = { generationId: raw.g, modelId: raw.m,
+            inputTokens: raw.i || 0, outputTokens: raw.o || 0, cacheReadTokens: raw.r || 0, cacheWriteTokens: raw.w || 0,
+            contextTokensUsed: raw.used, stopped: raw.stopped };
         } catch (e) {}
         // 过程块由 sgTeamProcess 写后事件直接推送；这里仅保留状态/正文兜底，
         // 避免 150ms inspect 与原生事件双写、重排或覆盖工具结果。
@@ -779,6 +778,40 @@ export class CursorCdpSessionCreator {
     return this.port
   }
 
+  /** 每次重新枚举窗口，覆盖 Cursor 在同一进程内更换工作区/重载页面的情况。 */
+  async detectCurrentWorkspace(): Promise<CursorWorkspaceDetection> {
+    const unavailable = (detail: string): CursorWorkspaceDetection => ({
+      state: 'unavailable', source: 'cursor-window', confidence: 'none', candidates: [], detail, observedAt: Date.now()
+    })
+    try {
+      const targets = await this.fetchTargets(this.port, PROBE_TIMEOUT_MS)
+      if (!targets.length) return unavailable('未发现 Cursor IDE 窗口')
+      if (targets.length !== 1) return {
+        ...unavailable('检测到多个 Cursor IDE 窗口，请保留一个工作区窗口'), state: 'ambiguous'
+      }
+      const value = await this.evaluate(targets[0]!.webSocketDebuggerUrl, CURRENT_WORKSPACE_EXPRESSION, PROBE_TIMEOUT_MS)
+      if (!isRecord(value)) return unavailable('正在识别 Cursor 工作区')
+      if (value.state === 'empty') return unavailable('Cursor 未打开工作区')
+      if (value.state === 'remote') return unavailable('当前为远程工作区，暂仅识别本地文件夹')
+      if (value.state === 'workspace-file') return unavailable('当前为多根工作区，暂仅识别本地文件夹')
+      if (value.state !== 'folder' || typeof value.path !== 'string' || !value.path.startsWith('/')) {
+        return unavailable('正在识别 Cursor 工作区')
+      }
+      let folder = value.path
+      if (process.platform === 'win32') {
+        folder = value.authority ? `//${String(value.authority)}${folder}` : folder.replace(/^\/([a-zA-Z]:)/, '$1')
+      } else if (value.authority) return unavailable('当前文件夹路径不属于本机')
+      const workspace = {
+        ...workspaceIdentityOf(folder), channelIds: [],
+        ...(typeof value.id === 'string' ? { cursorWorkspaceId: value.id } : {})
+      }
+      return { state: 'detected', source: 'cursor-window', confidence: 'certain', workspace,
+        candidates: [workspace], detail: '由 Cursor 当前 IDE 窗口确认', observedAt: Date.now() }
+    } catch {
+      return unavailable('Cursor 检测连接未就绪，请确认 Cursor 已启动且调试连接可用')
+    }
+  }
+
   /** 探测调试端口与候选窗口，供 UI 引导与创建前检查。 */
   async probe(): Promise<CursorCdpProbeResult> {
     let targets: CursorCdpTarget[]
@@ -838,8 +871,11 @@ export class CursorCdpSessionCreator {
         return Number.isFinite(num) && num > 0 ? Math.floor(num) : 0
       }
       const usage = usageRaw && (usageToken(usageRaw.inputTokens) || usageToken(usageRaw.outputTokens)
-        || usageToken(usageRaw.cacheReadTokens) || usageToken(usageRaw.cacheWriteTokens))
+        || usageToken(usageRaw.cacheReadTokens) || usageToken(usageRaw.cacheWriteTokens) || usageToken(usageRaw.contextTokensUsed))
         ? {
+            ...(typeof usageRaw.generationId === 'string' ? { generationId: usageRaw.generationId } : {}),
+            ...(typeof usageRaw.modelId === 'string' ? { modelId: usageRaw.modelId } : {}),
+            ...(usageRaw.stopped === true ? { stopped: true } : {}),
             inputTokens: usageToken(usageRaw.inputTokens),
             outputTokens: usageToken(usageRaw.outputTokens),
             cacheReadTokens: usageToken(usageRaw.cacheReadTokens),

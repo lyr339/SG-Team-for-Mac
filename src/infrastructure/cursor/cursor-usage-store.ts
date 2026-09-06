@@ -1,8 +1,8 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { CursorSessionUsage, CursorUsageSnapshot } from '../../domain/cursor-usage'
+import { projectUsage, type CursorUsageLedger, type UsageTurn, type CursorSessionUsage, type CursorUsageSnapshot } from '../../domain/cursor-usage'
 
-const STORE_VERSION = 2
+const STORE_VERSION = 3
 const MAX_SESSIONS = 1_000
 
 function finiteNonNegative(value: unknown): number | undefined {
@@ -27,7 +27,31 @@ function sessionUsage(value: unknown, composerId: string): CursorSessionUsage | 
     || estimatedCostUsd === undefined || lastTurnAt === undefined
     || typeof row.pricedModel !== 'string'
   ) return undefined
+  if (row.ledger && typeof row.ledger === 'object' && !Array.isArray(row.ledger)) {
+    const raw = row.ledger as Record<string, unknown>
+    if (!raw.turns || typeof raw.turns !== 'object' || Array.isArray(raw.turns)) return undefined
+    const ledger: CursorUsageLedger = { turns: {} }
+    const frozenAt = finiteNonNegative(raw.frozenAt)
+    if (raw.frozenAt !== undefined && frozenAt === undefined) return undefined
+    if (frozenAt !== undefined) ledger.frozenAt = frozenAt
+    for (const [id, value] of Object.entries(raw.turns)) {
+      if (!id || id.length > 200 || !value || typeof value !== 'object') return undefined
+      const turn = value as UsageTurn
+      const counts = [turn.inputTokens, turn.outputTokens, turn.cacheReadTokens, turn.cacheWriteTokens]
+      if (counts.some((n) => !Number.isSafeInteger(n) || n < 0)
+        || turn.cacheReadTokens + turn.cacheWriteTokens > turn.inputTokens
+        || finiteNonNegative(turn.estimatedCostUsd) === undefined || finiteNonNegative(turn.at) === undefined
+        || typeof turn.exact !== 'boolean' || !turn.price || typeof turn.price.label !== 'string'
+        || [turn.price.inputPerM, turn.price.outputPerM, turn.price.cacheReadPerM, turn.price.cacheWritePerM].some((n) => finiteNonNegative(n) === undefined)
+        || (turn.stopped !== undefined && typeof turn.stopped !== 'boolean')
+        || (turn.estimateProfile !== undefined && !['claudeCode', 'fable', 'opus46', 'opus5', 'grok', 'default'].includes(turn.estimateProfile))
+        || (turn.lastUsed !== undefined && (!Number.isSafeInteger(turn.lastUsed) || turn.lastUsed < 0))) return undefined
+      Object.defineProperty(ledger.turns, id, { value: structuredClone(turn), enumerable: true, writable: true, configurable: true })
+    }
+    return projectUsage(composerId, ledger)
+  }
   return {
+    quality: 'legacy',
     composerId,
     turns: Math.floor(turns),
     inputTokens: Math.floor(inputTokens),
@@ -53,7 +77,7 @@ export class CursorUsageStore {
         sessions?: unknown
       }
       const storedRunId = typeof parsed.runId === 'string' ? parsed.runId : undefined
-      if (parsed.version !== STORE_VERSION || storedRunId !== runId || !parsed.sessions || typeof parsed.sessions !== 'object') return {}
+      if ((parsed.version !== STORE_VERSION && parsed.version !== 2) || storedRunId !== runId || !parsed.sessions || typeof parsed.sessions !== 'object') return {}
       const rows = Object.entries(parsed.sessions as Record<string, unknown>)
         .flatMap(([composerId, value]) => {
           const normalizedId = composerId.trim().slice(0, 200)

@@ -18,7 +18,14 @@ import type { CdpAutoHealEvent, CursorCdpSettings } from '../domain/cursor-cdp'
 import type { AccountAutomationRun, AccountAutomationSettings } from '../domain/account-automation'
 import type { CursorUpdatePreferences, CursorUpdateWriteResult } from '../domain/cursor-update'
 import type { CursorUsageSnapshot } from '../domain/cursor-usage'
-import type { WorkspaceReviewFileDiff, WorkspaceReviewSummary } from '../domain/workspace-review'
+import type {
+  WorkspaceOpenFileResult,
+  WorkspaceReviewActionInput,
+  WorkspaceReviewActionResult,
+  WorkspaceReviewFileDiff,
+  WorkspaceReviewScope,
+  WorkspaceReviewSummary
+} from '../domain/workspace-review'
 import type { SessionHandoffContext, SessionHandoffRequest, SessionHandoffResult } from '../domain/session-handoff'
 
 export type BridgeConnectionState =
@@ -297,10 +304,10 @@ export interface QingtianDesktopApi {
   deliverSessionHandoff(input: SessionHandoffRequest): Promise<SessionHandoffResult>
   /** 在系统文件管理器中显示该路径（仅允许拾光已解析出的文件）。 */
   revealPathInFolder(input: { path: string }): Promise<boolean>
-  /** 把图片（data URL）写入系统剪贴板；成功返回 true。 */
-  copyImageToClipboard(input: { dataUrl: string }): Promise<boolean>
-  /** 弹出保存对话框把图片（data URL）另存为文件；用户取消返回 false。 */
-  saveImageAs(input: { dataUrl: string; name?: string }): Promise<boolean>
+  /** 把图片（附件 data URL，或正文引用的本地图片路径）写入系统剪贴板；成功返回 true。 */
+  copyImageToClipboard(input: { dataUrl: string } | { path: string }): Promise<boolean>
+  /** 弹出保存对话框把图片另存为文件；用户取消返回 false。 */
+  saveImageAs(input: ({ dataUrl: string } | { path: string }) & { name?: string }): Promise<boolean>
   getTaskPoolSnapshot(): Promise<TaskPoolSnapshot>
   installTaskMcp(): Promise<McpInstallationResult>
   getTeamControlSnapshot(): Promise<TeamControlSnapshot>
@@ -331,9 +338,17 @@ export interface QingtianDesktopApi {
   getCursorUsageSnapshot(): Promise<CursorUsageSnapshot>
   onCursorUsageSnapshot(listener: (snapshot: CursorUsageSnapshot) => void): () => void
   /** 当前活动工作区的真实 Git 工作树审查摘要；右栏打开时按需读取。 */
-  getWorkspaceReview(): Promise<WorkspaceReviewSummary>
+  getWorkspaceReview(input?: { scope?: WorkspaceReviewScope }): Promise<WorkspaceReviewSummary>
   /** 按仓库相对路径读取单文件 unified diff；路径由主进程再次做工作区边界校验。 */
-  getWorkspaceReviewFile(input: { path: string }): Promise<WorkspaceReviewFileDiff>
+  getWorkspaceReviewFile(input: { path: string; scope?: WorkspaceReviewScope }): Promise<WorkspaceReviewFileDiff>
+  /** 用户显式发起的 Git 动作（暂存 / 取消暂存 / 撤销，文件级或单 hunk）。 */
+  applyWorkspaceReviewAction(input: WorkspaceReviewActionInput): Promise<WorkspaceReviewActionResult>
+  /** 在系统文件管理器中显示工作区内的文件（仓库相对路径，主进程做边界校验）。 */
+  revealWorkspaceFile(input: { path: string }): Promise<boolean>
+  /** 用编辑器深链打开工作区文件（可带行号）；scheme 未注册时退到系统默认程序。 */
+  openWorkspaceFile(input: { path: string; line?: number }): Promise<WorkspaceOpenFileResult>
+  /** 主进程文件系统监听到工作区 / Git 状态变化（去抖后）；渲染层据此刷新当前范围。 */
+  onWorkspaceReviewChanged(listener: () => void): () => void
   onTaskPoolSnapshot(listener: (snapshot: TaskPoolSnapshot) => void): () => void
   onTeamControlSnapshot(listener: (state: TeamControlSnapshot) => void): () => void
   onTeamCollaborationSnapshot(listener: (state: TeamCollaborationSnapshot) => void): () => void
@@ -374,6 +389,10 @@ export const IPC = {
   cursorUsageSnapshot: 'cursor-usage:snapshot',
   workspaceReviewGet: 'workspace-review:get',
   workspaceReviewFile: 'workspace-review:file',
+  workspaceReviewApply: 'workspace-review:apply',
+  workspaceReviewReveal: 'workspace-review:reveal',
+  workspaceReviewOpen: 'workspace-review:open',
+  workspaceReviewChanged: 'workspace-review:changed',
   accountAutomationGetSettings: 'account-automation:get-settings',
   accountAutomationSaveSettings: 'account-automation:save-settings',
   accountAutomationGetRun: 'account-automation:get-run',

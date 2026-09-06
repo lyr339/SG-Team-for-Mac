@@ -1,6 +1,7 @@
 import { Fragment, memo, useMemo, type ReactNode } from 'react'
 import { normalizeEscapedNewlines } from '../../domain/conversation-entry'
 import { stripDanglingBoldMarkers } from '../../domain/model-output-sanitizer'
+import { MessageImage } from './AttachmentImageViewer'
 
 export type MessageBlock =
   | { type: 'paragraph'; lines: string[] }
@@ -10,6 +11,7 @@ export type MessageBlock =
   | { type: 'code'; language: string; text: string }
   | { type: 'table'; headers: string[]; rows: string[][] }
   | { type: 'divider' }
+  | { type: 'image'; alt: string; target: string }
 
 const HEADING = /^(#{1,3})\s+(.+)$/
 const BULLET = /^\s*[-*•–—]\s+(.+)$/
@@ -18,7 +20,15 @@ const QUOTE = /^\s*>\s?(.*)$/
 const FENCE = /^\x60{3}\s*([^\s]*)/
 const DIVIDER = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/
 const TABLE_DIVIDER = /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/
-const INLINE_TOKEN = /(\x60[^\x60\n]+\x60|\*\*[^*\n]+\*\*)/g
+/** 独占一行的图片：`![说明](目标)`，目标里允许空格（本地路径常见），可带 "title"。 */
+const IMAGE_LINE = /^\s*!\[([^\]\n]*)\]\(\s*([^)\n]+?)\s*(?:"[^"\n]*")?\)\s*$/
+const INLINE_TOKEN = /(!\[[^\]\n]*\]\([^)\n]+\)|\x60[^\x60\n]+\x60|\*\*[^*\n]+\*\*)/g
+
+/** 拆出图片 token 的 alt 与目标（去掉可选 "title"）。 */
+export function parseImageToken(token: string): { alt: string; target: string } | undefined {
+  const match = token.match(/^!\[([^\]\n]*)\]\(\s*([^)\n]+?)\s*(?:"[^"\n]*")?\)$/)
+  return match ? { alt: match[1] ?? '', target: match[2] ?? '' } : undefined
+}
 
 export function normalizeMessageText(text: string): string {
   return normalizeEscapedNewlines(text)
@@ -37,6 +47,7 @@ function beginsBlock(lines: string[], index: number): boolean {
     || ORDERED.test(line)
     || QUOTE.test(line)
     || DIVIDER.test(line)
+    || IMAGE_LINE.test(line)
     || (line.includes('|') && TABLE_DIVIDER.test(next))
 }
 
@@ -74,6 +85,13 @@ export function parseMessageBlocks(text: string): MessageBlock[] {
 
     if (DIVIDER.test(line)) {
       blocks.push({ type: 'divider' })
+      index += 1
+      continue
+    }
+
+    const image = line.match(IMAGE_LINE)
+    if (image) {
+      blocks.push({ type: 'image', alt: (image[1] ?? '').trim(), target: (image[2] ?? '').trim() })
       index += 1
       continue
     }
@@ -140,6 +158,11 @@ function inlineContent(text: string, keyPrefix: string): ReactNode[] {
     const token = match[0]
     if (token.charCodeAt(0) === 96) {
       nodes.push(<code key={keyPrefix + '-code-' + tokenIndex}>{token.slice(1, -1)}</code>)
+    } else if (token.charCodeAt(0) === 33) {
+      const image = parseImageToken(token)
+      nodes.push(image
+        ? <MessageImage key={keyPrefix + '-image-' + tokenIndex} alt={image.alt} target={image.target} />
+        : token)
     } else {
       nodes.push(<strong key={keyPrefix + '-strong-' + tokenIndex}>{token.slice(2, -2)}</strong>)
     }
@@ -164,6 +187,7 @@ function linesContent(lines: string[], keyPrefix: string): ReactNode {
 export function messagePlainText(text: string): string {
   return stripDanglingBoldMarkers(normalizeMessageText(text))
     .replace(/\x60{3}[\s\S]*?\x60{3}/g, ' [代码] ')
+    .replace(/!\[([^\]\n]*)\]\([^)\n]+\)/g, (_, alt: string) => alt.trim() ? `[图片：${alt.trim()}]` : '[图片]')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\x60([^\x60]+)\x60/g, '$1')
     .replace(/^\s*(?:#{1,3}|[-*•–—]|\d+[.)]|>)\s*/gm, '')
@@ -216,6 +240,9 @@ export const MessageContent = memo(function MessageContent({
           )
         }
         if (block.type === 'divider') return <hr key={key} />
+        if (block.type === 'image') {
+          return <figure key={key} className="message-figure"><MessageImage alt={block.alt} target={block.target} /></figure>
+        }
         return <p key={key}>{linesContent(block.lines, key)}</p>
       })}
     </div>

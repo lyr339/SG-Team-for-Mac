@@ -1,11 +1,11 @@
 import { clipboard, dialog, ipcMain, nativeImage, shell, type BrowserWindow } from 'electron'
 import { writeFileSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import type { RevealPathPolicy } from '../application/reveal-path-policy'
 import type { SessionHandoffService } from '../application/session-handoff-service'
 import { SESSION_HANDOFF_NOTE_MAX_CHARS, type SessionHandoffRequest } from '../domain/session-handoff'
 import { IPC, type QueuedMessageRef } from '../shared/desktop-api'
-import { parseImageDataUrl, suggestedImageFileName } from './image-attachment-io'
+import { parseImageInput, suggestedImageFileName } from './image-attachment-io'
 import { assertTrustedSender } from './ipc-security'
 
 function queuedRefOf(value: unknown): QueuedMessageRef {
@@ -89,17 +89,18 @@ export function registerSessionHandoffIpc(
   })
   ipcMain.handle(IPC.copyImageToClipboard, (event, input: unknown) => {
     assertTrustedSender(event, getWindow)
-    const { dataUrl, mimeType } = parseImageDataUrl(input)
+    const { dataUrl, path, mimeType } = parseImageInput(input)
     // nativeImage 解码 PNG/JPEG；其他格式（gif/webp/svg）无法作为位图写入系统剪贴板。
-    const image = nativeImage.createFromDataURL(dataUrl)
+    const image = path ? nativeImage.createFromPath(path) : nativeImage.createFromDataURL(dataUrl)
     if (image.isEmpty()) throw new Error(`当前格式（${mimeType}）无法复制为图片，请改用另存为`)
     clipboard.writeImage(image)
     return true
   })
   ipcMain.handle(IPC.saveImageAs, async (event, input: unknown) => {
     assertTrustedSender(event, getWindow)
-    const { mimeType, bytes } = parseImageDataUrl(input)
-    const name = suggestedImageFileName((input as Record<string, unknown>).name, mimeType)
+    const { mimeType, bytes, path } = parseImageInput(input)
+    const requestedName = (input as Record<string, unknown>).name
+    const name = suggestedImageFileName(typeof requestedName === 'string' && requestedName ? requestedName : path ? basename(path) : undefined, mimeType)
     const window = getWindow()
     const dialogOptions = {
       title: '另存图片',

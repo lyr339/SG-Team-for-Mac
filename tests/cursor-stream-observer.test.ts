@@ -130,7 +130,7 @@ describe('CursorStreamObserver', () => {
       }
     }
     runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
-    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(20)
+    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(CURSOR_STREAM_HOOK_VERSION)
     expect(manager.markDirty({ composerId: 'composer-1' })).toBe(1)
     expect(observed).toEqual([1])
     await manager.updateWithoutMarkingDirty({ composerId: 'composer-1' })
@@ -582,20 +582,27 @@ describe('CursorStreamObserver', () => {
 
   it('解析 usage binding 载荷并转发结构化事件；坏载荷静默丢弃', async () => {
     const events: Array<Record<string, unknown>> = []
+    const samples: Array<Record<string, unknown>> = []
     const socket = new FakeSocket()
     const observer = new CursorStreamObserver({
       fetchPageSocketUrl: async () => 'ws://127.0.0.1:9333/devtools/page/abc',
       openSocket: () => socket,
       onWriteSignal: () => {},
-      onUsageEvent: (event) => events.push({ ...event })
+      onUsageEvent: (event) => events.push({ ...event }),
+      onUsageSample: (sample) => samples.push({ ...sample })
     })
     await observer.attach()
+
+    socket.emit('message', JSON.stringify({ method: 'Runtime.bindingCalled', params: {
+      name: '__sgTeamUsage', payload: JSON.stringify({ kind: 'sample', c: 'comp-1', g: 'generation-1', m: 'gpt-5', used: 12000, t: 1000 })
+    } }))
+    expect(samples).toEqual([{ composerId: 'comp-1', generationId: 'generation-1', modelId: 'gpt-5', used: 12000, occurredAt: 1000 }])
 
     socket.emit('message', JSON.stringify({
       method: 'Runtime.bindingCalled',
       params: { name: '__sgTeamUsage', payload: '{"c":"comp-1","i":12168,"o":42,"r":3968,"w":0,"t":1788021941352}' }
     }))
-    // t 缺失回退当前时间；非法值收敛 0
+    // 非法值丢弃，不把损坏的事件变成一次零值结算。
     socket.emit('message', JSON.stringify({
       method: 'Runtime.bindingCalled',
       params: { name: '__sgTeamUsage', payload: '{"c":"comp-2","i":"bad","o":-5}' }
@@ -611,8 +618,7 @@ describe('CursorStreamObserver', () => {
     }))
 
     expect(events).toEqual([
-      { composerId: 'comp-1', inputTokens: 12168, outputTokens: 42, cacheReadTokens: 3968, cacheWriteTokens: 0, occurredAt: 1788021941352 },
-      { composerId: 'comp-2', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, occurredAt: expect.any(Number) }
+      { composerId: 'comp-1', inputTokens: 12168, outputTokens: 42, cacheReadTokens: 3968, cacheWriteTokens: 0, occurredAt: 1788021941352 }
     ])
     observer.dispose()
   })

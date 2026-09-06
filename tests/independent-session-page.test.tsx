@@ -63,7 +63,7 @@ describe('IndependentSessionPage 软守卫（结束批次 / 新建批次 / 替�
   }
   const dialog = () => container.querySelector('[role="alertdialog"]')
 
-  const render = async (team: TeamControlSnapshot) => {
+  const render = async (team: TeamControlSnapshot, detected = { id: 'wedge-demo', name: 'wedge-demo', path: '/workspace/wedge-demo', channelIds: [] as string[] }) => {
     const onEndRun = vi.fn(async () => {})
     const onCreate = vi.fn(async () => donePlan)
     const onLaunch = vi.fn(async () => donePlan)
@@ -71,7 +71,7 @@ describe('IndependentSessionPage 软守卫（结束批次 / 新建批次 / 替�
     await act(async () => root.render(
       <IndependentSessionPage
         team={team}
-        detectedWorkspace={{ id: 'wedge-demo', name: 'wedge-demo', path: '/workspace/wedge-demo', channelIds: [] }}
+        detectedWorkspace={detected}
         cursorModels={desktopSnapshot.cursorModels ?? []}
         cdpAutoHealEnabled={false}
         onCreate={onCreate}
@@ -154,5 +154,37 @@ describe('IndependentSessionPage 软守卫（结束批次 / 新建批次 / 替�
     await act(async () => buttonNamed('批量创建独立会话（3）').click())
     expect(dialog()).toBeNull()
     expect(onCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it('Cursor 已换工程：创建新工程批次而不是补齐旧工程通道，替换前确认', async () => {
+    const team = independentTeam({ online: true })
+    const next = { id: 'project-b', name: '新工程 B', path: '/projects/b', channelIds: [] }
+    const { onCreate, onLaunch } = await render(team, next)
+    expect(container.querySelector('.independent-config__workspace')?.textContent).toContain('/projects/b')
+    await act(async () => buttonNamed('批量创建独立会话（3）').click())
+    expect(onCreate).not.toHaveBeenCalled()
+    expect(onLaunch).not.toHaveBeenCalled()
+    expect(dialog()?.textContent).toContain('结束')
+    await act(async () => buttonNamed('确认创建').click())
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ workspacePath: '/projects/b' }))
+    expect(onLaunch).not.toHaveBeenCalled()
+  })
+
+  it('已结束批次走创建新 run，避免使用已退役的 session 令牌', async () => {
+    const team = independentTeam({ online: false })
+    team.activeRun!.status = 'completed'
+    const { onCreate, onLaunch } = await render(team)
+    await act(async () => buttonNamed('批量创建独立会话（3）').click())
+    expect(onCreate).toHaveBeenCalledTimes(1)
+    expect(onLaunch).not.toHaveBeenCalled()
+  })
+
+  it('同工程未结束批次仍补齐既有通道，不重建团队', async () => {
+    const { onCreate, onLaunch } = await render(independentTeam({ online: false }))
+    const launch = buttonNamed('补齐独立会话（2）')
+    expect(launch).toBeTruthy()
+    await act(async () => launch!.click())
+    expect(onLaunch).toHaveBeenCalledTimes(1)
+    expect(onCreate).not.toHaveBeenCalled()
   })
 })

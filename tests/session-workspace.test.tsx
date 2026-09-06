@@ -368,7 +368,9 @@ describe('SessionWorkspace', () => {
     expect(html).toMatch(/session-usage__label">Tokens<\/span><b class="session-usage__value">12\.2K<\/b>/)
     expect(html).toMatch(/session-usage__label">Cost<\/span><b class="session-usage__value">\$0\.042<\/b>/)
     expect(html).toContain('session-usage__sep')
-    expect(html).toContain('aria-label="计费 token 12.2K，等价 API 费用估算 $0.042，4 次请求，查看明细"')
+    expect(html).toContain('Input 8.2K')
+    expect(html).toContain('Output 42')
+    expect(html).not.toContain('4 次请求')
 
     const idle = renderWorkspace({
       session: {
@@ -388,7 +390,7 @@ describe('SessionWorkspace', () => {
     // 空对话：占位态常驻（不隐藏组件），但绝不显示数字——ghost「—」等待首个计费回合
     expect(idle).toContain('session-usage is-pending')
     expect(idle).not.toMatch(/session-usage__value">\d/)
-    expect(idle).toContain('aria-label="用量待读取"')
+    expect(idle).toContain('aria-label="Waiting for usage"')
   })
 
   it('Composer 已绑定但尚无计费帧时保留明确占位，不再整块消失', () => {

@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MessageAttachment } from '../../domain/conversation-entry'
 import type { QingtianDesktopApi } from '../../shared/desktop-api'
 import { formatFileSize } from '../../shared/format-file-size'
+import { resolveMessageImageSource } from '../../shared/local-image'
 
 /**
  * 图片附件的查看与操作（输入区芯片与时间线共用）：
@@ -24,6 +25,17 @@ function imageSource(attachment: MessageAttachment): string | undefined {
   return undefined
 }
 
+/**
+ * 复制/另存的入参：附件带 base64 时传 data URL；正文引用的本地图片（previewUrl 是
+ * sg-image 协议）传路径，由主进程按同一套白名单读盘。
+ */
+function imagePayload(attachment: MessageAttachment): { dataUrl: string } | { path: string } | undefined {
+  const source = imageSource(attachment)
+  if (source?.startsWith('data:')) return { dataUrl: source }
+  if (attachment.path) return { path: attachment.path }
+  return undefined
+}
+
 export interface AttachmentActionState {
   /** 最近一次操作的短暂反馈文案（1.6s 后清空）。 */
   feedback: string
@@ -42,24 +54,24 @@ export function useAttachmentActions(attachment: MessageAttachment): AttachmentA
     if (timer.current) window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => setFeedback(''), 1_600)
   }
-  const source = imageSource(attachment)
+  const payload = imagePayload(attachment)
   return {
     feedback,
     canReveal: Boolean(attachment.path),
     copy: async () => {
       const api = desktopApi()
-      if (!api || !source) { flash('无法复制'); return }
+      if (!api || !payload) { flash('无法复制'); return }
       try {
-        flash(await api.copyImageToClipboard({ dataUrl: source }) ? '已复制到剪贴板' : '复制失败')
+        flash(await api.copyImageToClipboard(payload) ? '已复制到剪贴板' : '复制失败')
       } catch (error) {
         flash(error instanceof Error ? error.message : '复制失败')
       }
     },
     save: async () => {
       const api = desktopApi()
-      if (!api || !source) { flash('无法保存'); return }
+      if (!api || !payload) { flash('无法保存'); return }
       try {
-        const saved = await api.saveImageAs({ dataUrl: source, name: attachment.name })
+        const saved = await api.saveImageAs({ ...payload, name: attachment.name })
         flash(saved ? '已保存' : '')
       } catch (error) {
         flash(error instanceof Error ? error.message : '保存失败')
@@ -150,9 +162,10 @@ export function AttachmentLightbox({
   const source = imageSource(attachment)
   if (!source) return null
   const meta = [
-    formatFileSize(attachment.size),
+    attachment.size > 0 ? formatFileSize(attachment.size) : '',
     dimensions ? `${dimensions.width} × ${dimensions.height}` : '',
-    attachment.mimeType
+    attachment.mimeType,
+    attachment.path && !attachment.data && !source.startsWith('data:') ? attachment.path : ''
   ].filter(Boolean).join(' · ')
   return (
     <div
@@ -228,5 +241,40 @@ export function AttachmentThumbnail({
       {menu ? <AttachmentContextMenu x={menu.x} y={menu.y} items={items} onClose={() => setMenu(undefined)} /> : null}
       {viewerOpen ? <AttachmentLightbox attachment={attachment} actions={actions} onClose={() => setViewerOpen(false)} /> : null}
     </>
+  )
+}
+
+function fileNameOf(path: string): string {
+  return path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
+}
+
+/**
+ * Markdown 正文里的图片 `![说明](目标)`：
+ * - 本地绝对路径 / file:// / data: → 经 sg-image 协议渲染，可点击查看、右键复制/另存/在 Finder 中显示；
+ * - http(s) → 只给外链（会话页不加载远程资源）；
+ * - 无法识别的目标 → 原样文本，不留破图。
+ */
+export function MessageImage({ alt, target }: { alt: string; target: string }): React.JSX.Element {
+  const source = useMemo(() => resolveMessageImageSource(target), [target])
+  const attachment = useMemo<MessageAttachment | undefined>(() => {
+    if (!source || source.kind === 'remote') return undefined
+    return {
+      id: `message-image:${target}`,
+      name: alt.trim() || (source.kind === 'local' ? fileNameOf(source.path) : 'image'),
+      mimeType: source.mimeType,
+      size: 0,
+      previewUrl: source.src,
+      ...(source.kind === 'local' ? { path: source.path } : {})
+    }
+  }, [alt, source, target])
+  if (!source) return <span className="message-image message-image--raw">![{alt}]({target})</span>
+  if (source.kind === 'remote') {
+    return <a className="message-image message-image--link" href={source.href} target="_blank" rel="noreferrer noopener">{alt.trim() || source.href}</a>
+  }
+  return (
+    <span className="message-image">
+      <AttachmentThumbnail attachment={attachment!} className="message-image__thumb" />
+      {alt.trim() ? <small className="message-image__caption">{alt.trim()}</small> : null}
+    </span>
   )
 }

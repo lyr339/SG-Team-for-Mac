@@ -5,12 +5,12 @@ import {
   GridIcon,
   PanelIcon,
   SettingsIcon,
-  SessionsIcon,
-  WorkspaceIcon
+  SessionsIcon
 } from './UiIcons'
 import { BrandMark } from './BrandMark'
 import { ResizableColumns } from './ResizableColumns'
 import { AppearanceSettings } from './AppearanceSettings'
+import { WorkspaceMenu } from './WorkspaceMenu'
 
 export type AppModule = 'lobby' | 'sessions'
 
@@ -21,13 +21,13 @@ interface DesktopShellProps {
   /** 会话页的按需右侧工作区；传入时顶栏出现停靠开关。 */
   rightPanel?: (close: () => void) => ReactNode
   cursorWorkspace?: CursorWorkspaceDetection
-  displayedWorkspaceId?: string
+  workspace?: { id: string; name: string; path: string }
   wideContent?: boolean
   teamChannelIds?: string[]
   cardOpacity: number
   colorMode: 'system' | 'light' | 'dark'
   onModuleChange: (module: AppModule) => void
-  onDetectedWorkspaceClick: () => void
+  onOpenProjectConfiguration: () => void
   onCardOpacityChange: (value: number) => void
   onColorModeChange: (value: 'system' | 'light' | 'dark') => void
   children: ReactNode
@@ -84,13 +84,13 @@ export function DesktopShell({
   sidebar,
   rightPanel,
   cursorWorkspace,
-  displayedWorkspaceId,
+  workspace,
   wideContent = false,
   teamChannelIds,
   cardOpacity,
   colorMode,
   onModuleChange,
-  onDetectedWorkspaceClick,
+  onOpenProjectConfiguration,
   onCardOpacityChange,
   onColorModeChange,
   children
@@ -112,12 +112,6 @@ export function DesktopShell({
   const onlineCount = teamSessions.filter((session) => session.online).length
   const link = cursorLinkState(snapshot)
   const issues = snapshot.protocolIssues
-  const detectedWorkspace = cursorWorkspace?.workspace
-  const workspaceMatches = Boolean(detectedWorkspace && detectedWorkspace.id === displayedWorkspaceId)
-  const showWorkspaceDetection = cursorWorkspace?.state === 'detected' || cursorWorkspace?.state === 'ambiguous'
-  const workspaceLabel = cursorWorkspace?.state === 'ambiguous'
-    ? `${cursorWorkspace.candidates.length || '多'} 个 Cursor 工程`
-    : detectedWorkspace ? `Cursor · ${detectedWorkspace.name}` : ''
   const inspectorVisible = activeModule === 'sessions' && Boolean(rightPanel) && showInspector
   const sidebarVisible = activeModule === 'sessions' && !sessionSidebarCollapsed
 
@@ -139,6 +133,12 @@ export function DesktopShell({
         return
       }
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+      // ⌘\ / Ctrl+\：切换右侧工作区（与 VS Code 侧栏习惯一致；输入框内也允许，它不与输入冲突）。
+      if (event.key === '\\' && activeModule === 'sessions' && rightPanel) {
+        event.preventDefault()
+        setInspectorVisible(!showInspector)
+        return
+      }
       const index = Number.parseInt(event.key, 10) - 1
       const module = MODULE_ORDER[index]
       if (index < 0 || !module) return
@@ -149,7 +149,7 @@ export function DesktopShell({
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onModuleChange])
+  }, [activeModule, onModuleChange, rightPanel, showInspector])
 
   useEffect(() => {
     if (!showConnection && !showAppearance) return
@@ -187,17 +187,7 @@ export function DesktopShell({
             <span className="brand__mark"><BrandMark /></span>
             <strong>拾光</strong>
           </button>
-          {showWorkspaceDetection ? (
-            <button
-              className={`workspace-detection-chip ${workspaceMatches ? 'is-current' : 'is-different'} ${cursorWorkspace?.state === 'ambiguous' ? 'is-ambiguous' : ''}`}
-              onClick={onDetectedWorkspaceClick}
-              title={cursorWorkspace?.detail}
-            >
-              <WorkspaceIcon />
-              <span>{workspaceLabel}</span>
-              <b>{workspaceMatches ? '当前' : cursorWorkspace?.state === 'ambiguous' ? '选择' : '切换'}</b>
-            </button>
-          ) : null}
+          <WorkspaceMenu key={`${activeModule}:${workspace?.id ?? ''}:${cursorWorkspace?.workspace?.id ?? ''}`} workspace={workspace} detection={cursorWorkspace} onOpenConfiguration={onOpenProjectConfiguration} />
         </div>
 
         <nav className="topbar-nav" aria-label="主要功能">
@@ -221,7 +211,7 @@ export function DesktopShell({
             <button
               className={`panel-button ${inspectorVisible ? 'is-active' : ''}`}
               onClick={() => setInspectorVisible(!inspectorVisible)}
-              title={inspectorVisible ? '收起右侧工作区' : '展开右侧工作区'}
+              title={`${inspectorVisible ? '收起右侧工作区' : '展开右侧工作区'} ${MODULE_SWITCH_MODIFIER}\\`}
               aria-label={inspectorVisible ? '收起右侧工作区' : '展开右侧工作区'}
               aria-expanded={inspectorVisible}
             >

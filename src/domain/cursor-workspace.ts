@@ -1,5 +1,5 @@
 export type CursorWorkspaceDetectionState = 'detected' | 'ambiguous' | 'unavailable'
-export type CursorWorkspaceDetectionSource = 'running-qingtian-mcp' | 'cursor-recent'
+export type CursorWorkspaceDetectionSource = 'running-qingtian-mcp' | 'cursor-recent' | 'cursor-window'
 export type CursorWorkspaceDetectionConfidence = 'certain' | 'likely' | 'none'
 
 export interface DetectedCursorWorkspace {

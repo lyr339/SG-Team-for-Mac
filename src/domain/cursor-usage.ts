@@ -24,6 +24,8 @@
 /** 单回合 usage 事件（binding payload {c,i,o,r,w,t} 解析后的形态）。 */
 export interface CursorUsageEvent {
   composerId: string
+  generationId?: string
+  modelId?: string
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
@@ -35,7 +37,7 @@ export interface CursorUsageEvent {
 /** 当前 TeamRun 内的会话级累积用量（按 composerId 本地持久化）。 */
 export interface CursorSessionUsage {
   composerId: string
-  /** 已完成的计费请求次数（请求级采样按请求计数；事件通道按回合计数——单通道独占，不混计）。 */
+  /** V3 为原生 generation 数，不是工具调用数或模型请求数。 */
   turns: number
   inputTokens: number
   outputTokens: number
@@ -51,6 +53,8 @@ export interface CursorSessionUsage {
    * 基线延续，重启后首样本不会把存量上下文误记一次。undefined = 尚未建立基线。
    */
   contextLastUsed?: number
+  quality?: 'exact' | 'mixed' | 'estimated' | 'legacy'
+  ledger?: CursorUsageLedger
 }
 
 /** composerId → 累积用量。 */
@@ -192,172 +196,145 @@ export function estimateTurnCostUsd(event: Omit<CursorUsageEvent, 'composerId'>,
   )
 }
 
-/** 累加一回合到会话用量（纯函数，返回新对象）。 */
-export function accumulateUsage(
-  current: CursorSessionUsage | undefined,
-  event: CursorUsageEvent,
-  pricedModel: string
-): CursorSessionUsage {
-  const base = current ?? {
-    composerId: event.composerId,
-    turns: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    estimatedCostUsd: 0,
-    pricedModel,
-    lastTurnAt: 0
-  }
-  const price = priceForModel(pricedModel)
-  const accumulatedModel = base.turns > 0 && base.pricedModel !== price.label
-    ? 'Mixed models'
-    : price.label
+/** 内部账本按原生 generation 隔离；UI 字段由它投影，避免回合/会话累计混用。 */
+export interface UsageTurn {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  estimatedCostUsd: number
+  price: ModelTokenPrice
+  exact: boolean
+  lastUsed?: number
+  /** 用户参考图的拆分方案；随回合保存，模型切换不追溯修改旧账。 */
+  estimateProfile?: string
+  stopped?: boolean
+  at: number
+}
+export interface CursorUsageLedger {
+  turns: Record<string, UsageTurn>
+  frozenAt?: number
+}
+export interface CursorUsageSample {
+  composerId: string
+  generationId: string
+  modelId?: string
+  used: number
+  occurredAt: number
+  stopped?: boolean
+}
+export type UsageObservation =
+  | { kind: 'sample'; value: CursorUsageSample }
+  | { kind: 'checkpoint'; value: CursorUsageEvent & { generationId: string } }
+
+// 用户提供的累计用量截图（2026-09-05）：仅作近似拆分的比例，不是模型牌价或实测本会话用量。
+const USAGE_PROFILES = {
+  // 用户 Claude Code 累计截图：四项是显示层舍入值，以四项合计归一，不用顶部精确总数反推缺口。
+  claudeCode: { input: 1_343_000, output: 42_535_000, write: 345_000_000, read: 12_706_000_000 },
+  // 保留旧 profile 键以读取已落盘回合；Claude 的估算在 upgradeUsageEstimate 中迁移一次。
+  fable: { input: 354, output: 242_500, write: 1_630_000, read: 23_060_000 },
+  opus46: { input: 87, output: 37_200, write: 459_100, read: 2_970_000 },
+  opus5: { input: 18, output: 9_091, write: 50_900, read: 239_500 },
+  grok: { input: 145_900, output: 7_288, write: 0, read: 322_800 },
+  default: { input: 146_400, output: 296_100, write: 2_140_000, read: 26_590_000 }
+} as const
+
+function usageProfile(model: string | undefined): keyof typeof USAGE_PROFILES {
+  const key = normalizeModelKey(model ?? '')
+  if (/^(?:anthropic-)?(?:claude|fable|opus|sonnet|haiku)(?:-|$|\d)/.test(key)) return 'claudeCode'
+  if (key.includes('grok')) return 'grok'
+  return 'default'
+}
+
+/** 输入总量含缓存；按参考图拆分并推算输出，费用仍走同一套已固定的模型单价。 */
+export function estimateUsageFromReference(inputTokens: number, model: string | undefined, price: ModelTokenPrice) {
+  const profile = usageProfile(model)
+  return referenceUsage(inputTokens, profile, price)
+}
+
+function referenceUsage(inputTokens: number, profile: keyof typeof USAGE_PROFILES, price: ModelTokenPrice) {
+  const weights = USAGE_PROFILES[profile]
+  const totalInput = weights.input + weights.read + weights.write
+  const fresh = Math.round(inputTokens * weights.input / totalInput)
+  const cacheWriteTokens = Math.round(inputTokens * weights.write / totalInput)
+  const cacheReadTokens = Math.max(0, inputTokens - fresh - cacheWriteTokens)
+  const outputTokens = Math.round(inputTokens * weights.output / totalInput)
+  const counts = { inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens }
+  return { ...counts, estimateProfile: profile,
+    estimatedCostUsd: estimateTurnCostUsd({ ...counts, occurredAt: 0 }, price) }
+}
+
+/** 给此前缺少输出的估算补上参考拆分；精确回合和已使用该方案的回合保持原值。 */
+export function upgradeUsageEstimate(usage: CursorSessionUsage): CursorSessionUsage {
+  if (!usage.ledger) return usage
+  let changed = false
+  const turns = Object.fromEntries(Object.entries(usage.ledger.turns).map(([id, turn]) => {
+    const claudeUpgrade = turn.estimateProfile !== 'claudeCode'
+      && (['fable', 'opus46', 'opus5'].includes(turn.estimateProfile ?? '') || usageProfile(turn.price.label) === 'claudeCode')
+    if (turn.exact || (turn.estimateProfile && !claudeUpgrade)) return [id, turn]
+    changed = true
+    return [id, { ...turn, ...referenceUsage(turn.inputTokens, claudeUpgrade ? 'claudeCode' : usageProfile(turn.price.label), turn.price) }]
+  }))
+  return changed ? projectUsage(usage.composerId, { ...usage.ledger, turns }) : usage
+}
+
+export function projectUsage(composerId: string, ledger: CursorUsageLedger): CursorSessionUsage {
+  const turns = Object.values(ledger.turns)
+  const exact = turns.filter((turn) => turn.exact).length
+  const sum = (key: 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens' | 'estimatedCostUsd'): number =>
+    turns.reduce((total, turn) => total + turn[key], 0)
+  const models = [...new Set(turns.map((turn) => turn.price.label))]
   return {
-    composerId: event.composerId,
-    turns: base.turns + 1,
-    inputTokens: base.inputTokens + event.inputTokens,
-    outputTokens: base.outputTokens + event.outputTokens,
-    cacheReadTokens: base.cacheReadTokens + event.cacheReadTokens,
-    cacheWriteTokens: base.cacheWriteTokens + event.cacheWriteTokens,
-    estimatedCostUsd: base.estimatedCostUsd + estimateTurnCostUsd(event, price),
-    pricedModel: accumulatedModel,
-    lastTurnAt: Math.max(base.lastTurnAt, event.occurredAt)
+    composerId, turns: turns.length,
+    inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'),
+    cacheReadTokens: sum('cacheReadTokens'), cacheWriteTokens: sum('cacheWriteTokens'),
+    estimatedCostUsd: sum('estimatedCostUsd'), pricedModel: models.length === 1 ? models[0]! : 'Mixed models',
+    lastTurnAt: Math.max(0, ...turns.map((turn) => turn.at)),
+    quality: exact === turns.length && turns.length > 0 ? 'exact' : exact ? 'mixed' : 'estimated', ledger
   }
 }
 
-/** 总计费 token：输入 + 输出（缓存读/写是输入的子集，不重复计入）。 */
-export function totalUsageTokens(usage: Pick<CursorSessionUsage,
-  'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens'>): number {
+/** 快照与 binding 都是同一 generation 的校准，不是两笔消费。 */
+export function reduceUsage(current: CursorSessionUsage | undefined, observation: UsageObservation): CursorSessionUsage | undefined {
+  const event = observation.value
+  if (!event.generationId || !Number.isFinite(event.occurredAt) || event.occurredAt < 0) return current
+  // V2 无 generation 身份，保留展示至下一 run，不与 V3 精确账混加。
+  if (current && !current.ledger) return current
+  const ledger = current?.ledger ?? { turns: {} }
+  const previous = Object.hasOwn(ledger.turns, event.generationId) ? ledger.turns[event.generationId] : undefined
+  // 结束即冻结，含迟到结算；用户明确要求结束后显示值固定。
+  if (ledger.frozenAt !== undefined) return current
+  const price = previous?.price ?? priceForModel(event.modelId)
+  let next: UsageTurn
+  if (observation.kind === 'checkpoint') {
+    const exact = observation.value
+    const values = [exact.inputTokens, exact.outputTokens, exact.cacheReadTokens, exact.cacheWriteTokens]
+    if (values.some((n) => !Number.isSafeInteger(n) || n < 0)
+      || exact.cacheReadTokens + exact.cacheWriteTokens > exact.inputTokens) return current
+    // 中断路径可能只携带默认零值，并非一次完整的计费结算；保留已有近似数值。
+    if (exact.inputTokens + exact.outputTokens === 0) return current
+    if (previous?.exact) return current // 首个权威结算封口，同源轮询重放不刷新时间/重算价格。
+    next = { inputTokens: exact.inputTokens, outputTokens: exact.outputTokens,
+      cacheReadTokens: exact.cacheReadTokens, cacheWriteTokens: exact.cacheWriteTokens,
+      estimatedCostUsd: estimateTurnCostUsd(exact, price), price, exact: true, at: exact.occurredAt }
+  } else {
+    const sample = observation.value
+    if (!Number.isSafeInteger(sample.used) || sample.used <= 0 || previous?.exact || previous?.stopped
+      || (previous && sample.occurredAt < previous.at)) return current
+    const base = previous ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0, price, exact: false, at: 0 }
+    const changed = sample.used !== base.lastUsed
+    if (!changed && !sample.stopped) return current
+    const profile = base.estimateProfile && Object.hasOwn(USAGE_PROFILES, base.estimateProfile)
+      ? base.estimateProfile as keyof typeof USAGE_PROFILES : usageProfile(event.modelId ?? price.label)
+    next = { ...base, ...referenceUsage(base.inputTokens + (changed ? sample.used : 0), profile, price),
+      lastUsed: sample.used, at: sample.occurredAt, ...(sample.stopped ? { stopped: true } : {}) }
+  }
+  return projectUsage(event.composerId, { ...ledger, turns: { ...ledger.turns, [event.generationId]: next } })
+}
+
+/** 输入已包含缓存读写，总量不重复加缓存。 */
+export function totalUsageTokens(usage: Pick<CursorSessionUsage, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens'>): number {
   return usage.inputTokens + usage.outputTokens
-}
-
-/**
- * CDP 轮询快照（turnTokenUsage）的回合覆盖合并：同源值的「当前回合累计」
- * 语义——快照值 ≥ 已记值时覆盖当前回合（生成中单调增长，回合结束定格）；
- * 快照回落到更小值 = 新回合开始，前回合封存、新回合从快照值起算。
- * 与事件通道（turnEnded 累加）互补：轮询提供实时性，事件提供权威封存。
- */
-export function applyTurnUsage(
-  current: CursorSessionUsage | undefined,
-  snapshot: CursorUsageEvent,
-  pricedModel: string
-): CursorSessionUsage {
-  const base = current ?? {
-    composerId: snapshot.composerId,
-    turns: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    estimatedCostUsd: 0,
-    pricedModel,
-    lastTurnAt: 0
-  }
-  const price = priceForModel(pricedModel)
-  const snapshotCost = estimateTurnCostUsd(snapshot, price)
-  // 回合边界判定同样用「输入+输出」口径（缓存是子集，不参与单调性比较的语义）。
-  const snapshotTokens = snapshot.inputTokens + snapshot.outputTokens
-  const currentTurnTokens = base.inputTokens + base.outputTokens
-  // 回合内单调覆盖：不增回合数，直接以快照为准（费用按快照重估，口径一致）。
-  if (snapshotTokens >= currentTurnTokens) {
-    return {
-      composerId: base.composerId,
-      turns: Math.max(base.turns, 1),
-      inputTokens: snapshot.inputTokens,
-      outputTokens: snapshot.outputTokens,
-      cacheReadTokens: snapshot.cacheReadTokens,
-      cacheWriteTokens: snapshot.cacheWriteTokens,
-      estimatedCostUsd: snapshotCost,
-      pricedModel: base.turns > 0 && base.pricedModel !== price.label ? 'Mixed models' : price.label,
-      lastTurnAt: Math.max(base.lastTurnAt, snapshot.occurredAt)
-    }
-  }
-  // 快照回落（新回合尚小）：封存旧回合、以快照起算新回合。
-  return {
-    composerId: base.composerId,
-    turns: base.turns + 1,
-    inputTokens: snapshot.inputTokens,
-    outputTokens: snapshot.outputTokens,
-    cacheReadTokens: snapshot.cacheReadTokens,
-    cacheWriteTokens: snapshot.cacheWriteTokens,
-    estimatedCostUsd: base.estimatedCostUsd + snapshotCost,
-    pricedModel: 'Mixed models',
-    lastTurnAt: Math.max(base.lastTurnAt, snapshot.occurredAt)
-  }
-}
-
-/**
- * 请求级上下文采样（长会话实时通道，算法经织梦 Cursor 生产验证）。
- *
- * 背景：持续对话模式下回合永不结束（agent 循环 check_messages），turnEnded 及其
- * turnTokenUsage 永不产生——事件/快照两条通道在长会话里恒为零。而 composerData.
- * contextTokensUsed 随每次模型请求实时刷新，是唯一可用的请求级活水源。
- *
- * 计账语义（Cursor 按请求对完整上下文计费）：
- * - 首样本：只建立基线，零累计（监控开始前的存量上下文不属于本 run 的账）；
- * - used 不变：同一请求内的重复采样，零累计；
- * - used 变化（无论方向，含上下文压缩回落）：新请求发生，token 按当时完整
- *   上下文累计（`inputTokens += used`，与事件通道口径一致——turnEnded 的
- *   inputTokens 本就是回合内全部请求的累计；2026-09-01 事故实测：单回合
- *   input 6.2M，远超 1M 上下文上限，实证口径）。
- *
- * 成本按缓存拆分近似（agentic 请求物理形态 = 前缀缓存命中 + 增量写入；
- * 实测 97% 缓存命中率下旧的全价口径高估 6~9 倍）：
- * - used 增长：存量前缀 contextLastUsed 按缓存读价、新增 delta 按缓存写价；
- * - used 回落（上下文压缩）：压缩后全量视为新前缀写入，按缓存写价（保守），
- *   基线重建；
- * - 输出 token：上下文读数拿不到，不计（轻微低估）——口径在 cursorUsageDetail
- *   如实标注。
- * cacheRead/cacheWrite 桶同步累计同一拆分（缓存是输入的子集，桶增量之和恰为
- * 本次 used），UI 分段条在采样模式下也有构成展示。
- */
-export function applyRequestSample(
-  current: CursorSessionUsage | undefined,
-  sample: { composerId: string; used: number; occurredAt: number },
-  pricedModel: string
-): CursorSessionUsage {
-  const base = current ?? {
-    composerId: sample.composerId,
-    turns: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    estimatedCostUsd: 0,
-    pricedModel,
-    lastTurnAt: 0
-  }
-  if (!Number.isFinite(sample.used) || sample.used < 0) return base
-  const touched = {
-    ...base,
-    contextLastUsed: sample.used,
-    lastTurnAt: Math.max(base.lastTurnAt, sample.occurredAt)
-  }
-  // 首样本建基线 / 同值去重：零累计
-  if (base.contextLastUsed === undefined || sample.used === base.contextLastUsed) return touched
-  const price = priceForModel(pricedModel)
-  const grown = sample.used > base.contextLastUsed
-  const cacheReadTokens = grown ? base.contextLastUsed : 0
-  const cacheWriteTokens = grown ? sample.used - base.contextLastUsed : sample.used
-  // uncachedInput = used - read - write = 0：成本全部落在缓存读/写两桶上，
-  // 复用 estimateTurnCostUsd 保证与事件通道同一套拆分公式。
-  const requestCost = estimateTurnCostUsd({
-    inputTokens: sample.used,
-    outputTokens: 0,
-    cacheReadTokens,
-    cacheWriteTokens,
-    occurredAt: sample.occurredAt
-  }, price)
-  return {
-    ...touched,
-    turns: base.turns + 1,
-    inputTokens: base.inputTokens + sample.used,
-    cacheReadTokens: base.cacheReadTokens + cacheReadTokens,
-    cacheWriteTokens: base.cacheWriteTokens + cacheWriteTokens,
-    estimatedCostUsd: base.estimatedCostUsd + requestCost,
-    pricedModel: base.turns > 0 && base.pricedModel !== price.label ? 'Mixed models' : price.label
-  }
 }
 
 /** 展示用：token 数缩写（12.2K / 1.3M / 2.1B）。 */
@@ -386,9 +363,6 @@ export function formatCostUsd(costUsd: number): string {
 }
 
 export function cursorUsageDetail(usage: CursorSessionUsage): string {
-  const sampleBased = usage.contextLastUsed !== undefined
-  const breakdown = sampleBased
-    ? `输入 ${usage.inputTokens.toLocaleString()}（按请求上下文累计；缓存读 ${usage.cacheReadTokens.toLocaleString()}、缓存写 ${usage.cacheWriteTokens.toLocaleString()} 为近似拆分，输出未计入）`
-    : `输入 ${usage.inputTokens.toLocaleString()}（含缓存读 ${usage.cacheReadTokens.toLocaleString()}、缓存写 ${usage.cacheWriteTokens.toLocaleString()}）· 输出 ${usage.outputTokens.toLocaleString()}`
-  return `本轮 TeamRun 计费 token（${usage.pricedModel}，${usage.turns} 次请求）：${breakdown}；总计 ${totalUsageTokens(usage).toLocaleString()}；等价 API 成本估算 ${formatCostUsd(usage.estimatedCostUsd)}（基于当前 API 定价实时估算）；团队结束后冻结，下轮启动时清零`
+  const fresh = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens)
+  return `Tokens ${formatTokenCount(totalUsageTokens(usage))} · Cost ${formatCostUsd(usage.estimatedCostUsd)} · Input ${formatTokenCount(fresh)} · Output ${formatTokenCount(usage.outputTokens)} · Cache Write ${formatTokenCount(usage.cacheWriteTokens)} · Cache Read ${formatTokenCount(usage.cacheReadTokens)}`
 }

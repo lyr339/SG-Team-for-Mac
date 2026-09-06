@@ -1,14 +1,20 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  buildHunkPatch,
+  parseNameStatusZ,
   parseNumstatZ,
   parsePorcelainV2,
   parseUnifiedDiff,
   WorkspaceReviewReader
 } from '../src/infrastructure/git/workspace-review-reader'
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], { cwd, encoding: 'utf8' })
+}
 
 describe('workspace review parsers', () => {
   it('parses normal, renamed, untracked and conflicted porcelain v2 records', () => {
@@ -60,6 +66,46 @@ describe('workspace review parsers', () => {
       { kind: 'context', text: 'after', oldLine: 12, newLine: 12 }
     ])
     expect(parsed.hunks[1]).toMatchObject({ skippedBefore: 17 })
+  })
+
+  it('parses name-status records including renames as committed branch changes', () => {
+    const value = ['M', 'src/app.ts', 'A', 'src/new.ts', 'R100', 'old.ts', 'renamed.ts', 'D', 'gone.ts', ''].join('\0')
+    expect(parseNameStatusZ(value)).toEqual([
+      { path: 'src/app.ts', status: 'modified', staged: false, unstaged: false, committed: true },
+      { path: 'src/new.ts', status: 'added', staged: false, unstaged: false, committed: true },
+      { path: 'renamed.ts', previousPath: 'old.ts', status: 'renamed', staged: false, unstaged: false, committed: true },
+      { path: 'gone.ts', status: 'deleted', staged: false, unstaged: false, committed: true }
+    ])
+  })
+
+  it('cuts a single hunk out of a unified diff by its exact header and rejects stale headers', () => {
+    const raw = [
+      'diff --git a/a.ts b/a.ts',
+      'index 1111..2222 100644',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -1,2 +1,2 @@',
+      '-one',
+      '+ONE',
+      ' two',
+      '@@ -10,2 +10,2 @@',
+      ' ten',
+      '-eleven',
+      '+ELEVEN',
+      ''
+    ].join('\n')
+    expect(buildHunkPatch(raw, '@@ -10,2 +10,2 @@')).toBe([
+      'diff --git a/a.ts b/a.ts',
+      'index 1111..2222 100644',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -10,2 +10,2 @@',
+      ' ten',
+      '-eleven',
+      '+ELEVEN',
+      ''
+    ].join('\n'))
+    expect(buildHunkPatch(raw, '@@ -99,1 +99,1 @@')).toBeUndefined()
   })
 })
 
@@ -141,5 +187,104 @@ describe('WorkspaceReviewReader', () => {
     const summary = await reader.summary()
     expect(summary.files.map((file) => file.path)).toEqual(['packages/app/inside.ts'])
     await expect(reader.fileDiff({ path: 'outside.ts' })).rejects.toThrow('超出当前工作区')
+  })
+
+  it('reports the head commit and branch when the worktree is clean', async () => {
+    const root = repository()
+    const reader = new WorkspaceReviewReader(() => root)
+    const summary = await reader.summary()
+    expect(summary.state).toBe('clean')
+    expect(summary.scope).toBe('uncommitted')
+    expect(summary.headCommit).toMatchObject({ subject: 'initial' })
+    expect(summary.headCommit?.short).toMatch(/^[0-9a-f]{7,}$/)
+    expect(summary.branch?.current).toBeTruthy()
+  })
+
+  it('branch scope compares against the merge-base and merges committed with uncommitted changes', async () => {
+    const root = repository()
+    git(root, 'branch', '-M', 'main')
+    git(root, 'checkout', '-q', '-b', 'feature')
+    writeFileSync(join(root, 'feature.ts'), 'export const feature = true\n')
+    git(root, 'add', 'feature.ts')
+    git(root, 'commit', '-qm', 'add feature')
+    writeFileSync(join(root, 'app.ts'), 'const value = 2\n')
+    const reader = new WorkspaceReviewReader(() => root)
+
+    const uncommitted = await reader.summary({ scope: 'uncommitted' })
+    expect(uncommitted.files.map((file) => file.path)).toEqual(['app.ts'])
+
+    const branch = await reader.summary({ scope: 'branch' })
+    expect(branch.scope).toBe('branch')
+    expect(branch.branch).toMatchObject({ current: 'feature', base: 'main' })
+    expect(branch.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'feature.ts', status: 'added', committed: true, additions: 1 }),
+      expect.objectContaining({ path: 'app.ts', status: 'modified', committed: false, unstaged: true, additions: 1, deletions: 1 })
+    ]))
+    const diff = await reader.fileDiff({ path: 'feature.ts', scope: 'branch' })
+    expect(diff.state).toBe('ready')
+    expect(diff.hunks[0]?.lines).toEqual([expect.objectContaining({ kind: 'addition', text: 'export const feature = true' })])
+    // uncommitted 范围下已提交文件没有待审查差异。
+    await expect(reader.fileDiff({ path: 'feature.ts' })).resolves.toMatchObject({ state: 'missing' })
+
+    git(root, 'checkout', '-q', 'main')
+    const onBase = await reader.summary({ scope: 'branch' })
+    expect(onBase.branch?.onBase).toBe(true)
+    expect(onBase.detail).toContain('基线分支')
+  })
+
+  it('stages, unstages and reverts whole files, sending untracked files to the trash port', async () => {
+    const root = repository()
+    const trashed: string[] = []
+    const reader = new WorkspaceReviewReader(() => root, { trashItem: async (path) => { trashed.push(path); rmSync(path) } })
+    writeFileSync(join(root, 'app.ts'), 'const value = 2\n')
+    writeFileSync(join(root, 'notes.md'), 'draft\n')
+
+    await expect(reader.apply({ path: 'app.ts', action: 'stage' })).resolves.toMatchObject({ ok: true })
+    expect(git(root, 'diff', '--cached', '--name-only').trim()).toBe('app.ts')
+    await expect(reader.apply({ path: 'app.ts', action: 'unstage' })).resolves.toMatchObject({ ok: true })
+    expect(git(root, 'diff', '--cached', '--name-only').trim()).toBe('')
+    await expect(reader.apply({ path: 'app.ts', action: 'revert' })).resolves.toMatchObject({ ok: true })
+    expect(readFileSync(join(root, 'app.ts'), 'utf8')).toBe('const value = 1\n')
+
+    await expect(reader.apply({ path: 'notes.md', action: 'revert' })).resolves.toMatchObject({ ok: true, message: expect.stringContaining('回收站') })
+    expect(trashed).toEqual([join(realpathSync(root), 'notes.md')])
+    expect(existsSync(join(root, 'notes.md'))).toBe(false)
+    await expect(reader.apply({ path: 'notes.md', action: 'revert' })).resolves.toMatchObject({ ok: false, message: expect.stringContaining('请刷新') })
+    await expect(reader.apply({ path: '../escape.ts', action: 'stage' })).resolves.toMatchObject({ ok: false })
+  })
+
+  it('stages and reverts a single hunk by header, and refuses when the file is partially staged', async () => {
+    const root = repository()
+    writeFileSync(join(root, 'app.ts'), Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join('\n') + '\n')
+    git(root, 'add', 'app.ts')
+    git(root, 'commit', '-qm', 'thirty lines')
+    const lines = Array.from({ length: 30 }, (_, index) => `line ${index + 1}`)
+    lines[1] = 'line 2 changed'
+    lines[27] = 'line 28 changed'
+    writeFileSync(join(root, 'app.ts'), lines.join('\n') + '\n')
+    const reader = new WorkspaceReviewReader(() => root)
+    const diff = await reader.fileDiff({ path: 'app.ts' })
+    expect(diff.hunks).toHaveLength(2)
+    const [first, second] = diff.hunks
+
+    await expect(reader.apply({ path: 'app.ts', action: 'stage', hunkHeader: first!.header })).resolves.toMatchObject({ ok: true })
+    expect(git(root, 'diff', '--cached').trim()).toContain('+line 2 changed')
+    expect(git(root, 'diff', '--cached').trim()).not.toContain('line 28 changed')
+    // 现在文件同时有已暂存与未暂存改动：按块操作拒绝，不错位。
+    await expect(reader.apply({ path: 'app.ts', action: 'revert', hunkHeader: second!.header })).resolves.toMatchObject({ ok: false, message: expect.stringContaining('错位') })
+    await expect(reader.apply({ path: 'app.ts', action: 'unstage' })).resolves.toMatchObject({ ok: true })
+    await expect(reader.apply({ path: 'app.ts', action: 'revert', hunkHeader: second!.header })).resolves.toMatchObject({ ok: true })
+    const content = readFileSync(join(root, 'app.ts'), 'utf8')
+    expect(content).toContain('line 2 changed')
+    expect(content).not.toContain('line 28 changed')
+    await expect(reader.apply({ path: 'app.ts', action: 'stage', hunkHeader: '@@ -999,1 +999,1 @@' })).resolves.toMatchObject({ ok: false, message: expect.stringContaining('已变化') })
+  })
+
+  it('resolves workspace files for reveal / open and rejects escapes', async () => {
+    const root = repository()
+    const reader = new WorkspaceReviewReader(() => root)
+    await expect(reader.resolveWorkspaceFile('app.ts')).resolves.toBe(join(realpathSync(root), 'app.ts'))
+    await expect(reader.resolveWorkspaceFile('../x')).rejects.toThrow('超出当前工作区')
+    await expect(reader.resolveWorkspaceFile('/etc/hosts')).rejects.toThrow('文件路径无效')
   })
 })

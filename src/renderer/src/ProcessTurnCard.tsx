@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ProcessBlock } from '../../domain/conversation-entry'
+import { stepDomId, subscribeReveal } from './inspector/reveal-bus'
 import { MessageContent } from './MessageContent'
 import { buildProcessTurnView, type ProcessStepKind, type ProcessTurnStep } from './process-turn-view'
 import { useStreamingText } from './use-streaming-text'
@@ -177,6 +178,16 @@ export function ProcessTurnCard({
     lastAutoExpanded.current = active.id
     setExpanded((current) => current.has(active.id) ? current : new Set([...current, active.id]))
   }, [live, model.steps])
+  // 右栏「定位」到本卡的某一步：先把整卡与该步展开，定位方随后滚动到已展开的节点。
+  // 只做准备（返回 undefined），是否找到由定位方判定。
+  useEffect(() => subscribeReveal((target) => {
+    if (!target.blockId) return
+    const wanted = stepDomId(target.blockId)
+    const step = model.steps.find((candidate) => candidate.id === wanted || candidate.id.startsWith(`${wanted}:`))
+    if (!step) return
+    setOpen(true)
+    setExpanded((current) => current.has(step.id) ? current : new Set([...current, step.id]))
+  }), [model.steps])
   if (!model.steps.length) return null
   const statusText = model.status === 'running' ? '进行中' : model.status === 'failed' ? '有失败' : '已完成'
   const elapsed = formatDuration(model.elapsedMs)
@@ -210,7 +221,7 @@ export function ProcessTurnCard({
             const duration = stepDuration(step)
             if (step.kind === 'thinking') {
               return (
-                <article key={step.id} className={`cursor-native-thought is-${step.status} ${stepOpen ? 'is-open' : ''}`}>
+                <article key={step.id} className={`cursor-native-thought is-${step.status} ${stepOpen ? 'is-open' : ''}`} data-step-id={step.id}>
                   <button className="cursor-native-thought__head" onClick={() => setExpanded((current) => {
                     const next = new Set(current)
                     if (next.has(step.id)) next.delete(step.id)
@@ -229,13 +240,13 @@ export function ProcessTurnCard({
             }
             if (step.kind === 'message') {
               return step.body ? (
-                <article key={step.id} className={`cursor-native-message is-${step.status}`}>
+                <article key={step.id} className={`cursor-native-message is-${step.status}`} data-step-id={step.id}>
                   <StreamingTextBody step={step} live={live} />
                 </article>
               ) : null
             }
             return (
-              <article key={step.id} className={`cursor-native-tool is-${step.kind} is-${step.status} ${stepOpen ? 'is-open' : ''}`}>
+              <article key={step.id} className={`cursor-native-tool is-${step.kind} is-${step.status} ${stepOpen ? 'is-open' : ''}`} data-step-id={step.id}>
                 <button
                   className="cursor-native-tool__head"
                   disabled={!hasDetails}
@@ -288,7 +299,7 @@ export function ProcessTurnCard({
               const stepOpen = expanded.has(step.id)
               const hasDetails = Boolean(step.body || step.details.length || step.todos?.length)
               return (
-                <li key={step.id} className={`process-turn-step is-${step.kind} is-${step.status}`}>
+                <li key={step.id} className={`process-turn-step is-${step.kind} is-${step.status}`} data-step-id={step.id}>
                   <span className="process-turn-step__node"><StepIcon kind={step.kind} /></span>
                   <div className="process-turn-step__body">
                     <button

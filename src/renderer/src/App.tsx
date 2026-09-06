@@ -33,10 +33,7 @@ import { resolveRuntimeLaunchGate } from './lobby/runtime-account-gate'
 import { RuntimeAccountGuardDialog } from './lobby/RuntimeAccountGuardDialog'
 import { resolveMembershipLaunchGate } from './lobby/membership-gate'
 import { MembershipGuardDialog } from './lobby/MembershipGuardDialog'
-import {
-  shouldAutoFollowCursorWorkspace,
-  type CursorWorkspaceDetection
-} from '../../domain/cursor-workspace'
+import type { CursorWorkspaceDetection } from '../../domain/cursor-workspace'
 import {
   shouldShowCollaborationForRun,
   visibleTeamCollaborationSnapshot
@@ -87,6 +84,8 @@ function cursorWorkspaceFingerprint(detection?: CursorWorkspaceDetection): strin
     confidence: detection.confidence,
     workspace: detection.workspace && {
       id: detection.workspace.id,
+      name: detection.workspace.name,
+      path: detection.workspace.path,
       cursorWorkspaceId: detection.workspace.cursorWorkspaceId,
       channelIds: detection.workspace.channelIds
     },
@@ -149,10 +148,6 @@ export function App(): React.JSX.Element {
   const [cdpAutoHealEnabled, setCdpAutoHealEnabled] = useState(false)
   const [cdpAutoHealEvent, setCdpAutoHealEvent] = useState<CdpAutoHealEvent>()
   const [appearance, setAppearance] = useState<AppearancePreferences>(() => readAppearancePreferences())
-  const autoFollowedWorkspaceRef = useRef('')
-  // likely 级（recent 证据）自动跟随的会话级上限：多窗口 Cursor 切换焦点会让
-  // recent 列表重排，不设上限会在两个工程间来回弹组队页；certain 级不受限。
-  const likelyAutoFollowedRef = useRef(false)
   const mcpReconcileRunRef = useRef<string | undefined>(undefined)
   const activeRunRef = useRef<{ id?: string; status?: TeamRunStatus }>({})
   const activeWorkspace = teamControl.workspaces.find((workspace) => workspace.id === teamControl.activeWorkspaceId)
@@ -631,15 +626,13 @@ export function App(): React.JSX.Element {
           ))
         }
       } catch {
-        // Cursor may be updating its state database while switching windows.
-        // Keep the last trustworthy detection and try again on the next poll.
+        if (!disposed) setCursorWorkspace({ state: 'unavailable', source: 'cursor-window', confidence: 'none', candidates: [], detail: 'Cursor 检测连接未就绪', observedAt: Date.now() })
       } finally {
         polling = false
       }
     }
     void inspect()
-    // 工程识别会在主进程执行一次进程枚举；2s 常驻轮询会无谓 spawn `ps`。
-    // 前台降到 5s，窗口重新可见时立即补一轮；后台完全暂停。
+    // 复用 5s 检测周期，每次读取当前 IDE 窗口；仅更新展示，不切换运行作用域。
     const timer = setInterval(() => {
       if (!document.hidden) void inspect()
     }, 5_000)
@@ -852,40 +845,10 @@ export function App(): React.JSX.Element {
     setTeamNotice(workspace ? `${detected ? '已切换到 Cursor 当前工程' : '已切换工程'}：${workspace.name}` : '')
   }, [acceptCollaboration, acceptSnapshot, acceptTaskPool, acceptTeamControl])
 
-  const followDetectedWorkspace = useCallback(async (): Promise<void> => {
-    await applyWorkspaceSelection(await window.qingtianDesktop.prepareDetectedTeamWorkspace(), true)
-  }, [applyWorkspaceSelection])
-
   const chooseWorkspace = useCallback(async (): Promise<void> => {
     await applyWorkspaceSelection(await window.qingtianDesktop.chooseTeamWorkspace(), false)
   }, [applyWorkspaceSelection])
 
-  useEffect(() => {
-    if (!teamControlLoaded || teamSetup || !cursorWorkspace?.workspace) return
-    // 全新装机时 likely 级证据也允许自动跟随（见 shouldAutoFollowCursorWorkspace），
-    // 但每次会话至多一次，避免多窗口焦点切换导致组队页来回弹。
-    const likelyFollow = cursorWorkspace.confidence !== 'certain'
-    if (likelyFollow && likelyAutoFollowedRef.current) return
-    if (!shouldAutoFollowCursorWorkspace({
-      detection: cursorWorkspace,
-      activeWorkspaceId: teamControl.activeWorkspaceId,
-      activeRunStatus: teamControl.activeRun?.status
-    })) return
-    const key = `${cursorWorkspace.workspace.id}:${cursorWorkspace.workspace.cursorWorkspaceId ?? ''}`
-    if (autoFollowedWorkspaceRef.current === key) return
-    if (likelyFollow) likelyAutoFollowedRef.current = true
-    autoFollowedWorkspaceRef.current = key
-    void followDetectedWorkspace().catch((reason: unknown) => {
-      setTeamNotice(`已识别当前 Cursor 工程，但自动切换失败：${reason instanceof Error ? reason.message : String(reason)}`)
-    })
-  }, [
-    cursorWorkspace,
-    followDetectedWorkspace,
-    teamControl.activeRun?.status,
-    teamControl.activeWorkspaceId,
-    teamControlLoaded,
-    teamSetup
-  ])
 
   return (
     <>
@@ -906,11 +869,19 @@ export function App(): React.JSX.Element {
           liveProcess={snapshot.liveProcess?.[selectedSession.channelId]}
           workspaceId={activeWorkspace?.id}
           workspaceName={activeProjectName}
+          workspacePath={activeWorkspace?.path}
+          onQuoteToComposer={(text) => {
+            const channelId = selectedSession.channelId
+            setComposerDrafts((current) => {
+              const existing = (current[channelId] ?? '').trimEnd()
+              return { ...current, [channelId]: existing ? `${existing}\n\n${text}` : text }
+            })
+          }}
           onClose={close}
         />
       ) : undefined}
       cursorWorkspace={cursorWorkspace}
-      displayedWorkspaceId={teamSetup?.workspaceId ?? teamControl.activeWorkspaceId}
+      workspace={activeWorkspace}
       wideContent={activeModule === 'lobby'}
       teamChannelIds={memberChannelIds}
       cardOpacity={appearance.cardOpacity}
@@ -918,11 +889,9 @@ export function App(): React.JSX.Element {
       onModuleChange={changeModule}
       onCardOpacityChange={(cardOpacity) => setAppearance((current) => ({ ...current, cardOpacity }))}
       onColorModeChange={(colorMode) => setAppearance((current) => ({ ...current, colorMode }))}
-      onDetectedWorkspaceClick={() => {
-        const action = cursorWorkspace?.state === 'ambiguous' ? chooseWorkspace : followDetectedWorkspace
-        void action().catch((reason: unknown) => {
-          setTeamNotice(reason instanceof Error ? reason.message : String(reason))
-        })
+      onOpenProjectConfiguration={() => {
+        setConfigurationSection('team')
+        changeModule('lobby')
       }}
     >
       {activeModule === 'lobby' && teamSetup ? (

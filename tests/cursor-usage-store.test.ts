@@ -18,7 +18,7 @@ describe('CursorUsageStore', () => {
     })
     expect(store.load('run-1')['composer-1']).toMatchObject({ turns: 2, inputTokens: 12_000 })
     expect(store.load('run-2')).toEqual({})
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ version: 2, runId: 'run-1' })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ version: 3, runId: 'run-1' })
   })
 
   it('坏文件与非法行不进入运行快照', () => {

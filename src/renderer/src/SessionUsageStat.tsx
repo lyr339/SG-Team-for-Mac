@@ -11,7 +11,8 @@ import type { CursorSessionUsage } from '../../domain/cursor-usage'
 import {
   formatCostUsd,
   formatTokenCount,
-  totalUsageTokens
+  totalUsageTokens,
+  cursorUsageDetail
 } from '../../domain/cursor-usage'
 
 interface SessionUsageStatProps {
@@ -26,9 +27,9 @@ function usageSegments(usage: CursorSessionUsage): Array<{ key: string; label: s
   const freshInput = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens)
   return [
     { key: 'input', label: 'Input', tone: 'is-input', tokens: freshInput },
-    { key: 'cacheread', label: 'Cache Read', tone: 'is-cacheread', tokens: usage.cacheReadTokens },
+    { key: 'output', label: 'Output', tone: 'is-output', tokens: usage.outputTokens },
     { key: 'cachewrite', label: 'Cache Write', tone: 'is-cachewrite', tokens: usage.cacheWriteTokens },
-    { key: 'output', label: 'Output', tone: 'is-output', tokens: usage.outputTokens }
+    { key: 'cacheread', label: 'Cache Read', tone: 'is-cacheread', tokens: usage.cacheReadTokens }
   ]
 }
 
@@ -115,9 +116,9 @@ export function SessionUsageStat({ usage }: SessionUsageStatProps): React.JSX.El
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={ready
-          ? `计费 token ${tokens}，等价 API 费用估算 ${cost}，${usage!.turns} 次请求，查看明细`
-          : '用量待读取'}
-        onClick={() => setOpen((value) => !value)}
+          ? `${cursorUsageDetail(usage!)} · View usage details`
+          : 'Waiting for usage'}
+        onClick={show}
       >
         <span className="session-usage__cell">
           <span className="session-usage__label">Tokens</span>
@@ -142,13 +143,13 @@ export function SessionUsageStat({ usage }: SessionUsageStatProps): React.JSX.El
         >
           <header>
             <strong id={titleId}>Usage</strong>
-            <button type="button" aria-label="关闭用量明细" onClick={close}>×</button>
+            <button type="button" aria-label="Close usage details" onClick={close}>×</button>
           </header>
           {ready ? (
             <>
               <div className="usage-popover__summary">
-                <b>{tokens} <small>tokens</small></b>
-                <span>{cost} · {usage!.turns} 次请求</span>
+                <b>{tokens} <small>Tokens</small></b>
+                <span>{cost}</span>
               </div>
               <div className="usage-breakdown-bar" aria-hidden="true">
                 {segments.filter((segment) => segment.tokens > 0).map((segment) => (
@@ -164,17 +165,16 @@ export function SessionUsageStat({ usage }: SessionUsageStatProps): React.JSX.El
                   <li key={segment.key}>
                     <i className={segment.tone} aria-hidden="true" />
                     <span>{segment.label}</span>
-                    <b>{segment.tokens.toLocaleString()}</b>
+                    <b title={segment.tokens.toLocaleString('en-US')}>{formatTokenCount(segment.tokens)}</b>
                   </li>
                 ))}
               </ul>
               <footer>
-                <span>{usage!.pricedModel}</span>
-                <span>输入按请求全额累计 · 基于当前API定价实时估算</span>
+                <span title="Estimated API cost">{usage!.pricedModel.replace('默认（Sonnet 档）', 'Default model').replace(' · Sonnet 档估算', '')}</span>
               </footer>
             </>
           ) : (
-            <p className="usage-popover__empty">等待 Cursor 完成首个可读取的计费回合；轮询通道就绪后自动出现。</p>
+            <p className="usage-popover__empty">Usage will appear when the session starts.</p>
           )}
         </section>,
         document.body

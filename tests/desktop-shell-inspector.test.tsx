@@ -40,7 +40,7 @@ describe('DesktopShell right workspace dock', () => {
         cardOpacity={1}
         colorMode="light"
         onModuleChange={() => {}}
-        onDetectedWorkspaceClick={() => {}}
+        onOpenProjectConfiguration={() => {}}
         onCardOpacityChange={() => {}}
         onColorModeChange={() => {}}
       >

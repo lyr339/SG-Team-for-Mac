@@ -10,6 +10,7 @@ import { IPC, type CreateIndependentSessionsInput, type CreateTeamInput, type Te
 import type { CursorModelSelection } from '../domain/cursor-model'
 import { resolveIndependentSessionMembers, resolveTeamSetupMembers } from '../application/team-setup'
 import { assertTrustedSender } from './ipc-security'
+import type { CursorWorkspaceDetection } from '../domain/cursor-workspace'
 
 /** 选中 workspace 是否正是当前独立 run 所在工程（existing 快照会死锁的场景）。 */
 function isActiveIndependentWorkspace(snapshot: TeamControlSnapshot, workspaceId: string): boolean {
@@ -28,6 +29,8 @@ function requiredString(value: unknown, field: string, maxLength: number): strin
 }
 
 export interface TeamControlIpcOptions {
+  onRunEnded?: (snapshot: TeamControlSnapshot) => void | Promise<void>
+  detectCurrentWorkspace?: () => Promise<CursorWorkspaceDetection>
   /** 一键会话创建是否仍在进行：创建/替换 run 期间换拓扑会让编排器对着错误的席位收尾。 */
   isSessionLaunchRunning?: () => boolean
 }
@@ -128,11 +131,11 @@ export function registerTeamControlIpc(
   })
   ipcMain.handle(IPC.teamControlDetectWorkspace, (event) => {
     assertTrustedSender(event, getWindow)
-    return workspaceDetector.detect()
+    return options.detectCurrentWorkspace ? options.detectCurrentWorkspace() : workspaceDetector.detect()
   })
-  ipcMain.handle(IPC.teamControlPrepareDetectedWorkspace, (event) => {
+  ipcMain.handle(IPC.teamControlPrepareDetectedWorkspace, async (event) => {
     assertTrustedSender(event, getWindow)
-    const detection = workspaceDetector.detect()
+    const detection = options.detectCurrentWorkspace ? await options.detectCurrentWorkspace() : workspaceDetector.detect()
     if (detection.state === 'ambiguous') {
       throw new Error(detection.detail)
     }
@@ -213,13 +216,22 @@ export function registerTeamControlIpc(
     pendingDrafts.delete(draftId)
     return snapshot
   })
-  ipcMain.handle(IPC.teamControlCreateIndependent, (event, value: unknown) => {
+  ipcMain.handle(IPC.teamControlCreateIndependent, async (event, value: unknown) => {
     assertTrustedSender(event, getWindow)
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('独立会话参数无效')
     const input = value as Partial<CreateIndependentSessionsInput>
     assertNoSessionLaunch()
     const workspacePath = requiredString(input.workspacePath, '工作区路径', 2_000)
     const workspace = workspaceIdentityOf(workspacePath)
+    // 在替换旧 run / 签发新身份之前核对窗口；检测过程不产生业务写入。
+    if (options.detectCurrentWorkspace) {
+      const detected = await options.detectCurrentWorkspace()
+      if (detected.state !== 'detected' || !detected.workspace) throw new Error(detected.detail)
+      if (detected.workspace.id !== workspace.id) {
+        throw new Error(`Cursor 当前工程为「${detected.workspace.name}」，创建配置仍为「${workspace.name}」。请按当前工程重新发起；原批次已保留。`)
+      }
+      assertNoSessionLaunch()
+    }
     const members = resolveIndependentSessionMembers(
       bridge.getSnapshot().cursorModels ?? [],
       input as CreateIndependentSessionsInput
@@ -247,10 +259,12 @@ export function registerTeamControlIpc(
     assertTrustedSender(event, getWindow)
     return service.createNextRun()
   })
-  ipcMain.handle(IPC.teamControlEndRun, (event) => {
+  ipcMain.handle(IPC.teamControlEndRun, async (event) => {
     assertTrustedSender(event, getWindow)
     assertNoSessionLaunch()
-    return service.endActiveRun()
+    const snapshot = service.endActiveRun()
+    await options.onRunEnded?.(snapshot)
+    return snapshot
   })
   ipcMain.handle(IPC.teamControlUpdateGoal, (event, goal: unknown) => {
     assertTrustedSender(event, getWindow)

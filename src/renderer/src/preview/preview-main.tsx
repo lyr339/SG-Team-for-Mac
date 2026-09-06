@@ -9,6 +9,7 @@ import type { ConversationEntry } from '../../../domain/conversation-entry'
 import { AGENT_AVATAR_IDS, TEAM_ROLE_TEMPLATES, createConfiguredTeamBundle, emptyTeamControlSnapshot } from '../../../domain/team-control'
 import type { TeamRunStatus } from '../../../domain/team-control'
 import type { QingtianDesktopApi, TeamSetupDraft } from '../../../shared/desktop-api'
+import { estimateUsageFromReference, priceForModel } from '../../../domain/cursor-usage'
 import { App } from '../App'
 import { applyAppearancePreferences, readAppearancePreferences } from '../appearance-preferences'
 import {
@@ -513,7 +514,7 @@ const api: QingtianDesktopApi = {
   getTeamControlSnapshot: async () => structuredClone(state.team),
   detectCursorWorkspace: async () => ({
     state: 'detected',
-    source: 'running-qingtian-mcp',
+    source: 'cursor-window',
     confidence: 'certain',
     workspace: {
       id: detectedSetupDraft.workspaceId,
@@ -832,26 +833,35 @@ const api: QingtianDesktopApi = {
       composerId: session.composerId,
       turns: index + 2,
       inputTokens: 12_168 * (index + 1),
-      outputTokens: 42 * (index + 1),
+      outputTokens: previewParameters.has('usageEstimate') ? 0 : 42 * (index + 1),
       cacheReadTokens: 3_968 * (index + 1),
       cacheWriteTokens: 0,
       estimatedCostUsd: 0.0421 * (index + 1),
-      pricedModel: session.executionProfile?.displayName ?? 'Claude Sonnet',
+      ...(previewParameters.has('usageEstimate') ? estimateUsageFromReference(278_120, 'claude-fable-5-1', priceForModel('claude-fable-5-1')) : {}),
+      quality: previewParameters.has('usageEstimate') ? 'estimated' as const : 'exact' as const,
+      pricedModel: previewParameters.has('usageEstimate') ? 'Claude Fable 5.1' : session.executionProfile?.displayName ?? 'Claude Sonnet',
       lastTurnAt: previewNow
     }]] : []
   ))),
-  getWorkspaceReview: async () => ({
+  getWorkspaceReview: async (input) => ({
     state: 'ready',
+    scope: input?.scope ?? 'uncommitted',
     workspaceName: 'wedge-demo',
     additions: 21,
     deletions: 8,
     revision: 'preview-review-1',
     updatedAt: Date.now(),
+    branch: { current: 'feature/inspector', base: 'main' },
+    liveUpdates: true,
     files: [
       { path: 'src/renderer/src/SessionWorkspace.tsx', status: 'modified', staged: false, unstaged: true, additions: 14, deletions: 5 },
-      { path: 'src/renderer/src/styles.css', status: 'modified', staged: false, unstaged: true, additions: 7, deletions: 3 }
+      { path: 'src/renderer/src/styles.css', status: 'modified', staged: true, unstaged: false, additions: 7, deletions: 3 }
     ]
   }),
+  applyWorkspaceReviewAction: async ({ action, path }) => ({ ok: true, message: `预览环境：已模拟 ${action} ${path}` }),
+  revealWorkspaceFile: async () => true,
+  openWorkspaceFile: async () => ({ ok: true, method: 'editor' }),
+  onWorkspaceReviewChanged: () => () => {},
   getWorkspaceReviewFile: async ({ path }) => ({
     state: 'ready', path, truncated: false,
     hunks: [{
