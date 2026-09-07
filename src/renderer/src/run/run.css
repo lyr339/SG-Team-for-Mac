@@ -145,21 +145,25 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
   border-radius: 16px;
 }
 
-/* ---------- 头部 ---------- */
+/* ---------- 头部 ----------
+   左：信息块（模式 · 状态 / 工程名 / 运行名 · 提示）三行定高，吸收所有文字长度变化；
+   右：控件组（模式切换 / 打开会话 / 结束），文案与宽度恒定，位置在任何状态下都不动。 */
 .run-header {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 20px;
-  padding: 18px 22px;
+  column-gap: 24px;
+  padding: 16px 22px;
 }
 
 .run-header__identity { display: grid; gap: 3px; min-width: 0; }
+.run-header__line { display: flex; align-items: center; gap: 10px; min-height: 26px; }
 .run-header__eyebrow {
   color: var(--accent-deep);
   font-size: var(--fs-11);
   font-weight: 650;
   letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 .run-header__identity h1 {
   margin: 0;
@@ -171,42 +175,47 @@ html[data-card-transparency="clear"] :is(.run-panel, .run-seats, .run-header, .r
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.run-header__identity small { overflow: hidden; color: var(--muted); font-size: var(--fs-11); text-overflow: ellipsis; white-space: nowrap; }
-
-.run-header__mode { display: grid; gap: 6px; justify-items: start; }
-.run-header__composing {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--amber);
-  font-size: var(--fs-11);
-  line-height: 1.4;
-  animation: run-fade-in 200ms ease both;
-}
-.run-header__composing button {
-  min-height: 22px;
-  padding: 0 8px;
-  color: var(--amber);
-  background: transparent;
-  border: 1px solid var(--amber-border-soft);
-  border-radius: 7px;
-  font-size: var(--fs-10);
-  font-weight: 600;
-  transition: background 120ms ease;
-}
-.run-header__composing button:hover:not(:disabled) { background: var(--amber-soft); }
-
-.run-header__status { display: grid; gap: 4px; justify-items: start; min-width: 0; }
-.run-header__status small {
-  display: -webkit-box;
-  max-width: 100%;
+.run-header__identity small {
+  min-height: 1.4em;
   overflow: hidden;
   color: var(--muted);
   font-size: var(--fs-11);
   line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.run-header__controls { display: flex; align-items: center; gap: 14px; }
+
+/* 横幅：配置中的说明与「放弃」，住在头部下方的折叠插槽里，不撑头部。 */
+.run-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 9px 10px 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+.run-banner > i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.run-banner > span { min-width: 0; overflow-wrap: anywhere; }
+.run-banner > button {
+  min-height: 26px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 7px;
+  color: inherit;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  transition: background 120ms ease;
+}
+.run-banner.is-amber { color: var(--amber); background: color-mix(in srgb, var(--amber-soft) 70%, var(--surface-solid)); border-color: var(--amber-border-soft); }
+.run-banner.is-amber > i { background: var(--amber); }
+.run-banner.is-amber > button:hover:not(:disabled) { background: var(--amber-soft); }
 
 .run-state-chip {
   display: inline-flex;
@@ -680,19 +689,18 @@ html[data-card-transparency="clear"] .run-seat { background: color-mix(in srgb, 
 @keyframes run-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {
-  .run-body > *, .run-feedback, .run-sheet, .run-seat, .run-header__composing, .run-goal, .run-goal-editor, .run-stepper output { animation: none; }
+  .run-body > *, .run-feedback, .run-sheet, .run-seat, .run-goal, .run-goal-editor, .run-stepper output { animation: none; }
   .run-mode-switch__indicator, .run-slot, .run-slot__inner > * { transition: none; }
   .run-state-chip i, .run-seat__badge i { animation: none; }
   .run-page :is(.primary-button, .secondary-button, .run-header__ghost, .run-sheet__confirm, .run-stepper button):active:not(:disabled) { transform: none; }
 }
 
 /* ---------- 响应式（容器查询，以页面宽度为准） ---------- */
-/* 宽：四栏头部（工程 / 模式 / 状态 / 动作），两栏正文。 */
-@container run-page (max-width: 1120px) {
-  /* 头部两行：工程 + 模式 / 状态 + 动作。 */
-  .run-header { grid-template-columns: minmax(0, 1fr) auto; row-gap: 14px; }
-  .run-header__status { grid-column: 1; }
-  .run-header__actions { grid-column: 2; grid-row: 2; }
+/* 宽：头部一行（信息块 | 控件组），两栏正文。 */
+@container run-page (max-width: 1000px) {
+  /* 头部两行：信息块在上，控件组在下（模式切换靠左、动作靠右）。 */
+  .run-header { grid-template-columns: minmax(0, 1fr); row-gap: 14px; }
+  .run-header__controls { justify-content: space-between; }
 }
 @container run-page (max-width: 1000px) {
   /* 正文单栏：模式区在上，席位在下。 */
@@ -701,11 +709,13 @@ html[data-card-transparency="clear"] .run-seat { background: color-mix(in srgb, 
 }
 @container run-page (max-width: 680px) {
   .run-page__inner { padding: 12px 12px 24px; }
-  .run-header { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px; }
-  .run-header__mode { justify-items: stretch; }
-  .run-header__mode .run-mode-switch { width: 100%; }
-  .run-header__actions { grid-column: 1; grid-row: auto; justify-content: stretch; }
+  .run-header { padding: 16px; }
+  .run-header__controls { flex-direction: column; align-items: stretch; gap: 10px; }
+  .run-header__controls .run-mode-switch { width: 100%; }
+  .run-header__actions { justify-content: stretch; }
   .run-header__actions .run-header__ghost { flex: 1 1 0; justify-content: center; }
+  .run-banner { grid-template-columns: auto minmax(0, 1fr); }
+  .run-banner > button { grid-column: 2; justify-self: start; }
   .run-panel, .run-seats { padding: 16px 16px 14px; }
   .run-seats__footer { flex-direction: column; align-items: stretch; }
   .run-seats__create { flex-direction: column; align-items: stretch; margin-left: 0; }

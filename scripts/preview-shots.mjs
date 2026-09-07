@@ -126,6 +126,27 @@ const scenes = [
   ]),
   { name: 'run-start-independent-w600', run: true, width: 600, height: 900, query: 'setup=1', colorScheme: 'light', storage: baseStorage(), clip: null, actions: [{ click: '.run-mode-switch button[aria-checked="false"]' }, { wait: 300 }] },
   { name: 'run-compose-w720', run: true, width: 720, height: 900, colorScheme: 'light', storage: baseStorage(), clip: null, actions: [{ click: '.run-mode-switch button[aria-checked="false"]' }, { wait: 300 }, { click: '.run-sheet__confirm' }, { wait: 400 }] },
+  // 头部控件位置守恒：切换模式 → 确认 → 进入配置态，分段控件、两个动作按钮和头部高度必须一个像素都不动。
+  {
+    name: 'run-header-stability', run: true, colorScheme: 'light', storage: baseStorage(), clip: '.run-header',
+    actions: [{
+      label: '头部控件包围盒（切换前 → 配置态）',
+      probe: `new Promise((done) => {
+        const box = (selector) => { const r = document.querySelector(selector).getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)].join(',') }
+        const snapshot = () => ({ header: box('.run-header'), switch: box('.run-mode-switch'), open: box('.run-header__ghost'), end: box('.run-header__ghost.is-danger') })
+        const before = snapshot()
+        document.querySelector('.run-mode-switch button[aria-checked="false"]').click()
+        setTimeout(() => {
+          document.querySelector('.run-sheet__confirm').click()
+          setTimeout(() => {
+            const after = snapshot()
+            const stable = Object.keys(before).every((key) => before[key] === after[key])
+            done({ stable, before, after })
+          }, 500)
+        }, 350)
+      })`
+    }, { wait: 100 }]
+  },
   // 确认面的展开是高度过渡：中途帧应看到插槽行高在插值，而不是 0 → 满高跳变。
   {
     name: 'run-sheet-opening', run: true, colorScheme: 'light', storage: baseStorage(), clip: null,

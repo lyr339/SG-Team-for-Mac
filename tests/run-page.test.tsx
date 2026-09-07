@@ -166,8 +166,11 @@ describe('RunPage（一个工程一个活跃运行：团队 / 独立两种模式
       await click(buttonNamed('确认切换'))
       expect(sheet()).toBeNull()
       expect(container.textContent).toContain('会话数量')
-      expect(container.querySelector('.run-header__composing')?.textContent).toContain('正在配置独立模式，创建后当前团队运行结束')
+      expect(container.querySelector('.run-slot.is-open .run-banner')?.textContent).toContain('正在配置独立批次：创建后当前团队运行结束')
       expect(modeButton('独立').getAttribute('aria-checked')).toBe('true')
+      // 头部本身不变：状态芯片仍是当前运行的，只有分段控件指向目标模式。
+      expect(container.querySelector('.run-header .run-state-chip')?.textContent).toBe('协作执行中')
+      expect(container.querySelector('.run-header__eyebrow')?.textContent).toBe('团队运行')
 
       await click(buttonNamed('创建 3 个独立会话'))
       expect(sheet()).toBeNull()

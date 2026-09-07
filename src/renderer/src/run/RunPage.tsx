@@ -462,10 +462,24 @@ export function RunPage({
         busyAction={busy}
         composingMode={compose ? 'independent' : undefined}
         onSwitchMode={switchMode}
-        onCancelCompose={compose ? () => setCompose(null) : undefined}
         onEnd={endRun}
         onOpenSessions={onOpenSessions}
       />
+
+      <RunSlot>
+        {compose ? (
+          <div className="run-banner is-amber" role="status">
+            <i aria-hidden="true" />
+            <span>
+              {view.mode === 'independent' ? '正在配置新的独立批次' : '正在配置独立批次'}
+              {view.phase === 'completed'
+                ? '：在下方选好数量与模型后创建。'
+                : `：创建后当前${view.mode === 'independent' ? '独立批次' : '团队运行'}结束，旧会话在下一次轮询自行退出。`}
+            </span>
+            <button type="button" disabled={isBusy} onClick={() => setCompose(null)}>放弃</button>
+          </div>
+        ) : null}
+      </RunSlot>
 
       <RunSlot>
         {sheet ? (
