@@ -1,0 +1,25 @@
+# 拾光·折光背景设计稿
+
+2026-09-07，内置 image_gen 生成两张 1672×941 设计稿。经用户明确同意，使用本地 Real-ESRGAN 超分制作 3840×2160 PNG，已替换源码背景资源。最终是 **4K 超分**，不是原生 4K 生图；没有使用图片 API 或 API Key。
+
+## 超分与输出
+
+- 工具来源：[Real-ESRGAN v0.2.5.0 macOS 官方便携包](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0)。
+- 模型 `realesrgan-x4plus`，参数 `-s 4 -t 256 -j 1:1:1`，Apple M1 Pro 本地 GPU 推理，两图顺序执行。
+- 1672×941 → 6688×3764（神经网络 4× 超分）→ 3840×2160（Pillow ImageOps.fit / Lanczos 缩采样，极少量比例裁边）。未做额外锐化或颗粒叠加。
+- 浅色：`src/renderer/src/assets/backgrounds/shiguang-light.png`，3840×2160，4,739,246 字节。
+- 深色：`src/renderer/src/assets/backgrounds/shiguang-dark.png`，3840×2160，4,946,058 字节。
+- 保留本目录两张原始设计稿供复现；下载工具包和 4× 中间结果在验收后清理，不进入项目依赖或安装包。
+- 生产引用路径未变，沿用现有主题切换与 `background-size: cover`；仅替换 PNG，不添加动画、计时器或运行时超分。
+
+## Light — final generation prompt
+
+Generate one production desktop application wallpaper, light theme, for the Chinese app 拾光 / SG (name means collecting light and moments). NO text or logo in image. Use case stylized-concept, asset is app background behind translucent panels, NOT a UI mockup.
+Output native 3840 by 2160 pixels landscape 16:9 at highest supported resolution and maximum fine detail. Absolutely pristine precision optical CGI, no noise or grain or dirty surface. Creative art direction 'Light captured in a single folded orbit': a large, exquisitely thin optically clear glass ribbon bends into an incomplete elliptical arc with a gentle sculptural twist at the extreme lower right perimeter, mostly outside frame; its refractive edges catch warm apricot/amber sunlight and a hint of desaturated blue. A much smaller faint echo of refracted light grazes the extreme upper-left edge, completing a sense of time and continuity without drawing a literal clock. Center and center-left ~80% of image almost empty, warm pearl-white #F8F8F6 softly transitioning to #F1F3F6, extremely low contrast illumination. Only the outermost bottom/right 15% and a subtle upper-left edge contain controlled sculptural detail. Large smooth surfaces, clean anti-aliased edges, pin-sharp restrained optical highlights, subtle physically plausible caustics, zero scratches. Make the glass look genuinely transparent and luminous, refined industrial object detail rather than blurry AI liquid blobs. Keep highlights moderately faint so UI text remains readable even on nearly transparent panels.
+Avoid completely: starfields, particle dots, grids, circuit diagrams, networks, technical labels, lines across the center, wavy contour-line textures, fog, gritty texture, glitter, noisy shadows, heavy rainbow colors, purple neon, large bright glowing cores, lens flare stars, ornamental decoration, people, text, watermarks, borders, split-screen. The image should feel like a premium calm creative developer workspace, quietly imaginative, high-resolution optical art, not a generic AI-tech wallpaper.
+
+## Dark — final generation prompt
+
+Generate one production desktop application wallpaper, DARK theme companion for the SG / 拾光 app (brand means collecting light and moments). NO text or logos. Use case stylized-concept; wallpaper behind translucent developer workspace UI, not a UI screenshot.
+Native output size 3840 x 2160 pixels, landscape 16:9, highest supported resolution, maximum precision and clean optical detail. Art direction 'Light captured in a single folded orbit'. Background is an exceptionally smooth, clean, matte midnight graphite blue (#101722 through #171E2B), NOT black and NOT saturated purple. The center and middle-left 80% must be almost flat and quiet for white interface text. One exquisitely thin, large, transparent smoked-glass ribbon curls into a generous incomplete elliptical arc along the extreme right and bottom edges, with one controlled sculptural twist in the lower-right outer corner, largely cropped out of frame. Rim lighting creates an elegant continuous amber/apricot edge, a very faint cool muted blue secondary refraction, and a subtle local warm caustic at the lower-right border. At the upper-left outer edge only a tiny, dim complementary sliver of the same glass suggests the orbit continues outside frame. Do NOT place a ring or central focal object in the middle. All high detail stays near perimeter. The visual metaphor is time flowing through light, not outer space. Precision product-photography quality optical CGI: immaculate transparent glass, individually clear beveled edges, smooth highlight rolloff, no fuzz. Amber highlights stay dim and low contrast, nowhere white-hot, bright colors occupy less than 3% of canvas. Interior background stays extremely clean without texture. Elegant companion to a warm-pearl light theme with the identical restrained glass orbit composition.
+Absolutely exclude noise, grain, fog, dust, scratches, starfields, particles, dotted connections, grids, circuits, charts, contour lines, rainbow blobs, neon cyberpunk, glowing central sun, sparkle stars, typography, interface cards, borders and watermarks. This is a premium calm legible app background, not a busy poster.
