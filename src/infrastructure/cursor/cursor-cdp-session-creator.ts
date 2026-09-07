@@ -462,8 +462,26 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
     // 与 observer processSnapshot 同语义：check_messages 结果含真实用户消息投递标题 →
     // 其后的 thinking 是新回合业务工作，不按尾部轮询余波归组。
     const USER_DELIVERY_MARKER = ${JSON.stringify(CHANNEL_USER_DELIVERY_MARKER)};
+    // 与 observer hook 同语义：现代 MCP 结果是 protobuf 判别联合
+    // {result:{case:'success', value:{content:[{content:{case:'text', value:{text}}}]}}}，文本藏在 value 里。
+    function unwrapCase(value) {
+      let current = value;
+      for (let i = 0; i < 4; i++) {
+        if (!current || typeof current !== 'object' || Array.isArray(current)) break;
+        if (typeof current.case !== 'string' || !('value' in current)) break;
+        current = current.value;
+      }
+      return current;
+    }
+    function normalizeContentBlock(item) {
+      const union = item && typeof item === 'object' && !Array.isArray(item) ? item.content : undefined;
+      if (!union || typeof union !== 'object' || Array.isArray(union) || typeof union.case !== 'string') return item;
+      const inner = union.value;
+      return inner && typeof inner === 'object' && !Array.isArray(inner) ? { type: union.case, ...inner } : { type: union.case };
+    }
     function collectResultTexts(value, depth, out) {
-      if (value === null || value === undefined || depth > 6 || out.length > 30) return;
+      if (value === null || value === undefined || depth > 8 || out.length > 30) return;
+      value = unwrapCase(value);
       if (typeof value === 'string') {
         const text = value.trim();
         if ((text.startsWith('{') || text.startsWith('[')) && text.length < 2000000) {
@@ -472,7 +490,7 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
         out.push(value);
         return;
       }
-      if (Array.isArray(value)) { for (const item of value.slice(0, 30)) collectResultTexts(item, depth + 1, out); return; }
+      if (Array.isArray(value)) { for (const item of value.slice(0, 30)) collectResultTexts(normalizeContentBlock(item), depth + 1, out); return; }
       if (typeof value === 'object') {
         if (typeof value.text === 'string') out.push(value.text);
         for (const key of ['result', 'output', 'content', 'contents']) {
@@ -491,7 +509,7 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
       const lower = extractToolName(later).toLowerCase();
       if (!(lower === 'check_messages' || lower.endsWith('-check_messages') || lower.endsWith('_check_messages'))) return false;
       const key = String(bubbleId || '');
-      if (key && deliveryMemo.has(key)) return deliveryMemo.get(key);
+      if (key && deliveryMemo.get(key) === true) return true;
       const modern = td.toolCall && td.toolCall.tool && td.toolCall.tool.value;
       const result = modern && modern.result !== undefined ? modern.result : td.result;
       if (result === undefined || result === null) return false;
@@ -502,7 +520,8 @@ export function buildRuntimeInspectionExpression(composerIds: string[]): string 
         delivered = texts.some(text => text.includes(USER_DELIVERY_MARKER));
       } catch (e) { delivered = false; }
       const status = String(td.status || '').toLowerCase();
-      if (key && status && status !== 'running' && status !== 'pending') {
+      // 忽略旧版缓存的 false；结果补齐后必须重新判定投递。
+      if (key && delivered && status && status !== 'running' && status !== 'pending') {
         if (deliveryMemo.size > 2000) deliveryMemo.clear();
         deliveryMemo.set(key, delivered);
       }

@@ -400,6 +400,50 @@ describe('CursorCdpSessionCreator.inspectComposerRuntime', () => {
     expect(await inspect('<sg_team_keepalive n="2"/>')).toMatchObject({ responseText: '上一轮的回答。', responseId: 'final-prev' })
   })
 
+  it('reads the delivery marker from the modern case/value MCP result that Cursor 3.6 keeps in memory (2026-09-07)', async () => {
+    // 内存模型里现代形态与落盘形态并存，判定优先取 toolCall.tool.value.result；文本藏在
+    // value / content.value 里。旧扫描找不到标记 → 投递后的思考被当余波 → 上一轮正文仍被
+    // 当成直播最终正文（与 observer 侧首段思考被隐藏是同一根因的两个表现）。
+    const delivered = `新任务来了\n\n━━━━\n${CHANNEL_USER_DELIVERY_MARKER}\n━━━━\n\n[轮次 #7 · 队列剩余 0 条]`
+    const modern = (text: string) => ({
+      name: 'mcp-SG Team-check_messages', status: 'completed',
+      result: { selectedTool: '', result: JSON.stringify({ content: [{ type: 'text', text }] }) },
+      toolCall: { tool: { case: 'mcpToolCall', value: {
+        args: { providerIdentifier: 'SG Team', toolName: 'check_messages' },
+        result: { result: { case: 'success', value: { content: [
+          { content: { case: 'text', value: { text } } },
+          { content: { case: 'image', value: { data: 'iVBORw0KGgo=', mimeType: 'image/png' } } }
+        ], isError: false } } }
+      } } }
+    })
+    const inspect = async (checkResult: string) => {
+      const window = {
+        __sgTeamDeliveryByBubble: new Map([['tool-check', false]]),
+        __qtComposerBridge: {
+          ready: true,
+          listComposers: () => [{ composerId: 'composer-1', status: 'generating', isGenerating: true }],
+          getStatus: () => ({ found: true, status: 'generating' }),
+          getComposerData: () => ({
+            fullConversationHeadersOnly: [
+              { type: 1, bubbleId: 'user-1' },
+              { type: 2, bubbleId: 'final-prev' },
+              { type: 2, bubbleId: 'tool-check' },
+              { type: 2, bubbleId: 'th-next' }
+            ],
+            conversationMap: {
+              'final-prev': { text: '上一轮的回答。' },
+              'tool-check': { toolFormerData: modern(checkResult) },
+              'th-next': { thinking: { text: '开始分析新任务。' }, capabilityType: 30 }
+            }
+          })
+        }
+      }
+      return (await runInNewContext(buildRuntimeInspectionExpression(['composer-1']), { window, Map, Date })).rows[0]
+    }
+    expect(await inspect(delivered)).toMatchObject({ responseText: '', responseId: '' })
+    expect(await inspect('<sg_team_keepalive n="2"/>')).toMatchObject({ responseText: '上一轮的回答。', responseId: 'final-prev' })
+  })
+
   it('still treats business work after the message as interim text', async () => {
     // 业务工作（team_task）跟在正文之后 → 正文是中间过程，不是最终回答。
     const window = {

@@ -2,8 +2,12 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { describe, expect, it } from 'vitest'
-import { ChannelMessageService } from '../src/application/channel-message-service'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  CHANNEL_STORAGE_RETRY_LIMIT,
+  ChannelMessageService,
+  isTransientStorageError
+} from '../src/application/channel-message-service'
 import { SqliteChannelMessageRepository } from '../src/infrastructure/channel-messages/sqlite-channel-message-repository'
 
 function fixture() {
@@ -11,6 +15,48 @@ function fixture() {
   const repository = new SqliteChannelMessageRepository(path)
   const service = new ChannelMessageService(repository)
   return { repository, service }
+}
+
+/** node:sqlite 的 SQLITE_BUSY 形态：errcode 5 + "database is locked"。 */
+function busyError(): Error & { errcode: number } {
+  return Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR', errcode: 5 })
+}
+
+/**
+ * 在真实仓库外包一层故障注入：指定方法的前 N 次调用抛 SQLITE_BUSY，之后放行。
+ * 模拟拾光桌面端启停时另一连接短暂持有写锁的窗口。
+ */
+function flaky(
+  repository: SqliteChannelMessageRepository,
+  failures: Partial<Record<keyof SqliteChannelMessageRepository, number>>
+): {
+  repository: SqliteChannelMessageRepository
+  calls: Record<string, number>
+  /** 存储恢复：清空剩余故障；再传入新计划即重新注入。 */
+  heal: (next?: Partial<Record<keyof SqliteChannelMessageRepository, number>>) => void
+} {
+  const remaining = new Map(Object.entries(failures) as Array<[string, number]>)
+  const calls: Record<string, number> = {}
+  const heal = (next: Partial<Record<keyof SqliteChannelMessageRepository, number>> = {}): void => {
+    remaining.clear()
+    for (const [name, count] of Object.entries(next) as Array<[string, number]>) remaining.set(name, count)
+  }
+  const proxy = new Proxy(repository, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver)
+      if (typeof value !== 'function' || typeof property !== 'string') return value
+      return (...args: unknown[]) => {
+        calls[property] = (calls[property] ?? 0) + 1
+        const left = remaining.get(property) ?? 0
+        if (left > 0) {
+          remaining.set(property, left - 1)
+          throw busyError()
+        }
+        return Reflect.apply(value, target, args)
+      }
+    }
+  })
+  return { repository: proxy, calls, heal }
 }
 
 describe('ChannelMessageService', () => {
@@ -296,6 +342,83 @@ describe('ChannelMessageService', () => {
       repository.close()
     }
   })
+
+  it('识别 SQLite 瞬时锁错误，其它错误不算瞬断', () => {
+    expect(isTransientStorageError(busyError())).toBe(true)
+    expect(isTransientStorageError(Object.assign(new Error('x'), { errcode: 6 }))).toBe(true)
+    expect(isTransientStorageError(new Error('SQLITE_BUSY: database is locked'))).toBe(true)
+    expect(isTransientStorageError(new Error('no such table: channel_outbox'))).toBe(false)
+    expect(isTransientStorageError(undefined)).toBe(false)
+  })
+
+  it('轮询途中撞上写锁（拾光桌面端启停）：按间隔重试，同一次调用仍把消息投递出去', async () => {
+    const { repository } = fixture()
+    try {
+      repository.enqueueOutbound('1', '重启期间入队的消息', 1_000)
+      // 开场心跳 1 次 + 轮询取队列 2 次都撞锁，第 3 次才放行。
+      const injected = flaky(repository, { touchPresence: 1, listPendingOutbound: 2 })
+      const service = new ChannelMessageService(injected.repository)
+      const result = await service.checkMessages({ channelId: '1', keepaliveTimeoutMs: 5_000, pollIntervalMs: 60 })
+      expect(result).toMatchObject({ type: 'delivered', turnCount: 1, deliveredCount: 1 })
+      expect(result.type === 'delivered' && result.message.text).toBe('重启期间入队的消息')
+      expect(injected.calls.listPendingOutbound).toBe(3)
+      // 开场重试没有把轮次记两遍；投递后守门正常打开。
+      expect(repository.getPresence('1')).toMatchObject({ turnCount: 1, connectionPhase: 'processing', deliveredCount: 1 })
+      expect(repository.getPresence('1')?.pendingOutboundId).toBe(result.type === 'delivered' ? result.message.id : undefined)
+    } finally {
+      repository.close()
+    }
+  })
+
+  it('投递后的守门写入失败：事务回滚队列和计数，重试仍交付原消息一次', async () => {
+    const { repository, service } = fixture()
+    const original = repository.touchPresence.bind(repository)
+    let processingAttempts = 0
+    const spy = vi.spyOn(repository, 'touchPresence').mockImplementation((channel, patch, now) => {
+      const result = original(channel, patch, now)
+      if (patch.connectionPhase === 'processing' && ++processingAttempts === 1) throw busyError()
+      return result
+    })
+    try {
+      const message = repository.enqueueOutbound('1', '事务重试不丢消息')
+      const result = await service.checkMessages({ channelId: '1', pollIntervalMs: 100, keepaliveTimeoutMs: 1000 })
+      expect(result).toMatchObject({ type: 'delivered', message: { id: message.id }, deliveredCount: 1 })
+      expect(processingAttempts).toBe(2)
+      expect(repository.getPresence('1')).toMatchObject({ pendingOutboundId: message.id, deliveredCount: 1 })
+      expect(repository.listPendingOutbound('1')).toHaveLength(0)
+    } finally {
+      spy.mockRestore()
+      repository.close()
+    }
+  })
+
+  it('整个 keepalive 周期都不可用才以 storage_unavailable 收尾；连续多次后不再建议重试，一次成功即清零', async () => {
+    const { repository } = fixture()
+    try {
+      const injected = flaky(repository, { touchPresence: 1_000 })
+      const service = new ChannelMessageService(injected.repository)
+      const poll = () => service.checkMessages({ channelId: '1', keepaliveTimeoutMs: 1_000, pollIntervalMs: 100 })
+
+      const first = await poll()
+      expect(first).toMatchObject({ type: 'storage_unavailable', retryable: true, failures: 1 })
+      expect(first.type === 'storage_unavailable' && first.message).toContain('database is locked')
+      // 一个周期内至少重试了多轮，而不是首错即返。
+      expect(injected.calls.touchPresence).toBeGreaterThanOrEqual(5)
+
+      for (let round = 2; round < CHANNEL_STORAGE_RETRY_LIMIT; round += 1) {
+        expect(await poll()).toMatchObject({ type: 'storage_unavailable', retryable: true, failures: round })
+      }
+      expect(await poll()).toMatchObject({ type: 'storage_unavailable', retryable: false, failures: CHANNEL_STORAGE_RETRY_LIMIT })
+
+      // 存储恢复：同一服务实例的下一次轮询正常 keepalive；随后再故障，计数从 1 重新开始。
+      injected.heal()
+      expect(await poll()).toMatchObject({ type: 'keepalive', round: 1 })
+      injected.heal({ touchPresence: 1_000 })
+      expect(await poll()).toMatchObject({ type: 'storage_unavailable', retryable: true, failures: 1 })
+    } finally {
+      repository.close()
+    }
+  }, 12_000)
 
   it('truncates tool-call token leakage in record_reply content and warns the agent', async () => {
     const { repository, service } = fixture()

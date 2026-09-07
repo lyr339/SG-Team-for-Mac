@@ -121,6 +121,23 @@ export function buildAttachmentManifest(
   return lines.join('\n')
 }
 
+/**
+ * 存储瞬断文案：拾光桌面端启停时 SQLite 短暂锁住，或磁盘异常。retryable 时明确
+ * 这不是围栏终止，让 Agent 原样重试；连续多次才请用户介入。
+ */
+export function buildStorageUnavailableMessage(input: { detail: string; retryable: boolean; failures: number }): string {
+  if (input.retryable) {
+    return [
+      `拾光消息存储暂时不可用（${input.detail}）。`,
+      '这不是会话围栏终止，也不需要用户处理：等待约 5 秒后原样重新调用同一工具（check_messages 续等 / record_reply 补同步），不要输出可见回复。'
+    ].join('')
+  }
+  return [
+    `拾光消息存储已连续 ${input.failures} 次不可用（${input.detail}）。`,
+    '请停止自动重试，用一句话向用户说明拾光通道暂时不可用，然后等待用户处理。'
+  ].join('')
+}
+
 /** 回复同步守门拒绝文案（对齐插件 need_reply_sync 指引）。 */
 export function buildReplySyncRequiredMessage(groupChat: boolean): string {
   if (groupChat) {

@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 import { readFileSync } from 'node:fs'
 import * as z from 'zod/v4'
-import type { ChannelMessageService } from '../application/channel-message-service'
+import { isTransientStorageError, type ChannelMessageService } from '../application/channel-message-service'
 import { CHANNEL_ATTACHMENT_MAX_FILE_BYTES } from '../domain/channel-message'
 import {
   buildAttachmentManifest,
@@ -9,6 +9,7 @@ import {
   buildKeepaliveText,
   buildMergedNote,
   buildSilentDeliverySuffix,
+  buildStorageUnavailableMessage,
   buildTurnNote
 } from '../domain/channel-delivery-policy'
 import type { MessageAttachment } from '../domain/conversation-entry'
@@ -29,7 +30,15 @@ export interface ChannelCommunicationDeps {
   ownershipFor?(channelId: string): ChannelSessionOwnership | undefined
   workspacePath?: string
   keepaliveTimeoutMs?: number
+  /** record_reply 撞上存储瞬断时的重试间隔；测试可注入短值。 */
+  recordReplyRetryDelayMs?: number
 }
+
+/** record_reply 对 SQLITE_BUSY/LOCKED 的进程内重试次数：覆盖拾光桌面端启停的锁窗口，不与 Agent 侧重试叠成风暴。 */
+const RECORD_REPLY_RETRY_LIMIT = 4
+const RECORD_REPLY_RETRY_DELAY_MS = 500
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 type ToolTextContent = { type: 'text'; text: string }
 type ToolImageContent = { type: 'image'; data: string; mimeType: string }
@@ -284,11 +293,61 @@ export function registerChannelCommunicationTools(
           needReplySync: true,
           message: result.message
         }, true)
+      case 'storage_unavailable':
+        return toolJson({
+          ok: false,
+          code: 'storage_unavailable',
+          retryable: result.retryable,
+          failures: result.failures,
+          message: buildStorageUnavailableMessage({ detail: result.message, retryable: result.retryable, failures: result.failures })
+        }, true)
       case 'stopped':
         return {
           content: [{ type: 'text' as const, text: '[system] check_messages 等待被取消，结束本轮。' }],
           isError: true
         }
+    }
+  }
+
+  /**
+   * record_reply 的进程内瞬断重试：拾光桌面端启停时另一连接可能短暂持有写锁。
+   * 只对 SQLITE_BUSY/LOCKED 重试；其余错误原样返回。最终失败带 retryable 标记，
+   * Agent 按协议决定是否再试一次。
+   */
+  const recordWithRetry = async (
+    service: ChannelMessageService,
+    input: Parameters<ChannelMessageService['recordReply']>[0]
+  ): Promise<ToolResult & { structuredContent: Record<string, unknown> }> => {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const reply = service.recordReply(input)
+        return toolJson({
+          ok: true,
+          entry: {
+            type: 'agent_reply',
+            channelId: reply.channelId,
+            title: reply.title ?? null,
+            visible: reply.visible !== false,
+            createdAt: reply.createdAt
+          },
+          messageId: reply.id
+        })
+      } catch (error) {
+        const transient = isTransientStorageError(error)
+        if (transient && attempt < RECORD_REPLY_RETRY_LIMIT) {
+          await sleep(deps.recordReplyRetryDelayMs ?? RECORD_REPLY_RETRY_DELAY_MS)
+          continue
+        }
+        const detail = error instanceof Error ? error.message : String(error)
+        return toolJson({
+          ok: false,
+          code: transient ? 'storage_unavailable' : 'record_reply_failed',
+          retryable: transient,
+          message: transient
+            ? buildStorageUnavailableMessage({ detail, retryable: true, failures: attempt })
+            : detail
+        }, true)
+      }
     }
   }
 
@@ -329,27 +388,7 @@ export function registerChannelCommunicationTools(
           message: buildSessionRetiredText({ channelId: channel_id, reason: verdict.reason })
         }, true)
       }
-      try {
-        const service = deps.serviceFor(channel_id)
-        const reply = service.recordReply({ channelId: channel_id, content, title, groupId, taskId, files })
-        return toolJson({
-          ok: true,
-          entry: {
-            type: 'agent_reply',
-            channelId: reply.channelId,
-            title: reply.title ?? null,
-            visible: reply.visible !== false,
-            createdAt: reply.createdAt
-          },
-          messageId: reply.id
-        })
-      } catch (error) {
-        return toolJson({
-          ok: false,
-          code: 'record_reply_failed',
-          message: error instanceof Error ? error.message : String(error)
-        }, true)
-      }
+      return recordWithRetry(deps.serviceFor(channel_id), { channelId: channel_id, content, title, groupId, taskId, files })
     }
   )
 }

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   buildDeliverySuffix,
   buildReplySyncRequiredMessage,
-  buildSilentDeliverySuffix
+  buildSilentDeliverySuffix,
+  buildStorageUnavailableMessage
 } from '../src/domain/channel-delivery-policy'
 import { buildChannelWaitInstruction } from '../src/domain/channel-wait-policy'
 import { buildUnifiedServerInstructions } from '../src/mcp/team-tools'
@@ -46,6 +47,28 @@ describe('channel protocol policy text', () => {
     expect(instructions).toContain('keepalive、无未读或已读重复时必须静默续等')
     expect(instructions).toContain('也不要 record_reply')
     expect(instructions).toContain('内部通知不会触发该守门')
+  })
+
+  it('tells agents that a desktop restart is not a stop, and how to ride out transport / storage blips', () => {
+    const instructions = buildUnifiedServerInstructions()
+    const rule = instructions.split('\n').find((line) => line.startsWith('瞬断续接：'))!
+
+    expect(rule).toContain('拾光桌面端退出或重启不会中断本会话')
+    expect(rule).toContain('MCP 进程由 Cursor 托管')
+    expect(rule).toContain('transport closed')
+    expect(rule).toContain('storage_unavailable')
+    expect(rule).toContain('这不是围栏终止')
+    expect(rule).toContain('原样重试同一调用')
+    expect(rule).toContain('record_reply 先补同步，再 check_messages 续等')
+    expect(rule).toContain('连续 3 次仍失败')
+    // 围栏终止与额度/授权错误的「不要重试」规则保持原样，瞬断规则不覆盖它们。
+    expect(instructions).toContain('收到「会话围栏」终止指令即停止轮询并结束，不要重试')
+    expect(instructions).toContain('usage limit / quota / billing / authorization / isRetryable:false')
+
+    expect(buildStorageUnavailableMessage({ detail: 'database is locked', retryable: true, failures: 1 }))
+      .toContain('这不是会话围栏终止')
+    expect(buildStorageUnavailableMessage({ detail: 'disk I/O error', retryable: false, failures: 3 }))
+      .toContain('请停止自动重试')
   })
 
   it('keeps silent internal notifications out of the user-visible reply protocol', () => {

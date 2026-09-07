@@ -24,6 +24,8 @@ export interface UnifiedChannelServerOptions {
   workspacePath?: string
   /** keepalive 返回前的空队列等待时长；测试可注入短值，生产用默认 60s。 */
   keepaliveTimeoutMs?: number
+  /** record_reply 存储瞬断重试间隔；测试可注入短值。 */
+  recordReplyRetryDelayMs?: number
 }
 
 /**
@@ -45,7 +47,8 @@ export function createUnifiedChannelServer(options: UnifiedChannelServerOptions)
     serviceFor: options.channelServiceFor,
     ownershipFor: options.ownershipFor,
     workspacePath: options.workspacePath,
-    keepaliveTimeoutMs: options.keepaliveTimeoutMs
+    keepaliveTimeoutMs: options.keepaliveTimeoutMs,
+    recordReplyRetryDelayMs: options.recordReplyRetryDelayMs
   })
   return server
 }

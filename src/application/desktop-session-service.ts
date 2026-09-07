@@ -1585,12 +1585,28 @@ export class DesktopSessionService implements DesktopSessionBridge {
       // 转录兜底是历史恢复：按文本身份判定 finalize（其 startedAt 是转录 mtime，
       // 恒新于落库回复，时间窗永不命中）。CDP 来源维持原时间窗 + 精确文本。
       const transcriptSourced = response.id.startsWith('transcript:')
-      const finalized = snapshot.conversations[channelId]?.some((entry) => (
+      const entries = snapshot.conversations[channelId] ?? []
+      // 拾光重启回放：CDP 完成态的 startedAt 是重启后的首次观测，恒新于此前早已落库的
+      // 回复，时间窗永不命中——最终正文会在时间线上出现两次（持久化回复 + 实时气泡），
+      // 直到下一条回复才消失。已完成的实时回复若与最新一条助手回复文本身份一致，即视为
+      // 已被持久化接管；只看最新一条，避免误吞更早的同文回复。
+      let latestAssistantIndex = -1
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index]
+        if (entry?.role === 'assistant' && entry.status === 'complete') {
+          latestAssistantIndex = index
+          break
+        }
+      }
+      const finalized = entries.some((entry, index) => (
         entry.role === 'assistant'
         && entry.status === 'complete'
         && (transcriptSourced
           ? conversationTextIdentity(entry.text) === conversationTextIdentity(response.text)
-          : entry.timestamp >= response.startedAt - 5_000 && entry.text.trim() === response.text.trim())
+          : (entry.timestamp >= response.startedAt - 5_000 && entry.text.trim() === response.text.trim())
+            || (response.status === 'complete'
+              && index === latestAssistantIndex
+              && conversationTextIdentity(entry.text) === conversationTextIdentity(response.text)))
       ))
       // completed Cursor 原生回复在 record_reply 落库前就是唯一历史来源；此前 3s
       // 自动删除导致截图中的回复/过程“过一会消失”。仅流式断帧做时效清理，完成态

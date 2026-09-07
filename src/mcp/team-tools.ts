@@ -168,6 +168,7 @@ export function buildUnifiedServerInstructions(): string {
     '对话循环：check_messages 长轮询取用户消息 → 在 Cursor 里正常回答 → record_reply 同步同一份完整可见回复 → 再 check_messages。每次真实用户可见回复后必须 record_reply；未同步就再取消息会被 need_reply_sync 拒绝。',
     '静默规则：check_messages 返回 keepalive、无未读或已读重复时必须静默续等（keepalive 形如 <sg_team_keepalive/>）：不要输出“继续等待/已读过/继续轮询”等可见回复，也不要 record_reply，也不要用文字说“我会继续循环”代替调用。团队内部通知只用 team_message 回执处理，不写用户可见回复；内部通知不会触发该守门。',
     '边界：思考、工具调用与过程由拾光直接读取 Cursor 原生会话事件，不要复述或上报过程；不要用终端或脚本调用 MCP；不要替其他 Agent 操作任务或猜测 taskId；Lease token 由服务端保管。',
+    '瞬断续接：拾光桌面端退出或重启不会中断本会话——MCP 进程由 Cursor 托管，队列与活性都在 SQLite，重启后直接续等即可。check_messages / record_reply 若因 MCP 连接重启、transport closed、database is locked 或 storage_unavailable（retryable:true）等传输/存储瞬断失败——这不是围栏终止，也不是 usage/quota/authorization——等待约 5 秒后原样重试同一调用（record_reply 先补同步，再 check_messages 续等），不输出可见回复；连续 3 次仍失败（或 retryable:false）才停止并向用户说明。',
     '终止：收到「会话围栏」终止指令即停止轮询并结束，不要重试；出现 usage limit / quota / billing / authorization / isRetryable:false 等明确错误时停止自动续等并等待用户处理，禁止快速、并发或无限重试。'
   ].join('\n')
 }

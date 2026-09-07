@@ -45,7 +45,7 @@ export const CURSOR_STREAM_BINDING_NAME = 'sgTeamStream'
 export const CURSOR_USAGE_BINDING_NAME = '__sgTeamUsage'
 export const CURSOR_PROCESS_BINDING_NAME = 'sgTeamProcess'
 /** 页面内 hook 版本：不一致时 install 会先还原旧 wrapper 再重装（拾光强退后遗留的旧版）。 */
-export const CURSOR_STREAM_HOOK_VERSION = 23
+export const CURSOR_STREAM_HOOK_VERSION = 25
 const RETRY_BASE_MS = 5_000
 const RETRY_MAX_MS = 60_000
 const ATTACH_TIMEOUT_MS = 8_000
@@ -91,7 +91,8 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     const result = value?.result || td?.result
     let mcpPending = false
     if (toolCase.toLowerCase() === 'mcptoolcall') {
-      const server = args?.server || args?.serverName || value?.serverName || ''
+      // Cursor 3.6 现代 args 里服务器名叫 providerIdentifier（"SG Team"）；旧字段保留兼容。
+      const server = args?.server || args?.serverName || args?.providerIdentifier || value?.serverName || ''
       const called = args?.toolName || args?.name || value?.toolName || ''
       if (called) name = 'mcp-' + String(server || 'server') + '-' + String(called)
       // MCP ToolCall 首帧可能只有 toolCase、真实工具名下一帧才水合（RC-5.1）：
@@ -113,10 +114,33 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       lower === item || lower.endsWith('-' + item) || lower.endsWith('_' + item)
     ))
   }
-  // 传输工具结果里的文本片段（不裁剪、不展开 image/base64）：MCP 结果在 Cursor 内存与
-  // 落盘态都是双层 JSON 字符串 {"result":"{\\"content\\":[{\\"type\\":\\"text\\",\\"text\\":…}]}"}。
+  // MCP 结果在 Cursor 内存里有两套形态并存，toolInfo 优先取现代形态：
+  // - 落盘同款：toolFormerData.result = {selectedTool, result:"{\\"content\\":[{\\"type\\":\\"text\\",\\"text\\":…}]}"}（双层 JSON 字符串）
+  // - 现代（protobuf 判别联合）：toolCall.tool.value.result =
+  //   {result:{case:'success', value:{content:[{content:{case:'text', value:{text}}}, {content:{case:'image', value:{data,mimeType}}}], isError}}}
+  // 2026-09-07 事故：旧扫描只认 result/output/content/contents 与 .text，现代形态的文本藏在
+  // value / content.value 里，投递标记永远找不到 → isUserDelivery 恒 false → 投递后的首段业务
+  // 思考被尾部兜底当成轮询余波隐藏，直到最终正文出现才整段蹦出（单测用落盘形态构造，假绿）。
+  function unwrapCase(value) {
+    let current = value
+    for (let i = 0; i < 4; i++) {
+      if (!current || typeof current !== 'object' || Array.isArray(current)) break
+      if (typeof current.case !== 'string' || !('value' in current)) break
+      current = current.value
+    }
+    return current
+  }
+  // 判别联合形态的内容块 {content:{case:'text'|'image', value:{…}}} → {type, …value}；其它形态原样返回。
+  function normalizeContentBlock(item) {
+    const union = item && typeof item === 'object' && !Array.isArray(item) ? item.content : undefined
+    if (!union || typeof union !== 'object' || Array.isArray(union) || typeof union.case !== 'string') return item
+    const inner = union.value
+    return inner && typeof inner === 'object' && !Array.isArray(inner) ? { type: union.case, ...inner } : { type: union.case }
+  }
+  // 传输工具结果里的文本片段（不裁剪、不展开 image/base64）。
   function collectResultTexts(value, depth, out) {
-    if (value === null || value === undefined || depth > 6 || out.length > 30) return
+    if (value === null || value === undefined || depth > 8 || out.length > 30) return
+    value = unwrapCase(value)
     if (typeof value === 'string') {
       const text = value.trim()
       if ((text.startsWith('{') || text.startsWith('[')) && text.length < 2000000) {
@@ -125,7 +149,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       out.push(value)
       return
     }
-    if (Array.isArray(value)) { for (const item of value.slice(0, 30)) collectResultTexts(item, depth + 1, out); return }
+    if (Array.isArray(value)) { for (const item of value.slice(0, 30)) collectResultTexts(normalizeContentBlock(item), depth + 1, out); return }
     if (typeof value === 'object') {
       if (typeof value.text === 'string') out.push(value.text)
       for (const key of ['result', 'output', 'content', 'contents']) {
@@ -143,14 +167,15 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     const lower = String(tool.name).toLowerCase()
     if (!(lower === 'check_messages' || lower.endsWith('-check_messages') || lower.endsWith('_check_messages'))) return false
     const key = String(bubbleId || '')
-    if (key && deliveryByBubble.has(key)) return deliveryByBubble.get(key)
+    if (key && deliveryByBubble.get(key) === true) return true
     let delivered = false
     try {
       const texts = []
       collectResultTexts(tool.result, 0, texts)
       delivered = texts.some(text => text.includes(USER_DELIVERY_MARKER))
     } catch (e) { delivered = false }
-    if (key && tool.status !== 'running') {
+    // 只缓存正面证据：completed 首帧也可能尚未水合结果。
+    if (key && delivered && tool.status !== 'running') {
       if (deliveryByBubble.size > 2000) deliveryByBubble.clear()
       deliveryByBubble.set(key, delivered)
     }
@@ -205,6 +230,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
   }
   function outputText(result) {
     try {
+      result = unwrapCase(result)
       if (!result) return ''
       if (typeof result === 'string') {
         const text = result.trim()
@@ -216,7 +242,8 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
           : clipText(text, 12000)
       }
       if (Array.isArray(result)) {
-        const parts = result.slice(0, 30).flatMap(item => {
+        const parts = result.slice(0, 30).flatMap(entry => {
+          const item = normalizeContentBlock(entry)
           if (item?.type === 'image') return ['[image result]']
           const text = outputText(item)
           return text ? [text] : []
@@ -492,6 +519,20 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
     })
   }
   globalThis.__sgTeamProcessSchedule = scheduleProcessSnapshot
+  // 补发当前已加载 Composer 的过程快照：拾光（重）连上来时立即拿到正在进行的回合，
+  // 不等待下一次模型写入。首次安装与「hook 已在位」两条路径都要走——拾光被强退或
+  // 还原脚本没来得及刷出时，旧 hook 仍挂在页面上，重启后的拾光只是重新绑了 binding。
+  function broadcastLoaded(svc, manager) {
+    try {
+      const ids = new Set()
+      const loaded = svc.composerDataService.getLoadedComposers?.() || []
+      for (const item of loaded) ids.add(String(item?.composerId ?? item?.id ?? item ?? ''))
+      for (const id of manager.loadedComposers?.ids || []) ids.add(String(id || ''))
+      const handles = manager.composerDataHandles || manager.handles
+      if (handles && typeof handles.keys === 'function') for (const id of handles.keys()) ids.add(String(id || ''))
+      for (const id of ids) if (id) scheduleProcessSnapshot(id)
+    } catch (e) {}
+  }
   function install() {
     try {
       const svc = globalThis.__qtComposerService
@@ -502,7 +543,12 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       }
       const proto = Object.getPrototypeOf(manager)
       if (globalThis.__sgTeamStreamHook && globalThis.__sgTeamStreamHookManager === manager) {
-        if (globalThis.__sgTeamStreamHookVersion === HOOK_VERSION) return 'already'
+        if (globalThis.__sgTeamStreamHookVersion === HOOK_VERSION) {
+          // 同版 hook 已在位：wrapper 会走新绑定的 binding（同名重绑），只需补发当前回合。
+          globalThis.__sgTeamProcessSchedule = scheduleProcessSnapshot
+          broadcastLoaded(svc, manager)
+          return 'already'
+        }
         // 拾光被强退时 dispose 无机会还原；新版必须主动替换旧 wrapper，不能因
         // boolean 幂等标记永远沿用旧语义（例如旧版“写前通知”）。
         const stale = globalThis.__sgTeamStreamOriginals || {}
@@ -546,16 +592,7 @@ export const CURSOR_STREAM_HOOK_EXPRESSION = `(() => {
       globalThis.__sgTeamStreamHookManager = manager
       globalThis.__sgTeamStreamHook = installed > 0
       globalThis.__sgTeamStreamHookVersion = HOOK_VERSION
-      // 重连/拾光重启后立即补发当前已加载 Composer，不等待下一次模型写入。
-      try {
-        const ids = new Set()
-        const loaded = svc.composerDataService.getLoadedComposers?.() || []
-        for (const item of loaded) ids.add(String(item?.composerId ?? item?.id ?? item ?? ''))
-        for (const id of manager.loadedComposers?.ids || []) ids.add(String(id || ''))
-        const handles = manager.composerDataHandles || manager.handles
-        if (handles && typeof handles.keys === 'function') for (const id of handles.keys()) ids.add(String(id || ''))
-        for (const id of ids) if (id) scheduleProcessSnapshot(id)
-      } catch (e) {}
+      broadcastLoaded(svc, manager)
       return installed
     } catch (e) {
       if (++attempts <= 60) setTimeout(install, 2000)

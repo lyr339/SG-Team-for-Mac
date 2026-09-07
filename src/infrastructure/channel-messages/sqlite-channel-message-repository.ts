@@ -323,7 +323,7 @@ export class SqliteChannelMessageRepository {
   }
 
   /** Agent 侧：标记消息已投递（取出即标记，保证最多一次投递）。 */
-  markOutboundDelivered(ids: string[], now = Date.now()): void {
+  markOutboundDelivered(ids: string[], now = Date.now(), presence?: { channelId: string; patch: PresencePatch }): void {
     if (!ids.length) return
     const statement = this.database.prepare(
       `UPDATE channel_outbox SET delivered_at = ? WHERE id = ? AND ${PENDING_OUTBOUND_WHERE}`
@@ -331,6 +331,8 @@ export class SqliteChannelMessageRepository {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       for (const id of ids) statement.run(now, id)
+      // 队列出队与回复守门一起提交；撞锁时一起回滚，重试不会丢消息。
+      if (presence) this.touchPresence(presence.channelId, presence.patch, now)
       this.database.exec('COMMIT')
     } catch (error) {
       if (this.database.isTransaction) this.database.exec('ROLLBACK')

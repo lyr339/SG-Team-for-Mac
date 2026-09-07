@@ -194,6 +194,49 @@ describe('CursorStreamObserver', () => {
     })
   })
 
+  it('re-broadcasts loaded Composers when the same-version hook is already in place (拾光重启后旧 hook 仍挂着)', async () => {
+    class Manager {
+      loadedComposers = { ids: ['composer-live'] }
+      writes = 0
+      markDirty(): void { this.writes += 1 }
+    }
+    const manager = new Manager()
+    const frames: Array<Record<string, unknown>> = []
+    const context = {
+      Promise,
+      queueMicrotask,
+      setTimeout,
+      globalThis: {
+        __qtComposerService: {
+          composerDataService: {
+            composerDataHandleManager: manager,
+            getComposerDataIfLoaded: () => ({
+              fullConversationHeadersOnly: [{ type: 1, bubbleId: 'user-1' }, { type: 2, bubbleId: 'message-1' }],
+              conversationMap: { 'message-1': { text: '正在进行中的回合。', createdAt: '2026-09-07T08:00:00.000Z' } },
+              generatingBubbleIds: ['message-1'],
+              modelConfig: { modelName: 'claude-sonnet-4-5' }
+            })
+          }
+        },
+        sgTeamStream: () => {},
+        sgTeamProcess: (payload: string) => frames.push(JSON.parse(payload) as Record<string, unknown>)
+      }
+    }
+    // 第一次安装：补发一帧。
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    await Promise.resolve()
+    expect(frames).toHaveLength(1)
+    const wrapped = Object.getPrototypeOf(manager).markDirty
+    // 拾光重启后重新 attach：hook 同版已在位——不重装 wrapper，但要再补发当前回合，
+    // 否则直播过程要等到 Cursor 下一次模型写入才出现。
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    await Promise.resolve()
+    expect(frames).toHaveLength(2)
+    expect(frames[1]).toMatchObject({ composerId: 'composer-live' })
+    expect(Object.getPrototypeOf(manager).markDirty).toBe(wrapped)
+    expect((context.globalThis as Record<string, unknown>).__sgTeamStreamHookVersion).toBe(CURSOR_STREAM_HOOK_VERSION)
+  })
+
   it('extracts current Cursor thinking objects and discriminated toolCall payloads', async () => {
     class Manager {
       loadedComposers = { ids: ['composer-modern'] }
@@ -963,6 +1006,105 @@ describe('阶段 D：Bubble 级内部协议相位分组（RC-5 / RC-5.1 / RC-6�
     items = await collect(context, frames)
     expect(items.map((item) => item.id)).toEqual(['cursor-th:th-biz', 'cursor:tool-shell'])
     expect(items[0]).toMatchObject({ status: 'done', durationMs: 38429 })
+  })
+
+  /**
+   * Cursor 3.6.31 内存模型里 MCP 工具气泡的真实形态（2026-09-07 经 CDP 从运行中的 Composer 实取）：
+   * 两套结果并存，toolInfo 优先取现代形态——
+   * - toolFormerData.result：落盘同款 {selectedTool:'', result:'<双层 JSON 字符串>'}
+   * - toolFormerData.toolCall.tool.value.result：protobuf 判别联合
+   *   {result:{case:'success', value:{content:[{content:{case:'text', value:{text}}}, {content:{case:'image', value:{data,mimeType}}}], isError:false}}}
+   * 现代 args 里服务器名字段是 providerIdentifier。
+   */
+  function mcpToolFormerData(server: string, toolName: string, text: string, options: { images?: number } = {}) {
+    const content = [
+      { content: { case: 'text', value: { text } } },
+      ...Array.from({ length: options.images ?? 0 }, () => ({ content: { case: 'image', value: { data: 'iVBORw0KGgo=', mimeType: 'image/png' } } }))
+    ]
+    return {
+      name: `mcp-${server}-${toolName}`,
+      status: 'completed',
+      result: { selectedTool: '', result: JSON.stringify({ content: [{ type: 'text', text }] }) },
+      toolCall: {
+        tool: {
+          case: 'mcpToolCall',
+          value: {
+            args: { name: `user-${server}-${toolName}`, args: {}, providerIdentifier: server, toolName },
+            result: { result: { case: 'success', value: { content, isError: false } } }
+          }
+        }
+      }
+    }
+  }
+
+  it('recognises the delivered user message in the modern (case/value) MCP result shape, so the opening thinking streams live (2026-09-07：投递后首段思考直到正文出现才蹦出)', async () => {
+    // 实机形态：record_reply → check_messages（带 2 张图的真实用户消息）→ 模型开始思考，
+    // 整个回合都还没有任何正文。旧扫描只认 result/output/content/contents 与 .text，
+    // 现代形态里文本藏在 value/content.value → 标记找不到 → isUserDelivery 恒 false →
+    // 首段思考被尾部兜底判成轮询余波，后面来了业务工具依然隐藏，直到最终正文出现。
+    const headers: Array<Record<string, unknown>> = [
+      { type: 1, bubbleId: 'user-1' },
+      { type: 2, bubbleId: 'tool-record' },
+      { type: 2, bubbleId: 'tool-check' },
+      { type: 2, bubbleId: 'th-first' }
+    ]
+    const map: Record<string, Record<string, unknown>> = {
+      'tool-record': { toolFormerData: mcpToolFormerData('SG Team', 'record_reply', '{"ok":true}') },
+      'tool-check': { toolFormerData: mcpToolFormerData('SG Team', 'check_messages', deliveredUserMessage, { images: 2 }) },
+      'th-first': { thinking: { text: "I'm thinking through why the opening thought never shows…", signature: 'sig' }, capabilityType: 30 }
+    }
+    let generating = ['th-first']
+    const { context, frames } = hookContext(() => ({
+      fullConversationHeadersOnly: headers, conversationMap: map, generatingBubbleIds: generating
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+
+    // completed 先到，结果后水合：第一帧未识别投递不得永久缓存 false。
+    const delivered = map['tool-check']!
+    map['tool-check'] = { toolFormerData: mcpToolFormerData('SG Team', 'check_messages', '') }
+    expect(await collect(context, frames)).toEqual([])
+    map['tool-check'] = delivered
+    // 思考正在流式生成、其后还没有任何工具或正文：必须实时可见。
+    let items = await collect(context, frames)
+    expect(items.map((item) => `${item.id}:${item.status}`)).toEqual(['cursor-th:th-first:running'])
+
+    // 思考结束 → 业务工具，仍无正文：首段思考继续可见，不因「其后无正文」被尾部兜底回收。
+    headers.push({ type: 2, bubbleId: 'tool-shell' })
+    map['th-first'] = { thinking: { text: "I'm thinking through why the opening thought never shows…", thinkingDurationMs: 43128 }, capabilityType: 30 }
+    map['tool-shell'] = { toolFormerData: { name: 'run_terminal_command_v2', status: 'completed', params: { command: 'git status --short' } } }
+    generating = []
+    items = await collect(context, frames)
+    expect(items.map((item) => item.id)).toEqual(['cursor-th:th-first', 'cursor:tool-shell'])
+    expect(items[0]).toMatchObject({ status: 'done', durationMs: 43128 })
+
+    // keepalive 结果（现代形态）之后的思考仍是轮询余波 → 隐藏；两种形态判定一致。
+    const keepalive = hookContext(() => ({
+      fullConversationHeadersOnly: [{ type: 1, bubbleId: 'user-1' }, { type: 2, bubbleId: 'tool-check' }, { type: 2, bubbleId: 'th-keep' }],
+      conversationMap: {
+        'tool-check': { toolFormerData: mcpToolFormerData('SG Team', 'check_messages', '<sg_team_keepalive n="7"/>') },
+        'th-keep': { thinking: { text: '没有新消息，继续静默等待。' }, capabilityType: 30 }
+      },
+      generatingBubbleIds: ['th-keep']
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, keepalive.context)
+    expect(await collect(keepalive.context, keepalive.frames)).toEqual([])
+  })
+
+  it('renders modern MCP tool results as text (not a JSON dump of the case/value union) and names them by providerIdentifier', async () => {
+    const { context, frames } = hookContext(() => ({
+      fullConversationHeadersOnly: [{ type: 1, bubbleId: 'user-1' }, { type: 2, bubbleId: 'tool-nav' }],
+      conversationMap: {
+        'tool-nav': { toolFormerData: mcpToolFormerData('playwright', 'browser_navigate', 'Page loaded: http://127.0.0.1:5174', { images: 1 }) }
+      },
+      generatingBubbleIds: []
+    }))
+    runInNewContext(CURSOR_STREAM_HOOK_EXPRESSION, context)
+    const items = await collect(context, frames)
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({
+      kind: 'tool', toolName: 'mcp-playwright-browser_navigate', toolKind: 'browser', status: 'done',
+      output: 'Page loaded: http://127.0.0.1:5174\n[image result]'
+    })
   })
 
   it('still hides the polling aftermath after a keepalive result or a silent collaboration notification', async () => {

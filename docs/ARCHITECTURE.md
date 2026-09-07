@@ -41,6 +41,19 @@ Mode switching therefore no longer hard-blocks on live sessions. `configureWorks
 
 The renderer mirrors the model with a single **运行** page (`src/renderer/src/run/`) instead of separate team / independent tabs: `run-view.ts` folds the snapshot into one view model (mode, phase, seat states, live-seat count, the consequence text of every destructive action), `RunHeader` is the only place a mode is switched, `RunTeamPanel` / `RunIndependentPanel` are the mode-specific areas, `RunSeats` is shared by both modes, and every destructive transition (end, switch mode, new batch, new round) goes through one `ReplaceRunSheet` that asks once only while seats are still live. Account and Cursor maintenance live behind the top-right account entry (`account` module), not in the main navigation.
 
+## Desktop restart continuity
+
+Quitting or restarting the 拾光 desktop app does not end any Cursor session, by construction:
+
+- The `SG Team` MCP process is spawned and owned by Cursor (its parent is Cursor's MCP utility process), not by the desktop app. It talks to the desktop app only through the shared SQLite file — no IPC, socket or child-process relationship — so the desktop app's lifetime is irrelevant to an Agent's `check_messages` loop.
+- Everything the loop depends on is durable: outbox, replies, presence, the reply-sync gate, run/slot bindings and the per-seat session token. Replies recorded while the desktop is down are consumed on the next `pollReplies`; the timeline hydrates from `channel_scope` on start.
+- Startup never rewrites `~/.cursor/mcp.json` unless the entry content changed (`reconcileGlobalChannelServers`), so Cursor is not asked to restart the server. `beginScope` (which retires presence and clears gates) only runs on a real run change, never on a same-run replay.
+- The CDP hook re-broadcasts the loaded Composers' process snapshots on attach — both when it installs fresh and when a same-version hook survived a force-quit (`'already'` path) — so the live process card is back before Cursor's next model write. A completed CDP response that matches the latest persisted reply by text identity is treated as already archived, so the final answer is not shown twice after a restart.
+- The channel service rides out storage blips caused by the desktop's own start/stop (SQLite lock windows): a failing poll iteration is retried on the poll interval until the keepalive deadline; `record_reply` retries `SQLITE_BUSY/LOCKED` in-process. Only a whole keepalive window of failures surfaces, as a structured `storage_unavailable` result with `retryable` (false after `CHANNEL_STORAGE_RETRY_LIMIT` consecutive failures) — never as a raw "database is locked" tool error.
+- The server instructions state the contract to the Agent once ("瞬断续接"): a desktop restart is not a stop; transport / storage blips are retried in place; only the session fence, quota / authorization errors or three consecutive failures end the loop.
+
+What does interrupt sessions is orthogonal: restarting Cursor (the Composers and the MCP process die with it — recovery is the session-handoff / recreate flow), and Cursor reloading its MCP configuration (any in-flight long-poll fails once; the Agent re-enters `check_messages` under the rule above).
+
 ## Team continuity
 
 - task, collaboration and accepted Agent-managed memory changes are projected into bounded automatic checkpoints;
@@ -72,3 +85,10 @@ Both desktop platforms are first-class. Everything that touches Cursor's own fil
 ## Distribution boundary
 
 `npm run pack:mac` creates an unsigned local macOS app and `npm run pack:win` an NSIS installer plus `win-unpacked` under `release/`. `npm run verify:mac` / `verify:win` launch the MCP bundle through that packaged executable and repeat the real three-process fencing/resume smoke. Signing and notarization are intentionally a later release step and are not implied by the local package.
+
+### Cursor process delivery hydration (2026-09-07)
+
+- Hook v25 and runtime inspection decode Cursor's protobuf `case/value` MCP results, including modern content blocks. Only positive user-delivery matches are memoized: a completed tool may receive its result in a later hydration frame. Inspection ignores legacy cached negative matches.
+- Queue delivery and its reply-sync presence update commit in one SQLite transaction. A failed presence write rolls back delivery; retry advances the delivered count only after commit.
+- Virtual turn boundaries remain based on actual outbound delivery and reply timestamps. No guessed offset is applied to native bubble timestamps. Restored Cursor history may carry hydration-time timestamps; this change does not reconstruct missing historical timing.
+- Verification: full typecheck, 139 test files / 1270 tests, knip, build and stdio channel smoke passed. Read-only evaluation against the existing Cursor Composer confirmed modern delivery recognition and visible following thoughts; no new Agent turn was sent for live animation acceptance.

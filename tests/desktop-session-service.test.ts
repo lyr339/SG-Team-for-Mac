@@ -269,6 +269,61 @@ describe('desktop Cursor session enrichment', () => {
     }
   })
 
+  it('拾光重启回放：CDP 完成态正文与最新落库回复同文即被接管，最终正文不重复出现（会话不断）', async () => {
+    const active = teamSnapshot('composer-alpha-123')
+    active.runs = [{
+      id: 'run-a', workspaceId: 'workspace-a', name: 'run', goal: 'goal', templateId: 'default',
+      status: 'running', createdAt: 1, updatedAt: 1
+    }]
+    active.activeRun = active.runs[0]
+    const repository = new SqliteChannelMessageRepository(
+      join(mkdtempSync(join(tmpdir(), 'sg-restart-replay-')), 'channel.sqlite3')
+    )
+    const relay = new ChannelMessageRelay(repository)
+    try {
+      repository.markChannelEmbedded('1', 'workspace-a', '/workspace/alpha')
+      // 重启前：用户消息已投递，Agent 已 record_reply（visible，精确 outboundId）。
+      const outbound = repository.enqueueOutbound('1', '你是什么模型', 1_000)
+      repository.markOutboundDelivered([outbound.id], 1_500)
+      repository.recordReply({ channelId: '1', content: '我是 Claude Fable 5.1。', visible: true, outboundId: outbound.id }, 5_000)
+      relay.resetScope('run-a', 1)
+
+      let evidence: CursorComposerRuntimeEvidence = {
+        composerId: 'composer-alpha-123', state: 'unknown', detail: '',
+        // 重启后的首次 CDP 观测：时间远晚于落库回复，正文就是那条已归档的最终回答。
+        observedAt: Date.now(), isGenerating: false,
+        responseId: 'bubble-final-1', responseText: '我是 Claude Fable 5.1。'
+      }
+      let inspections = 0
+      const service = new DesktopSessionService(
+        new FakeBridge(relay),
+        new FakeTeam(active),
+        { readWorkspace: () => telemetry() },
+        relay,
+        { inspectComposerRuntime: async () => { inspections += 1; return { 'composer-alpha-123': evidence } } }
+      )
+      try {
+        service.refreshTelemetry()
+        await vi.waitFor(() => expect(inspections).toBeGreaterThanOrEqual(1))
+        const snapshot = service.getSnapshot()
+        expect(snapshot.conversations['1']?.filter((entry) => entry.role === 'assistant').map((entry) => entry.text))
+          .toEqual(['我是 Claude Fable 5.1。'])
+        expect(snapshot.liveAgentResponses?.['1']).toBeUndefined()
+
+        // 对照：新一轮正在生成的同文正文不属于回放，仍作为直播展示。
+        evidence = { ...evidence, observedAt: Date.now(), isGenerating: true, responseId: 'bubble-next-2' }
+        service.notifyComposerWriteSignal('composer-alpha-123')
+        await vi.waitFor(() => {
+          expect(service.getSnapshot().liveAgentResponses?.['1']).toMatchObject({ id: 'bubble-next-2', status: 'streaming' })
+        })
+      } finally {
+        service.dispose()
+      }
+    } finally {
+      repository.close()
+    }
+  })
+
   it('suppresses transcript fallback when the reply is already persisted by record_reply', async () => {
     const active = teamSnapshot('composer-alpha-123')
     active.runs = [{
