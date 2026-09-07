@@ -72,7 +72,7 @@ const summary = await send('Runtime.evaluate', {
     platform: document.documentElement.dataset.platform,
     colorMode: document.documentElement.dataset.colorMode,
     module: document.querySelector('.topbar-nav .is-active')?.textContent ?? null,
-    sessions: document.querySelectorAll('.rail-session-card').length,
+    sessions: document.querySelectorAll('.session-row').length,
     connection: document.querySelector('.connection-chip')?.textContent ?? null,
     inspectorOpen: !document.querySelector('.workspace-dock')?.classList.contains('is-end-pane-collapsed')
   })`

@@ -1048,6 +1048,7 @@ export function App(): React.JSX.Element {
           snapshot={visibleSnapshot}
           selectedChannelId={selectedSession?.channelId}
           onSelectSession={selectSession}
+          onOpenRun={() => changeModule('run')}
         />
       ) : null}
       rightPanel={selectedSession ? (close, visible) => (

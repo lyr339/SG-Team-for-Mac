@@ -56,8 +56,29 @@ describe('theme surface contracts', () => {
       expect(styles).toContain(`--provider-${provider}-fg`)
       expect(styles).toContain(`.provider-${provider}`)
     }
-    expect(styles).toMatch(/\.rail-session-card__model > b\s*\{[^}]*var\(--model-provider-fg/)
+    // 会话名册：厂商色只落在模型名前的 7px 色块上，文字保持中性，不给整行染色。
+    expect(styles).toMatch(/\.session-row__model > i\s*\{[^}]*var\(--model-provider-fg/)
+    expect(styles).not.toMatch(/\.session-row__model\s*\{[^}]*var\(--model-provider-fg/)
     expect(styles).toMatch(/\.composer-model > b\s*\{[^}]*var\(--model-provider-fg/)
+  })
+
+  it('keeps the session roster on the inspector language: one frame, hairlines, accent only for selection', () => {
+    // 行不再自带边框 / 阴影；选中态 = 左缘 2px 信号橙 + 底色；状态色只在 --rail-state 驱动的状态点上。
+    expect(styles).toMatch(/\.session-row\s*\{[^}]*background:\s*transparent;\s*border:\s*0;/s)
+    expect(styles).toMatch(/\.session-row::before\s*\{[^}]*width:\s*2px;[^}]*background:\s*var\(--accent\)/s)
+    expect(styles).toMatch(/\.session-row\.is-waiting\s*\{\s*--rail-state:\s*var\(--color-text-success\)/)
+    expect(styles).toMatch(/\.session-row\.is-active\s*\{\s*--rail-state:\s*var\(--color-text-info\)/)
+    expect(styles).toMatch(/\.session-row\.is-attention\s*\{\s*--rail-state:\s*var\(--color-text-warning\)/)
+    expect(styles).toMatch(/\.session-list__slot \+ \.session-list__slot\s*\{[^}]*border-top:\s*1px solid var\(--color-border-tertiary\)/)
+    // 名册正文有阅读面下限（透明卡片模式下仍可读）；吸顶分组标题实底，滚过的行不会透出来。
+    expect(styles).toMatch(/\.session-pane\s*\{[^}]*--rail-reading-opacity:\s*max\(0\.92, var\(--card-opacity\)\)/s)
+    expect(styles).toMatch(/\.session-list\s*\{[^}]*var\(--rail-reading-opacity\)/s)
+    expect(styles).toMatch(/\.session-group__header\s*\{[^}]*position:\s*sticky[^}]*background:\s*var\(--surface-solid\)/s)
+    // 上下文光环：三档天色；reduced-motion 下脉冲与弧长过渡都关闭。
+    expect(styles).toMatch(/\.session-row__ring\.is-dusk \.session-row__ring-arc\s*\{\s*stroke:\s*var\(--sky-dusk\)/)
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.session-row\.is-active \.session-row__state > i\s*\{\s*animation:\s*none/)
+    expect(styles).not.toContain('.rail-session-card')
+    expect(styles).not.toContain('.session-filters')
   })
 
   it('keeps native window controls outside content while centering navigation on macOS and Windows', () => {

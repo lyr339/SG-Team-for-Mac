@@ -146,10 +146,6 @@
   --provider-auto-border: var(--color-border-secondary);
 
   /* 组件扩展 */
-  --session-frame-default: var(--color-border-tertiary);
-  --session-frame-running: var(--color-border-info);
-  --session-frame-blocked: var(--color-border-warning);
-  --session-frame-offline: var(--color-border-disabled);
   --scrollbar-thumb: var(--color-border-primary);
   --scrollbar-thumb-hover: var(--color-text-tertiary);
   --focus-ring: var(--color-ring-primary);
@@ -542,102 +538,156 @@ body.is-resizing-columns, body.is-resizing-columns * { cursor: col-resize !impor
 }
 
 /* ============================================================
-   会话侧栏（session pane）
+   会话侧栏（session pane）：一份名册，不是一叠卡片
+   与右栏同一套语言——一层外框、hairline 分行、分组标题吸顶；语义色只落在
+   状态点与头像光环上；选中态由左缘 2px 信号橙 + 底色承担，行本身不加边框与阴影。
+   动效预算：悬停底色 120ms、光环弧长 400ms、分组折叠 200ms、只有执行中的状态点脉冲。
    ============================================================ */
 
-.session-pane { min-width: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; background: var(--surface); border: var(--border-width-regular) solid var(--color-border-tertiary); border-radius: var(--r-xl); box-shadow: var(--shadow-1); }
-.session-pane__header { display: flex; align-items: center; justify-content: space-between; padding: 15px 14px 11px; }
-.session-pane__header div { display: flex; align-items: baseline; gap: 8px; }
-.session-pane__header strong { font-family: var(--display); font-size: var(--fs-17); font-weight: 600; letter-spacing: 0; }
-.session-pane__header span { color: var(--accent); font: 600 var(--fs-12)/1 var(--mono); }
-.session-filters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin: 0 10px 9px; padding: 3px; background: var(--surface-soft); border-radius: 10px; }
-.session-filters button { min-height: 31px; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 6px; font-size: var(--fs-10); font-weight: 600; transition: color 140ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease; }
-.session-filters button.is-active { color: var(--accent-deep); background: var(--surface); box-shadow: var(--shadow-1); }
-.session-filters span { margin-left: 4px; font: 600 var(--fs-10)/1 var(--mono); }
-
-/* 纯透明仍保留筛选控件的交互轮廓；只使用轻玻璃层，不恢复整块卡片底色。 */
-html[data-card-transparency="clear"] .session-filters { background: color-mix(in srgb, var(--canvas-solid) 16%, transparent); border: 1px solid var(--line-strong); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-solid) 14%, transparent); backdrop-filter: blur(10px) saturate(112%); }
-html[data-card-transparency="clear"] .session-filters button { color: var(--text-soft); background: color-mix(in srgb, var(--canvas-solid) 18%, transparent); border-color: var(--line); }
-html[data-card-transparency="clear"] .session-filters button:hover { color: var(--text); background: color-mix(in srgb, var(--surface-solid) 24%, transparent); border-color: var(--line-strong); }
-html[data-card-transparency="clear"] .session-filters button.is-active { color: var(--accent-deep); background: color-mix(in srgb, var(--surface-solid) 34%, transparent); border-color: var(--accent-border); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-solid) 18%, transparent), 0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent); }
-
-.session-list { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 8px; padding: 2px 10px 12px; overflow-y: auto; }
-.session-list__empty { padding: 40px 10px; color: var(--muted); text-align: center; font-size: var(--fs-11); }
-/* 状态分类：细轨标签只编码运行语义，不用大色块抢占卡片视觉层级。 */
-.session-group { --group-hue: var(--color-text-tertiary); min-width: 0; display: grid; gap: 4px; }
-.session-group.is-active { --group-hue: var(--color-text-info); }
-.session-group.is-attention { --group-hue: var(--color-text-warning); }
-.session-group.is-waiting { --group-hue: var(--color-text-success); }
-.session-group.is-offline { --group-hue: var(--color-text-tertiary); }
-.session-group__header { width: 100%; min-height: 26px; display: grid; grid-template-columns: 7px auto auto minmax(14px, 1fr) 13px; align-items: center; gap: 6px; padding: 2px 4px; color: var(--muted); background: transparent; border: 0; border-radius: 6px; text-align: left; transition: color 130ms ease, background 130ms ease; }
-.session-group__header:hover, .session-group__header:focus-visible { color: var(--text); background: color-mix(in srgb, var(--surface-solid) 9%, transparent); outline: 0; }
-.session-group__marker { width: 7px; height: 7px; background: var(--group-hue); border: 1px solid color-mix(in srgb, var(--group-hue) 72%, transparent); border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, var(--group-hue) 9%, transparent); }
-.session-group.is-offline .session-group__marker { background: transparent; }
-.session-group__header strong { color: color-mix(in srgb, var(--group-hue) 82%, var(--text)); font-size: var(--fs-10); font-weight: 650; letter-spacing: .01em; }
-.session-group__header em { color: var(--muted); font: 600 var(--fs-10)/1 var(--mono); font-style: normal; }
-.session-group__rule { width: 100%; height: 1px; background: color-mix(in srgb, var(--group-hue) 22%, transparent); }
-.session-group__header svg { width: 12px; height: 12px; justify-self: end; color: var(--muted); transition: transform 140ms ease; }
-.session-group.is-collapsed .session-group__header svg { transform: rotate(-90deg); }
-.session-group__list { min-width: 0; display: grid; gap: 5px; }
-/* 拖拽重排：源卡片半透明；插入线覆盖在 N + 1 个边界上且不参与布局。 */
-.session-list__slot { position: relative; display: grid; min-width: 0; }
-.session-list__slot.is-dragging { opacity: .35; }
-.session-list__slot.is-dragging .rail-session-card { cursor: grabbing; }
-.session-list__slot .rail-session-card[draggable="true"] { cursor: grab; }
-.session-list__slot.is-drop-before::before,
-.session-list__slot.is-drop-after::after { content: ""; position: absolute; z-index: 2; left: 6px; right: 6px; height: 2px; background: var(--accent); border-radius: var(--border-radius-full); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; }
-.session-list__slot.is-drop-before::before { top: -2px; }
-.session-list__slot.is-drop-after::after { bottom: -2px; }
-
-/* ---------- 会话列表卡片 ---------- */
-.rail-session-card {
-  --session-frame: var(--session-frame-default);
-  width: 100%;
-  display: block;
-  min-height: 66px;
-  margin: 0; padding: 7px 9px;
-  color: var(--text); text-align: left;
+.session-pane {
+  /* 名册是阅读面：与右栏正文同一条不透明度下限，透明卡片模式下行文字仍可读。 */
+  --rail-reading-opacity: max(0.92, var(--card-opacity));
+  min-width: 0; min-height: 0;
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--text);
   background: var(--surface);
-  border: var(--border-width-regular) solid var(--session-frame);
-  border-radius: 10px;
-  box-shadow: var(--shadow-hairline);
-  transition: background 150ms ease, border-color 170ms ease, box-shadow 170ms ease;
+  border: var(--border-width-regular) solid var(--color-border-tertiary);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-1);
+  container-type: inline-size;
+  container-name: session-pane;
 }
-.rail-session-card--running, .rail-session-card--starting { --session-frame: var(--session-frame-running); }
-.rail-session-card--blocked, .rail-session-card--review, .rail-session-card--reviving, .rail-session-card--idle { --session-frame: var(--session-frame-blocked); }
-.rail-session-card--offline, .rail-session-card--stopped { --session-frame: var(--session-frame-offline); }
-.rail-session-card:hover { border-color: var(--accent-border); box-shadow: var(--shadow-sm); }
-.rail-session-card:focus-visible { border-color: var(--accent); outline: 2px solid color-mix(in srgb, var(--anthropic-orange) 24%, transparent); outline-offset: 2px; }
-.rail-session-card.is-active { background: var(--surface-warm-layer); border-color: var(--accent-border-strong); box-shadow: 0 0 0 2px color-mix(in srgb, var(--anthropic-orange) 12%, transparent); }
-.rail-session-card__body { min-width: 0; height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "top top" "metrics model"; align-content: start; gap: 6px 9px; }
-.rail-session-card__topline { min-width: 0; grid-area: top; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.rail-session-card__topline > span { min-width: 0; display: flex; align-items: center; gap: 7px; }
-.rail-session-card__identity { min-width: 0; display: block; }
-.rail-session-card__identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-session-card__identity strong { color: var(--text); font-size: var(--fs-11); line-height: 1.2; letter-spacing: 0; }
+.session-pane > .inspector-section__header { background: color-mix(in srgb, var(--surface-solid) 56%, transparent); }
+.session-pane__count { color: var(--text-soft); font: 650 var(--fs-13)/1 var(--font-numeric); }
 
-/* 状态徽章：彩色圆点 + 文字，执行中呼吸脉冲 */
-.rail-session-card__state { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; padding: 3px 6px; color: var(--muted); background: var(--surface-soft); border-radius: var(--border-radius-full); font-size: var(--fs-10); font-style: normal; font-weight: 600; white-space: nowrap; }
-.rail-session-card__state i { width: 6px; height: 6px; flex: 0 0 auto; background: currentColor; border-radius: 50%; }
-.rail-session-card__state.is-waiting { color: var(--blue); background: var(--blue-soft); }
-.rail-session-card__state.is-active { color: var(--blue); background: var(--blue-soft); }
-.rail-session-card__state.is-active i { opacity: 1; }
-.rail-session-card__state.is-attention { color: var(--amber); background: var(--amber-soft); }
-/* 指标行：缩略卡仅保留上下文与待处理队列。 */
-.rail-session-card__metrics { min-width: 0; grid-area: metrics; align-self: center; display: flex; align-items: center; gap: 7px; color: var(--muted); font: 600 var(--fs-10)/1 var(--mono); }
-.rail-metric { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
-.rail-metric--changes { gap: 3px; font-variant-numeric: tabular-nums; }
-.rail-metric--changes b { color: var(--color-text-success); font-weight: 600; }
-.rail-metric--changes em { color: var(--color-text-danger); font-style: normal; font-weight: 600; }
-.rail-metric__track { width: 38px; height: 4px; overflow: hidden; background: var(--surface-soft); border-radius: var(--border-radius-full); }
-.rail-metric__track b { display: block; height: 100%; background: var(--sky-clear); border-radius: inherit; transition: width 240ms ease; }
-.rail-metric--context.is-afternoon { color: var(--sky-afternoon); }
-.rail-metric--context.is-afternoon .rail-metric__track b { background: var(--sky-afternoon); }
-.rail-metric--context.is-dusk { color: var(--sky-dusk); }
-.rail-metric--context.is-dusk .rail-metric__track b { background: var(--sky-dusk); }
-.rail-metric--context.is-unknown { color: var(--faint); }
-.rail-metric--context.is-unknown .rail-metric__track { background: var(--surface-soft); }
-.rail-metric--queue { color: var(--amber); font-size: var(--fs-10); }
+.session-list {
+  position: relative; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  overflow-y: auto; scrollbar-gutter: stable;
+  padding-bottom: 12px;
+  background: color-mix(in srgb, var(--surface-solid) calc(var(--rail-reading-opacity) * 100%), transparent);
+}
+.session-list > .inspector-state { padding-bottom: 18vh; }
+
+/* ---------- 分组：吸顶标题 + 可折叠列表 ---------- */
+.session-group { flex: 0 0 auto; border-bottom: 1px solid var(--color-border-tertiary); }
+.session-group:last-of-type { border-bottom: 0; }
+.session-group__header {
+  position: sticky; top: 0; z-index: 1;
+  width: 100%; min-height: 34px; display: flex; align-items: center; gap: 6px;
+  padding: 10px 10px 4px 14px;
+  color: var(--muted); text-align: left;
+  /* 吸顶时有行从下面滚过：标题必须实底，哪怕名册正文只有 92% 阅读面（差异肉眼不可辨）。 */
+  background: var(--surface-solid);
+  border: 0;
+  font-size: var(--fs-11); font-weight: 650; letter-spacing: .02em;
+  transition: color 120ms ease, padding 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.session-group__header:hover { color: var(--text); }
+.session-group__header:focus-visible { outline: 2px solid var(--color-ring-primary); outline-offset: -2px; border-radius: 6px; }
+.session-group__header > b { color: var(--text-soft); font: 650 var(--fs-10)/1 var(--font-numeric); }
+.session-group__header > svg { width: 14px; height: 14px; margin-left: auto; color: var(--muted); transition: transform 160ms ease; }
+.session-group.is-collapsed .session-group__header { padding-bottom: 10px; }
+.session-group.is-collapsed .session-group__header > svg { transform: rotate(-90deg); }
+.session-group__list { min-width: 0; display: grid; }
+
+/* 拖拽重排：源行半透明；插入线覆盖在 N + 1 个边界上，压在行间 hairline 上，不参与布局。 */
+.session-list__slot { position: relative; min-width: 0; display: grid; }
+.session-list__slot + .session-list__slot { border-top: 1px solid var(--color-border-tertiary); }
+.session-list__slot.is-dragging { opacity: .4; }
+.session-list__slot.is-dragging .session-row { cursor: grabbing; }
+.session-list__slot.is-drop-before::before,
+.session-list__slot.is-drop-after::after { content: ""; position: absolute; z-index: 2; left: 12px; right: 12px; height: 2px; background: var(--accent); border-radius: var(--border-radius-full); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); pointer-events: none; }
+.session-list__slot.is-drop-before::before { top: -1px; }
+.session-list__slot.is-drop-after::after { bottom: -1px; }
+
+/* ---------- 名册行 ---------- */
+.session-row {
+  --rail-state: var(--color-text-tertiary);
+  position: relative; width: 100%; min-width: 0; min-height: 58px;
+  display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 10px;
+  margin: 0; padding: 8px 12px;
+  color: var(--text); text-align: left;
+  background: transparent; border: 0; border-radius: 0;
+  transition: background 120ms ease;
+}
+.session-row:hover { background: var(--surface-soft); }
+.session-row:focus-visible { outline: 2px solid var(--color-ring-primary); outline-offset: -2px; }
+/* 选中：左缘一道信号橙 + 底色。整条侧栏里橙色只出现在这里——它的意思是「你在这」。 */
+.session-row::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px; background: var(--accent); border-radius: 0 2px 2px 0; opacity: 0; transition: opacity 160ms ease; }
+.session-row.is-selected { background: var(--surface-soft); }
+.session-row.is-selected::before { opacity: 1; }
+.session-row.is-waiting { --rail-state: var(--color-text-success); }
+.session-row.is-active { --rail-state: var(--color-text-info); }
+.session-row.is-attention { --rail-state: var(--color-text-warning); }
+.session-row.is-offline { --rail-state: var(--color-border-primary); }
+
+/* 头像 + 上下文光环：环绕头像的一圈弧，弧长即上下文占用；晴 → 午后 → 日暮三档色。 */
+.session-row__avatar { position: relative; width: 42px; height: 42px; display: grid; place-items: center; }
+.session-row__avatar .agent-avatar { border-color: transparent; box-shadow: none; }
+.session-row__avatar .agent-avatar__crown { top: -6px; right: -7px; width: 17px; height: 17px; border-radius: 5px; }
+.session-row__avatar .agent-avatar__crown svg { width: 11px; height: 11px; }
+.session-row__ring { position: absolute; inset: 0; width: 42px; height: 42px; transform: rotate(-90deg); pointer-events: none; }
+.session-row__ring circle { fill: none; stroke-width: 2; }
+.session-row__ring-track { stroke: var(--color-border-tertiary); }
+.session-row__ring-arc { stroke: var(--sky-clear); stroke-linecap: round; transition: stroke-dasharray 400ms cubic-bezier(0.2, 0.8, 0.2, 1), stroke 400ms ease; }
+.session-row__ring.is-afternoon .session-row__ring-arc { stroke: var(--sky-afternoon); }
+.session-row__ring.is-dusk .session-row__ring-arc { stroke: var(--sky-dusk); }
+.session-row.is-offline .session-row__ring-arc { stroke: var(--color-border-primary); }
+.session-row.is-offline .agent-avatar img { filter: grayscale(.7); opacity: .72; transition: filter 200ms ease, opacity 200ms ease; }
+.session-row.is-offline .agent-avatar { color: var(--muted); background: var(--surface-soft); }
+
+/* 文字两行：角色名 / 通道号 / 状态；模型 / 指标。 */
+.session-row__main { min-width: 0; display: grid; gap: 5px; }
+.session-row__line { min-width: 0; display: flex; align-items: center; gap: 6px; }
+/* 角色名是唯一可收缩的段，但至少留两个字 + 省略号；通道号与状态永不收缩。 */
+.session-row__name { flex: 0 1 auto; min-width: 2.5em; overflow: hidden; color: var(--text); font-size: var(--fs-12); font-weight: 650; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.session-row__channel { flex: 0 0 auto; color: var(--muted); font: 600 var(--fs-10)/1 var(--font-numeric); letter-spacing: .02em; }
+.session-row__state { flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--text-soft); font-size: var(--fs-11); font-style: normal; font-weight: 500; white-space: nowrap; }
+.session-row__state > i { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--rail-state); box-shadow: 0 0 0 2px color-mix(in srgb, var(--rail-state) 16%, transparent); }
+.session-row.is-active .session-row__state > i { animation: rail-pulse 1.6s ease-in-out infinite; }
+.session-row.is-attention .session-row__state { color: var(--color-text-warning); }
+.session-row.is-offline .session-row__state > i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--rail-state); }
+.session-row.is-offline .session-row__state, .session-row.is-offline .session-row__name { color: var(--muted); }
+@keyframes rail-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+.session-row__line--meta { color: var(--muted); font: 500 var(--fs-11)/1 var(--font-numeric); }
+/* 模型只做身份，不做状态：厂商色收进一枚 7px 色块，文字保持中性。 */
+.session-row__model { min-width: 0; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; color: var(--text-soft); font-family: var(--font-sans); font-weight: 500; white-space: nowrap; }
+.session-row__model > i { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 2px; background: var(--model-provider-fg, var(--muted)); box-shadow: 0 0 0 1px var(--model-provider-border, var(--line)); }
+.session-row__model > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.session-row__model.is-muted { color: var(--muted); }
+.session-row__model.is-muted > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.session-row__metrics { flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-variant-numeric: lining-nums tabular-nums; }
+.session-row__context { color: var(--text-soft); font-weight: 600; }
+.session-row__context.is-afternoon { color: var(--sky-afternoon); }
+.session-row__context.is-dusk { color: var(--sky-dusk); }
+.session-row__context.is-unknown { color: var(--faint); font-weight: 500; }
+.session-row__changes { display: inline-flex; gap: 4px; }
+.session-row__changes > b { color: var(--color-text-success); font-weight: 600; }
+.session-row__changes > em { color: var(--color-text-danger); font-style: normal; font-weight: 600; }
+.session-row__seen { color: var(--muted); }
+.session-row__queue { display: inline-flex; align-items: center; padding: 2px 6px; color: var(--color-text-warning); background: var(--color-background-warning); border-radius: var(--border-radius-full); font-size: var(--fs-10); font-weight: 600; line-height: 1; }
+.session-row.is-offline .session-row__context, .session-row.is-offline .session-row__model { color: var(--muted); }
+
+/* 窄栏：先收实时增删行数与「配置待读取」占位，再收模型名；通道号、状态与上下文永远保留。 */
+@container session-pane (max-width: 300px) {
+  .session-row__changes, .session-row__model.is-muted { display: none; }
+}
+@container session-pane (max-width: 250px) {
+  .session-row__model { display: none; }
+}
+
+/* 透明卡片：只有小节头随卡片透明并模糊；名册正文保持阅读面下限。 */
+html[data-card-transparency="clear"] .session-pane { background: color-mix(in srgb, var(--surface-solid) 74%, transparent); }
+html[data-card-transparency="clear"] .session-pane > .inspector-section__header { backdrop-filter: blur(16px) saturate(1.05); }
+html:is([data-card-transparency="clear"], [data-card-transparency="light"]) .session-list { backdrop-filter: blur(18px) saturate(1.05); }
+
+@media (prefers-reduced-motion: reduce) {
+  .session-row.is-active .session-row__state > i { animation: none; }
+  .session-row, .session-row::before, .session-row__ring-arc, .session-group__header, .session-group__header > svg, .session-row.is-offline .agent-avatar img { transition: none; }
+}
 /* 会话页头用量度量组（Orbit 静默度量）：排版即界面——小号大写标签压
    齐宽数字，hairline 竖分隔，无底色无描边；冷中性承载内容。 */
 .usage-meter { min-width: 0; display: inline-flex; }
@@ -677,9 +727,6 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
 .usage-popover footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 5px 10px; padding-top: 9px; border-top: var(--border-width-regular) solid var(--line-faint); color: var(--color-text-tertiary); font-size: var(--fs-10); overflow-wrap: anywhere; }
 .usage-popover footer > span:last-child { grid-column: 1 / -1; }
 .usage-popover__empty { margin: 0; color: var(--text-soft); font-size: var(--fs-12); line-height: 1.5; }
-.rail-session-card__model { min-width: 0; grid-area: model; justify-self: end; align-self: center; }
-.rail-session-card__model > b { display: block; max-width: 150px; overflow: hidden; padding: 5px 7px; color: var(--model-provider-fg, white); background: var(--model-provider-bg, var(--accent-deep)); border: 1px solid var(--model-provider-border, transparent); border-radius: 6px; font: 600 var(--fs-10)/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-.rail-session-card__model.is-muted > b { color: var(--muted); background: var(--surface-soft); }
 
 
 /* ============================================================
@@ -1459,8 +1506,7 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
    ============================================================ */
 
 @media (prefers-reduced-motion: reduce) {
-  .rail-session-card,
-  .rail-session-card__state i, .workspace-composer,
+  .workspace-composer,
   .connection-chip--connected i, .typing-indicator i, .timeline-jump, .context-popover { transition: none; animation: none; }
   .workspace-composer:focus-within { transform: none; }
   :where(.primary-button, .lobby-account__save, .cursor-model-dialog > footer button, .team-setup-footer > button:last-child)::after { display: none; }
@@ -1497,7 +1543,7 @@ html[data-card-transparency="clear"] .session-filters button.is-active { color: 
   .desktop-body:not(.desktop-body--sessions) .context-sidebar { display: none; }
   .desktop-body:not(.desktop-body--sessions) .content-stage { height: 100%; }
   .desktop-body--sessions .content-stage { position: absolute; inset: 0; z-index: 5; transform: translateX(100%); }
-  .desktop-body--sessions .session-pane:has(.rail-session-card.is-active) ~ .content-stage { transform: none; }
+  .desktop-body--sessions .session-pane:has(.session-row.is-selected) ~ .content-stage { transform: none; }
   .overview-page__scroll { padding: 14px 14px 24px; }
   .workspace-header { grid-template-columns: auto auto minmax(0, 1fr); padding: 12px 15px; }
   .workspace-back { width: 34px; height: 34px; display: grid; place-items: center; color: var(--accent); background: var(--accent-wash); border: var(--border-width-regular) solid var(--accent-border); border-radius: 10px; }

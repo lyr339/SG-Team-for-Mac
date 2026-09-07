@@ -30,7 +30,7 @@
 | # | 项 | 优先级 | 成本 | 依据 |
 |---|----|--------|------|------|
 | 3.1 | fs-10（10px）字号使用 110 处，辅助文字普遍偏小；配合 faint/muted 低对比色在浅色主题下对比度风险。关键状态文本建议 ≥11px 基线 + 对比度抽测 | P1 | M | grep 实测计数 |
-| 3.2 | 键盘补全：Escape 返回会话列表、会话列表方向键导航（现有 Enter 发送 / 按钮可聚焦已达标） | P2 | S–M | 走查实测 |
+| 3.2 | ✅ 部分完成：会话名册 ↑/↓/Home/End 行间漫游 + roving tabindex（2026-09-07 侧栏重设计随附）；Escape 返回会话列表仍待办 | P2 | S–M | 走查实测 |
 | 3.3 | ✅ 已完成：ProcessBlocks 仅在可展开时输出 aria-expanded；不可展开 disabled head 不再伪装 disclosure | P2 | S | ProcessBlocks.tsx + process-blocks.test.tsx |
 
 ## 4. 代码健康度

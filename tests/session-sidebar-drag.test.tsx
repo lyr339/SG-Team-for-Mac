@@ -162,28 +162,100 @@ describe('SessionSidebar 拖拽重排', () => {
     })
   }
 
-  it('动态展示四类轨道标签，折叠状态持久化，离线筛选不重复标题', async () => {
+  it('动态展示四类状态组与头部摘要；折叠状态持久化，折叠内容 inert 且过渡后卸载', async () => {
     await renderSnapshot(snapshotWith([
-      { id: 'run', displayName: '运行席', status: 'running', waiting: false, connectionPhase: 'processing' },
+      { id: 'run', displayName: '运行席', status: 'running', waiting: false, connectionPhase: 'processing', queueDepth: 1 },
       { id: 'attention', displayName: '关注席', status: 'blocked', waiting: false, connectionPhase: 'approval' },
       { id: 'waiting', displayName: '待命席', status: 'idle', waiting: false, connectionPhase: 'keepalive' },
-      { id: 'offline', displayName: '离线席', online: false, status: 'reviving', waiting: false, connectionPhase: 'reviving' }
+      { id: 'offline', displayName: '离线席', online: false, status: 'reviving', waiting: false, connectionPhase: 'reviving', queueDepth: 2 }
     ]))
     const headers = Array.from(container.querySelectorAll('.session-group__header'))
     expect(headers.map((header) => header.textContent?.replace(/\s/g, ''))).toEqual([
       '执行中1', '需关注1', '待命1', '离线1'
     ])
+    expect(headers.every((header) => header.getAttribute('aria-expanded') === 'true')).toBe(true)
+    // 头部：标题 + 摘要（代替旧版三段筛选器）+ 总数。
+    const header = container.querySelector('.session-pane > .inspector-section__header')!
+    expect(header.querySelector('strong')?.textContent).toBe('会话')
+    expect(header.querySelector('span')?.textContent).toBe('1 执行中 · 1 需关注 · 1 待命 · 1 离线 · 排队 3')
+    expect(header.querySelector('.session-pane__count')?.textContent).toBe('4')
+    expect(container.querySelector('.session-filters')).toBeNull()
 
     const waitingHeader = container.querySelector<HTMLButtonElement>('.session-group.is-waiting .session-group__header')!
     await act(async () => waitingHeader.click())
-    expect(container.querySelector('.session-group.is-waiting .session-group__list')).toBeNull()
+    const collapsible = container.querySelector('.session-group.is-waiting .inspector-collapsible')!
+    expect(waitingHeader.getAttribute('aria-expanded')).toBe('false')
+    expect(collapsible.classList.contains('is-open')).toBe(false)
+    expect(collapsible.hasAttribute('inert')).toBe(true)
     expect(JSON.parse(localStorage.getItem('shiguang.sessionGroups.collapsed.v1')!)).toContain('waiting')
+    await act(async () => { await new Promise((done) => setTimeout(done, 260)) })
+    expect(container.querySelector('.session-group.is-waiting .session-group__list')).toBeNull()
+    // 其余组不受影响。
+    expect(container.querySelector('.session-group.is-offline .session-group__list')).not.toBeNull()
+  })
 
-    const offlineFilter = Array.from(container.querySelectorAll<HTMLButtonElement>('.session-filters button'))
-      .find((button) => button.textContent?.includes('离线'))!
-    await act(async () => offlineFilter.click())
-    expect(container.querySelectorAll('.session-group__header')).toHaveLength(0)
-    expect(container.textContent).toContain('离线席')
+  it('方向键在可见行之间漫游，Home / End 跳到首尾；折叠组内的行不在候选里；只有选中行进入 Tab 序列', async () => {
+    await renderSnapshot(snapshotWith([
+      { id: 'a', displayName: '待命 A' },
+      { id: 'b', displayName: '待命 B' },
+      { id: 'x', displayName: '执行 X', status: 'running', waiting: false, connectionPhase: 'processing' },
+      { id: 'o', displayName: '离线 O', online: false, status: 'offline', waiting: false, connectionPhase: '' }
+    ]))
+    const rows = () => Array.from(container.querySelectorAll<HTMLButtonElement>('.session-row'))
+    const nameOf = (row: Element | null | undefined) => row?.querySelector('.session-row__name')?.textContent
+    // 分组顺序：执行中 X → 待命 A（选中，channel 1）、B → 离线 O。
+    expect(rows().map(nameOf)).toEqual(['执行 X', '待命 A', '待命 B', '离线 O'])
+    expect(rows().map((row) => row.tabIndex)).toEqual([-1, 0, -1, -1])
+
+    const press = async (key: string): Promise<void> => {
+      await act(async () => {
+        document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+      })
+    }
+    await act(async () => rows()[1]!.focus())
+    await press('ArrowDown')
+    expect(nameOf(document.activeElement)).toBe('待命 B')
+    await press('ArrowDown')
+    expect(nameOf(document.activeElement)).toBe('离线 O')
+    await press('ArrowDown')
+    expect(nameOf(document.activeElement)).toBe('离线 O')
+    await press('Home')
+    expect(nameOf(document.activeElement)).toBe('执行 X')
+    await press('End')
+    expect(nameOf(document.activeElement)).toBe('离线 O')
+
+    // 折叠离线组后，End 落在最后一个可见行。
+    const offlineHeader = container.querySelector<HTMLButtonElement>('.session-group.is-offline .session-group__header')!
+    await act(async () => offlineHeader.click())
+    await act(async () => rows()[0]!.focus())
+    await press('End')
+    expect(nameOf(document.activeElement)).toBe('待命 B')
+  })
+
+  it('没有会话时显示可行动的空态；连接中显示加载态', async () => {
+    await renderSnapshot({ ...snapshotOf([]), connection: { state: 'connected' } } as unknown as DesktopSnapshot)
+    expect(container.querySelector('.session-group')).toBeNull()
+    expect(container.querySelector('.inspector-state')?.textContent).toContain('还没有会话')
+    expect(container.querySelector('.inspector-state .inspector-link')).toBeNull()
+
+    let opened = 0
+    await act(async () => {
+      root.render(
+        <SessionSidebar
+          snapshot={{ ...snapshotOf([]), connection: { state: 'connected' } } as unknown as DesktopSnapshot}
+          onSelectSession={() => {}}
+          onOpenRun={() => { opened += 1 }}
+        />
+      )
+    })
+    const link = container.querySelector<HTMLButtonElement>('.inspector-state .inspector-link')!
+    expect(link.textContent).toBe('前往运行页')
+    await act(async () => link.click())
+    expect(opened).toBe(1)
+
+    await renderSnapshot({ ...snapshotOf([]), connection: { state: 'reconnecting' } } as unknown as DesktopSnapshot)
+    expect(container.querySelector('.inspector-state.is-loading')).not.toBeNull()
+    expect(container.querySelector('.session-pane > .inspector-section__header span')?.textContent).toBe('正在连接通道…')
   })
 
   it('跨状态组拖放不改排序，被拖卡片动态换组会安全取消', async () => {
@@ -193,7 +265,7 @@ describe('SessionSidebar 拖拽重排', () => {
       { id: 'x', displayName: '执行 X', status: 'running', waiting: false, connectionPhase: 'processing' }
     ])
     await renderSnapshot(initial)
-    const waitingCard = container.querySelector<HTMLButtonElement>('.session-group.is-waiting .rail-session-card')!
+    const waitingCard = container.querySelector<HTMLButtonElement>('.session-group.is-waiting .session-row')!
     const activeList = container.querySelector<HTMLElement>('.session-group.is-active .session-group__list')!
     await act(async () => waitingCard.dispatchEvent(dragEvent('dragstart')))
     await act(async () => activeList.dispatchEvent(dragEvent('drop', 0)))
@@ -294,20 +366,34 @@ describe('SessionSidebar 拖拽重排', () => {
     expect(localStorage.getItem('shiguang.sessionOrder.v1')).toBeNull()
   })
 
-  it('在线/离线过滤视图不启用拖拽（语义分组不重排）', async () => {
+  it('只有同组里不止一行时才可拖拽；单独一行的组没有可重排的余地', async () => {
+    await renderSnapshot(snapshotWith([
+      { id: 'a', displayName: '待命 A' },
+      { id: 'b', displayName: '待命 B' },
+      { id: 'x', displayName: '执行 X', status: 'running', waiting: false, connectionPhase: 'processing' }
+    ]))
+    const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('.session-row'))
+    expect(rows.map((row) => [row.querySelector('.session-row__name')?.textContent, row.draggable])).toEqual([
+      ['执行 X', false],
+      ['待命 A', true],
+      ['待命 B', true]
+    ])
+  })
+
+  it('点击行打开对应通道；选中行带 aria-current', async () => {
+    let opened: string | undefined
     await act(async () => {
       root.render(
         <SessionSidebar
-          snapshot={snapshotOf(['a', 'b', 'c'])}
-          onSelectSession={() => {}}
+          snapshot={snapshotOf(['a', 'b'])}
+          selectedChannelId="2"
+          onSelectSession={(channelId) => { opened = channelId }}
         />
       )
     })
-    const onlineButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.session-filters button'))
-      .find((button) => button.textContent?.includes('在线'))!
-    await act(async () => { onlineButton.click() })
-    const cards = Array.from(container.querySelectorAll('.rail-session-card')) as HTMLButtonElement[]
-    expect(cards.length).toBeGreaterThan(0)
-    expect(cards.every((card) => card.draggable === false)).toBe(true)
+    const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('.session-row'))
+    expect(rows.map((row) => row.getAttribute('aria-current'))).toEqual([null, 'true'])
+    await act(async () => rows[0]!.click())
+    expect(opened).toBe('1')
   })
 })

@@ -112,7 +112,7 @@ function composerTextarea(): HTMLTextAreaElement {
 }
 
 function sessionCard(channelId: string): HTMLButtonElement {
-  const card = Array.from(container.querySelectorAll<HTMLButtonElement>('button.rail-session-card'))
+  const card = Array.from(container.querySelectorAll<HTMLButtonElement>('button.session-row'))
     .find((element) => element.textContent?.includes(`CH-${channelId}`))
   if (!card) throw new Error(`session card CH-${channelId} not rendered`)
   return card

@@ -275,6 +275,31 @@ if (manualHandoffMode) {
     queueDepth: 0
   }))
 }
+// 会话名册走查：?sessions=none（空态）| many（四个状态组齐全、需要滚动、含未绑定的备用通道）。
+const sessionsScene = (['none', 'many'] as const).find((scene) => scene === previewParameters.get('sessions'))
+if (sessionsScene === 'none') {
+  state.desktop.sessions = []
+  state.desktop.conversations = {}
+} else if (sessionsScene === 'many') {
+  const [lead, builder, solo] = state.desktop.sessions
+  if (lead && builder && solo) {
+    const variant = (
+      base: typeof lead,
+      channelId: string,
+      patch: Partial<typeof lead>
+    ): typeof lead => ({ ...base, ...patch, id: `preview-many-${channelId}`, channelId, queueDepth: patch.queueDepth ?? 0 })
+    state.desktop.sessions = [
+      lead,
+      builder,
+      variant(builder, '4', { displayName: '后端实现 · CH-4', roleName: '后端席', roleTemplateKey: 'backend', avatarId: 'devops', status: 'running', connectionPhase: 'processing', waiting: false, contextUsage: { used: 512_000, limit: 1_000_000, ratio: 0.512 }, changes: { additions: 42, deletions: 3, files: 2 }, modelName: 'GPT-5.6', executionProfile: undefined }),
+      variant(lead, '5', { displayName: '质量验证 · CH-5', roleName: '验收席', roleTemplateKey: 'reviewer', avatarId: 'reviewer', isEffectiveLead: false, status: 'review', connectionPhase: 'processing', waiting: false, contextUsage: { used: 880_000, limit: 1_000_000, ratio: 0.88 }, changes: undefined, queueDepth: 1 }),
+      variant(lead, '6', { displayName: '前端体验 · CH-6', roleName: '体验席', roleTemplateKey: 'frontend', avatarId: 'frontend', isEffectiveLead: false, status: 'blocked', connectionPhase: 'approval', waiting: false, contextUsage: { used: 210_000, limit: 1_000_000, ratio: 0.21 }, changes: { additions: 9, deletions: 1, files: 1 }, modelName: 'Kimi K3', executionProfile: undefined }),
+      variant(lead, '7', { displayName: '研究分析 · CH-7', roleName: '研究席', roleTemplateKey: 'researcher', avatarId: 'researcher', isEffectiveLead: false, status: 'waiting', connectionPhase: 'keepalive', waiting: true, contextUsage: undefined, changes: undefined, modelName: 'Gemini 3.5 Pro', executionProfile: undefined }),
+      solo,
+      variant(solo, '8', { displayName: 'SG Team CH-8', roleName: '未绑定外置团队', roleTemplateKey: undefined, avatarId: undefined, status: 'offline', online: false, connected: false, waiting: false, contextUsage: undefined, lastSeenAt: previewNow - 3 * 60 * 60_000, queueDepth: 0, modelName: undefined, executionProfile: undefined })
+    ]
+  }
+}
 const previewTasks = structuredClone(taskPoolSnapshot)
 if (previewRunStatus === 'completed') {
   for (const task of Object.values(previewTasks.tasks)) {

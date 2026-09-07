@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
  * 设计走查截图：用本机 Chromium 内核浏览器（Edge / Chrome）无头打开 `npm run preview:ui`
- * 的预览页，按场景矩阵（右栏面板 / 运行页 × 深浅色 × 窄窗 × 透明模式 × reduced-motion × 交互）
+ * 的预览页，按场景矩阵（右栏面板 / 运行页 / 会话侧栏 × 深浅色 × 窄窗 × 透明模式 × reduced-motion × 交互）
  * 截图到 preview-screenshots/。只依赖 CDP 与 ws，不引入 Playwright。
  *
  *   npm run preview:ui                      # 另一个终端，端口 5174
  *   node scripts/preview-shots.mjs          # 全部场景
  *   node scripts/preview-shots.mjs --only review-light,plan-dark
  *   node scripts/preview-shots.mjs --only run-team-active-light,run-independent-mixed-dark
+ *   node scripts/preview-shots.mjs --only sessions-rail-light,sessions-rail-narrow,sessions-rail-empty
  *   node scripts/preview-shots.mjs --list
  *
  * 可选环境变量：PREVIEW_BASE（默认 http://127.0.0.1:5174）、PREVIEW_BROWSER（浏览器可执行文件）、
@@ -44,6 +45,17 @@ function baseStorage({ tab = 'review', width = 420, cardOpacity = 0.9, colorMode
     [REVIEW_SCOPE_KEY]: scope,
     [APPEARANCE_KEY]: JSON.stringify({ cardOpacity, colorMode }),
     'shiguang.lastSessionChannel.v1': '2'
+  }
+}
+
+const SESSION_RAIL_WIDTH_KEY = 'sg-team.layout:v1:shell.sessions.v2'
+
+/** 会话侧栏走查：右栏收起、选中 CH-2、侧栏宽度可指定（默认 326，下限 286）。 */
+function railStorage({ cardOpacity = 0.94, colorMode = 'light', railWidth = 326 } = {}) {
+  return {
+    ...baseStorage({ cardOpacity, colorMode }),
+    [INSPECTOR_OPEN_KEY]: '0',
+    [SESSION_RAIL_WIDTH_KEY]: JSON.stringify([railWidth])
   }
 }
 
@@ -162,7 +174,36 @@ const scenes = [
   },
   { name: 'run-team-active-clear', run: true, colorScheme: 'light', storage: baseStorage({ cardOpacity: 0 }) },
   // 右上角设置入口：账号与 Cursor。
-  { name: 'account-page', hash: 'account', width: 1440, height: 900, colorScheme: 'light', storage: baseStorage(), clip: null }
+  { name: 'account-page', hash: 'account', width: 1440, height: 900, colorScheme: 'light', storage: baseStorage(), clip: null },
+
+  // ---------- 会话侧栏（名册）：右栏收起，特写裁 .session-pane ----------
+  // 四个状态组齐全（?sessions=many）× 深浅色；透明卡片；窄栏 286（容器查询收起增删行数）；
+  // 悬停行 / 键盘焦点漫游 / 折叠一组 / 短窗滚动时的吸顶标题；空态；reduced-motion。
+  ...[['light', 'light'], ['dark', 'dark']].map(([suffix, colorMode]) => (
+    { name: `sessions-rail-${suffix}`, rail: true, query: 'sessions=many', colorScheme: colorMode, storage: railStorage({ colorMode }) }
+  )),
+  { name: 'sessions-rail-default', rail: true, colorScheme: 'light', storage: railStorage() },
+  { name: 'sessions-rail-clear', rail: true, query: 'sessions=many', colorScheme: 'light', storage: railStorage({ cardOpacity: 0 }) },
+  { name: 'sessions-rail-clear-dark', rail: true, query: 'sessions=many', colorScheme: 'dark', storage: railStorage({ cardOpacity: 0, colorMode: 'dark' }) },
+  { name: 'sessions-rail-narrow', rail: true, width: 1180, height: 760, query: 'sessions=many', colorScheme: 'light', storage: railStorage({ railWidth: 286 }) },
+  { name: 'sessions-rail-hover-row', rail: true, query: 'sessions=many', colorScheme: 'light', storage: railStorage(), actions: [{ hover: '.session-group.is-attention .session-list__slot:first-child .session-row' }] },
+  { name: 'sessions-rail-keyboard', rail: true, query: 'sessions=many', colorScheme: 'light', storage: railStorage(), actions: [{ eval: `document.querySelector('.session-row.is-selected').focus()` }, { key: 'ArrowDown', code: 'ArrowDown' }, { key: 'ArrowDown', code: 'ArrowDown' }] },
+  { name: 'sessions-rail-collapsed', rail: true, query: 'sessions=many', colorScheme: 'light', storage: railStorage(), actions: [{ click: '.session-group.is-active .session-group__header' }, { wait: 300 }] },
+  {
+    name: 'sessions-rail-collapsing', rail: true, query: 'sessions=many', colorScheme: 'light', storage: railStorage(), clip: null,
+    actions: [{
+      label: '分组折叠 grid-template-rows 采样（0/60/120/200/320ms）',
+      probe: `new Promise((done) => {
+        const samples = []
+        document.querySelector('.session-group.is-waiting .session-group__header').click()
+        const slot = () => document.querySelector('.session-group.is-waiting .inspector-collapsible')
+        for (const at of [0, 60, 120, 200, 320]) setTimeout(() => { samples.push(at + 'ms ' + getComputedStyle(slot()).gridTemplateRows); if (at === 320) done(samples) }, at)
+      })`
+    }, { wait: 40 }]
+  },
+  { name: 'sessions-rail-scrolled', rail: true, width: 1180, height: 620, query: 'sessions=many', colorScheme: 'light', storage: railStorage(), actions: [{ eval: `document.querySelector('.session-list').scrollTop = 150` }, { wait: 120 }] },
+  { name: 'sessions-rail-empty', rail: true, query: 'sessions=none', colorScheme: 'light', storage: railStorage() },
+  { name: 'sessions-rail-reduced-motion', rail: true, query: 'sessions=many', colorScheme: 'light', reducedMotion: true, storage: railStorage() }
 ]
 
 for (const scene of scenes) {
@@ -171,6 +212,11 @@ for (const scene of scenes) {
     scene.width ??= 1440
     scene.height ??= 900
     scene.clip ??= '.run-page__inner'
+  }
+  if (scene.rail) {
+    scene.width ??= 1440
+    scene.height ??= 900
+    scene.clip ??= '.session-pane'
   }
   if (scene.clip === undefined && scene.name !== 'inspector-closed' && !scene.hash) scene.clip = '.workspace-inspector'
   if (scene.clip === null) delete scene.clip

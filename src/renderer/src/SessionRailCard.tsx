@@ -2,106 +2,133 @@ import { memo } from 'react'
 import type { DragEvent } from 'react'
 import type { AgentSession } from '../../domain/agent-session'
 import {
-  contextPercent,
   contextTone,
   formatContextUsage,
-  modelDisplayName,
-  statusLabel
+  formatFullClock,
+  formatRelativeClock,
+  modelDisplayName
 } from './format'
 import { AgentAvatar } from './AgentAvatar'
 import { modelProviderClass, modelProviderLabel } from './model-provider'
+import {
+  contextRingDash,
+  sessionRailContextPercent,
+  sessionRailGroupOf,
+  sessionRailStateLabel,
+  sessionRailTitle
+} from './session-rail-view'
 
 interface SessionRailCardProps {
   session: AgentSession
   selected: boolean
   onOpen: (channelId: string) => void
-  /** 拖拽重排透传（侧栏「全部」视图启用；HTML5 DnD 事件直接落在卡片按钮上）。 */
+  /** 拖拽重排透传（侧栏启用；HTML5 DnD 事件直接落在行按钮上）。 */
   draggable?: boolean
   onDragStart?: (event: DragEvent<HTMLButtonElement>) => void
   onDragEnd?: (event: DragEvent<HTMLButtonElement>) => void
+  /** 键盘漫游：只有当前选中行进入 Tab 序列，其余行由方向键到达。 */
+  tabIndex?: number
+  /** 侧栏用「N 分钟前」时的时间基准（每分钟刷新一次即可）。 */
+  now?: number
 }
 
-/** 状态徽章色调：待命→绿；启动/执行→蓝（呼吸点）；空闲/阻塞/待验收/恢复→琥珀；离线/停止→灰。 */
-function stateTone(session: AgentSession): 'waiting' | 'active' | 'attention' | 'offline' {
-  if (!session.online) return 'offline'
-  if (session.status === 'waiting') return 'waiting'
-  if (session.status === 'running' || session.status === 'starting') return 'active'
-  if (session.status === 'offline' || session.status === 'stopped') return 'offline'
-  return 'attention'
-}
-
+/**
+ * 名册里的一行：头像（含上下文光环）+ 角色名 / 通道号 / 状态 + 模型 / 指标。
+ * 状态语义只落在一个 7px 的点上；上下文压力的精确值在指标行，光环是它的一眼版。
+ */
 function SessionRailCardView({
   session,
   selected,
   onOpen,
   draggable = false,
   onDragStart,
-  onDragEnd
+  onDragEnd,
+  tabIndex,
+  now
 }: SessionRailCardProps): React.JSX.Element {
-  const telemetryDetail = session.telemetry?.detail || '尚未接入 Cursor 本机遥测'
+  const group = sessionRailGroupOf(session)
+  const offline = group === 'offline'
+  const { name, channel } = sessionRailTitle(session)
+  const state = sessionRailStateLabel(session)
+  const percent = sessionRailContextPercent(session)
+  const ringDash = contextRingDash(percent)
+  const sky = contextTone(percent)
   const runtimeKnown = Boolean(session.modelName || session.executionProfile)
   const runtimeName = modelDisplayName(session.executionProfile, session.modelName)
-  const state = session.online
-    ? statusLabel(session.status)
-    : '已离线'
-  const tone = stateTone(session)
-  const percent = contextPercent(session.contextUsage)
-  const displayedPercent = percent === undefined ? undefined : Math.round(percent * 10) / 10
-  const sky = contextTone(percent)
+  const modelId = session.executionProfile?.modelId ?? session.modelName
+  const telemetryDetail = session.telemetry?.detail || '尚未接入 Cursor 本机遥测'
+  const tooltip = [
+    session.composerTitle ? `${session.displayName} · ${session.composerTitle}` : session.displayName,
+    telemetryDetail,
+    draggable ? '拖动可调整同组内的顺序' : ''
+  ].filter(Boolean).join('\n')
+  const lastSeen = offline && session.lastSeenAt ? session.lastSeenAt : undefined
 
   return (
     <button
-      className={`rail-session-card rail-session-card--${session.status} ${selected ? 'is-active' : ''}`}
+      type="button"
+      className={`session-row is-${group}${selected ? ' is-selected' : ''}`}
       onClick={() => onOpen(session.channelId)}
-      title={session.composerTitle ? `${telemetryDetail} · ${session.composerTitle}` : telemetryDetail}
+      title={tooltip}
+      aria-current={selected ? 'true' : undefined}
+      aria-label={`${name} ${channel}，${state}${percent === undefined ? '' : `，上下文 ${Math.round(percent)}%`}${session.queueDepth > 0 ? `，排队 ${session.queueDepth}` : ''}`}
+      tabIndex={tabIndex}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
     >
-      <span className="rail-session-card__body">
-        <span className="rail-session-card__topline">
-          <span>
-            <AgentAvatar
-              avatarId={session.avatarId}
-              name={session.displayName}
-              crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'}
-              online={session.online}
-              size="sm"
-            />
-            <span className="rail-session-card__identity">
-              <strong>{session.displayName}</strong>
-            </span>
-          </span>
-          <em className={`rail-session-card__state is-${tone}`}><i aria-hidden="true" /><span>{state}</span></em>
+      <span className="session-row__avatar">
+        <AgentAvatar
+          avatarId={session.avatarId}
+          name={session.displayName}
+          crowned={session.isEffectiveLead ?? session.roleTemplateKey === 'lead'}
+          size="sm"
+        />
+        <svg className={`session-row__ring${sky ? ` is-${sky}` : ''}`} viewBox="0 0 42 42" aria-hidden="true">
+          <circle className="session-row__ring-track" cx="21" cy="21" r="19.25" />
+          {ringDash ? (
+            <circle className="session-row__ring-arc" cx="21" cy="21" r="19.25" pathLength="100" strokeDasharray={ringDash} />
+          ) : null}
+        </svg>
+      </span>
+      <span className="session-row__main">
+        <span className="session-row__line">
+          <strong className="session-row__name">{name}</strong>
+          <small className="session-row__channel">{channel}</small>
+          <em className="session-row__state"><i aria-hidden="true" /><span>{state}</span></em>
         </span>
-
-        <span className="rail-session-card__metrics">
+        <span className="session-row__line session-row__line--meta">
           <span
-            className={`rail-metric rail-metric--context ${sky ? `is-${sky}` : ''} ${percent === undefined ? 'is-unknown' : ''}`}
-            title={percent === undefined ? '上下文用量待读取' : `上下文 ${formatContextUsage(session.contextUsage)}`}
+            className={`session-row__model ${runtimeKnown ? modelProviderClass(modelId, runtimeName) : 'is-muted'}`}
+            title={runtimeKnown ? `${runtimeName} · ${modelProviderLabel(modelId, runtimeName)}` : `${runtimeName}（Cursor 当前 Composer 运行配置）`}
           >
-            <i className="rail-metric__track"><b style={{ width: `${displayedPercent ?? 0}%` }} /></i>
-            {displayedPercent === undefined ? '—' : `${Math.round(displayedPercent)}%`}
+            <i aria-hidden="true" /><span>{runtimeName}</span>
           </span>
-          {session.changes ? (
-            <span
-              className="rail-metric rail-metric--changes"
-              title={`Cursor 当前 Composer 实时代码变更：新增 ${session.changes.additions} 行，删除 ${session.changes.deletions} 行`}
-              aria-label={`实时变更，新增 ${session.changes.additions} 行，删除 ${session.changes.deletions} 行`}
+          <span className="session-row__metrics">
+            <b
+              className={`session-row__context${sky ? ` is-${sky}` : ''}${percent === undefined ? ' is-unknown' : ''}`}
+              title={percent === undefined ? '上下文用量待读取' : `上下文 ${formatContextUsage(session.contextUsage)}`}
             >
-              <b>+{session.changes.additions}</b><em>-{session.changes.deletions}</em>
-            </span>
-          ) : null}
-          {session.queueDepth > 0 ? (
-            <span className="rail-metric rail-metric--queue" title="排队等待 Agent 处理的消息">排队 {session.queueDepth}</span>
-          ) : null}
-        </span>
-
-        <span
-          className={`rail-session-card__model ${runtimeKnown ? modelProviderClass(session.executionProfile?.modelId ?? session.modelName, runtimeName) : 'is-muted'}`}
-          title={session.modelName ? `${runtimeName} · ${modelProviderLabel(session.executionProfile?.modelId ?? session.modelName, runtimeName)}` : `${runtimeName}（Cursor 当前 Composer 运行配置）`}
-        >
-          <b>{runtimeName}</b>
+              {percent === undefined ? '—' : `${Math.round(percent)}%`}
+            </b>
+            {session.changes ? (
+              <span
+                className="session-row__changes"
+                title={`Cursor 当前 Composer 实时代码变更：新增 ${session.changes.additions} 行，删除 ${session.changes.deletions} 行`}
+                aria-label={`实时变更，新增 ${session.changes.additions} 行，删除 ${session.changes.deletions} 行`}
+              >
+                <b>+{session.changes.additions}</b><em>−{session.changes.deletions}</em>
+              </span>
+            ) : null}
+            {lastSeen ? (
+              <time className="session-row__seen" dateTime={new Date(lastSeen).toISOString()} title={`最近活性 ${formatFullClock(lastSeen)}`}>
+                {formatRelativeClock(lastSeen, now)}
+              </time>
+            ) : null}
+            {session.queueDepth > 0 ? (
+              <span className="session-row__queue" title="排队等待 Agent 处理的消息">排队 {session.queueDepth}</span>
+            ) : null}
+          </span>
         </span>
       </span>
     </button>
