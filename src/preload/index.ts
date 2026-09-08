@@ -5,9 +5,16 @@ import {
   type SgDesktopApi
 } from '../shared/desktop-api'
 
+let nativeFullscreen = false
 const markRendererPlatform = (): void => {
   document.documentElement.dataset.platform = process.platform
+  document.documentElement.dataset.nativeFullscreen = String(nativeFullscreen)
 }
+
+ipcRenderer.on(IPC.windowFullscreenChanged, (_event, fullscreen: unknown) => {
+  nativeFullscreen = fullscreen === true
+  if (document.documentElement) markRendererPlatform()
+})
 
 if (document.documentElement) {
   markRendererPlatform()

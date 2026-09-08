@@ -14,6 +14,8 @@ import { statusLabel } from './format'
 interface SessionHandoffDialogProps {
   session: AgentSession
   sessions: AgentSession[]
+  /** 备用通道（已接入 MCP 但未编入本轮席位）；候选列表标「备用」并排在同角色之后。 */
+  standbyChannelIds?: readonly string[]
   loadContext: (channelId: string) => Promise<SessionHandoffContext>
   deliver: (input: { sourceChannelId: string; target: SessionHandoffTarget; note?: string }) => Promise<SessionHandoffResult>
   revealPath?: (path: string) => Promise<boolean>
@@ -39,17 +41,59 @@ function targetState(candidate: AgentSession): { label: string; eligible: boolea
   return { label: `${statusLabel(candidate.status)}：排在当前任务之后`, eligible: true, tone: 'busy' }
 }
 
+/** 候选与来源的关系标签：同角色（团队席位间）/ 备用通道；其余无标签。 */
+export type TargetRelation = 'same-role' | 'standby' | undefined
+
+export function targetRelation(
+  source: Pick<AgentSession, 'roleTemplateKey'>,
+  candidate: Pick<AgentSession, 'channelId' | 'roleTemplateKey'>,
+  standbyChannelIds: ReadonlySet<string>
+): TargetRelation {
+  if (standbyChannelIds.has(candidate.channelId)) return 'standby'
+  const sameRole = Boolean(source.roleTemplateKey)
+    && source.roleTemplateKey !== 'solo'
+    && candidate.roleTemplateKey === source.roleTemplateKey
+  return sameRole ? 'same-role' : undefined
+}
+
+const RELATION_LABEL: Record<Exclude<TargetRelation, undefined>, string> = { 'same-role': '同角色', standby: '备用通道' }
+const RELATION_RANK: Record<Exclude<TargetRelation, undefined>, number> = { 'same-role': 0, standby: 1 }
+
 /**
- * 会话交接弹窗（阶段 1：独立席位）。
+ * 候选排序：同角色 > 备用通道 > 在线待命 > 在线忙碌 > 离线，同级按通道号。
+ * 把实现席的上下文交给验收席通常没有意义，同角色与备用（无角色包袱）优先。
+ */
+export function sortHandoffTargets(
+  source: Pick<AgentSession, 'channelId' | 'roleTemplateKey'>,
+  sessions: readonly AgentSession[],
+  standbyChannelIds: ReadonlySet<string>
+): AgentSession[] {
+  const rank = (candidate: AgentSession): number => {
+    const relation = targetRelation(source, candidate, standbyChannelIds)
+    return relation ? RELATION_RANK[relation] : 2
+  }
+  return sessions
+    .filter((candidate) => candidate.channelId !== source.channelId)
+    .sort((left, right) => (
+      rank(left) - rank(right)
+      || Number(right.online) - Number(left.online)
+      || Number(right.waiting) - Number(left.waiting)
+      || Number(left.channelId) - Number(right.channelId)
+    ))
+}
+
+/**
+ * 会话交接弹窗（独立席位与团队席位共用）。
  *
  * 先定位当前 Cursor 会话的上下文文档（agent 转录 JSONL）在本机的精确路径与落盘状态，
  * 再选择把它投递到：本会话（等待新会话保持位，留给重建后的自己）或另一个会话的队列。
  * 拾光同时导出本通道的会话记录（Markdown）一并投递，弥补 Cursor 转录在原会话未结束时
- * 的滞后。
+ * 的滞后。目标为团队席位时，消息正文由主进程附上团队接收方说明（不是任务板任务）。
  */
 export function SessionHandoffDialog({
   session,
   sessions,
+  standbyChannelIds,
   loadContext,
   deliver,
   revealPath,
@@ -75,22 +119,20 @@ export function SessionHandoffDialog({
     return () => { cancelled = true }
   }, [loadContext, session.channelId])
 
+  const standby = useMemo(() => new Set(standbyChannelIds ?? []), [standbyChannelIds])
+  const sourceChannelId = session.channelId
+  const sourceRoleTemplateKey = session.roleTemplateKey
+  const others = useMemo(() => (
+    sortHandoffTargets({ channelId: sourceChannelId, roleTemplateKey: sourceRoleTemplateKey }, sessions, standby)
+  ), [sessions, sourceChannelId, sourceRoleTemplateKey, standby])
+
+  // 席位没有会话令牌时「本会话」不可选：落到排序后的首个候选（同角色 / 备用优先）。
   useEffect(() => {
     if (context && !context.holdSupported && choice === 'self') {
-      const first = sessions.find((candidate) => candidate.channelId !== session.channelId)
+      const first = others[0]
       if (first) setChoice(`ch:${first.channelId}`)
     }
-  }, [choice, context, session.channelId, sessions])
-
-  const others = useMemo(() => (
-    sessions
-      .filter((candidate) => candidate.channelId !== session.channelId)
-      .sort((left, right) => (
-        Number(right.online) - Number(left.online)
-        || Number(right.waiting) - Number(left.waiting)
-        || Number(left.channelId) - Number(right.channelId)
-      ))
-  ), [session.channelId, sessions])
+  }, [choice, context, others])
 
   const transcript = context?.transcript
   const canDeliver = Boolean(context && transcript && !busy && (choice !== 'self' || context.holdSupported))
@@ -139,12 +181,12 @@ export function SessionHandoffDialog({
         </header>
 
         {result ? (
-          <div className="session-handoff__done" role="status">
+          <div className="handoff-done" role="status">
             <i aria-hidden="true">✓</i>
             <strong>已排队到 CH-{result.targetChannelId}</strong>
             <p>
               {result.held
-                ? '带「等待新会话」保持位：当前 Agent 取不到这条消息；该席位在同一批次内重建/重启后，新会话第一次轮询就会收到并阅读。'
+                ? '带「等待新会话」保持位：当前 Agent 取不到这条消息；该席位在同一运行内重建后，新会话第一次轮询就会收到并阅读。'
                 : '按普通排队投递：目标会话下一次轮询即会收到并阅读。'}
             </p>
             <dl>
@@ -220,14 +262,15 @@ export function SessionHandoffDialog({
                       <strong>本会话 · CH-{session.channelId}</strong>
                       <small>
                         {context && !context.holdSupported
-                          ? '当前席位没有会话令牌，无法区分新旧会话（旧版会话），请选择其他会话'
-                          : '等待新会话：当前 Agent 取不到；同一批次内重建/重启该席位后，新会话首次轮询即收到'}
+                          ? '当前席位没有会话令牌，无法区分新旧会话（旧版会话或备用接管），请选择其他会话'
+                          : '等待新会话：当前 Agent 取不到；同一运行内重建该席位后，新会话首次轮询即收到'}
                       </small>
                     </span>
                     <em>下次启动</em>
                   </label>
                   {others.map((candidate) => {
                     const state = targetState(candidate)
+                    const relation = targetRelation(session, candidate, standby)
                     const value: TargetChoice = `ch:${candidate.channelId}`
                     return (
                       <label key={candidate.channelId} className={`session-handoff__target ${choice === value ? 'is-selected' : ''} is-${state.tone}`}>
@@ -241,7 +284,7 @@ export function SessionHandoffDialog({
                         <span className="session-handoff__target-face"><AgentAvatar avatarId={candidate.avatarId} name={candidate.displayName} online={candidate.online} size="sm" /></span>
                         <span className="session-handoff__target-text">
                           <strong>{seatLabel(candidate)}</strong>
-                          <small>{state.label}</small>
+                          <small>{relation ? `${RELATION_LABEL[relation]} · ` : ''}{state.label}</small>
                         </span>
                         <em>{candidate.online ? (candidate.waiting ? '在线' : '忙碌') : '离线'}</em>
                       </label>

@@ -174,6 +174,12 @@ const scenes = [
   },
   { name: 'run-team-active-clear', run: true, colorScheme: 'light', storage: baseStorage({ cardOpacity: 0 }) },
   // 右上角设置入口：账号与 Cursor。
+  ...['accounts', 'import', 'automation', 'aozai', 'maintenance'].flatMap(group =>
+    ['light', 'dark'].map(colorScheme => ({
+      name: `settings-${group}-${colorScheme}`, hash: `account:${group}`,
+      width: 1440, height: 900, colorScheme, storage: baseStorage({ colorMode: colorScheme }), clip: null
+    }))
+  ),
   { name: 'account-page', hash: 'account', width: 1440, height: 900, colorScheme: 'light', storage: baseStorage(), clip: null },
 
   // ---------- 会话侧栏（名册）：右栏收起，特写裁 .session-pane ----------

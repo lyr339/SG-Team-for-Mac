@@ -3,7 +3,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_ACCOUNT_AUTOMATION_SETTINGS } from '../src/domain/account-automation'
-import { LobbyAccountTile, type LobbyAccountTileProps } from '../src/renderer/src/lobby/LobbyAccountTile'
+import { SettingsPage as LobbyAccountTile } from '../src/renderer/src/settings/SettingsPage'
+import type { SettingsPageProps as LobbyAccountTileProps } from '../src/renderer/src/settings/settings-view'
 
 describe('Cursor 本机维护操作', () => {
   let container: HTMLDivElement

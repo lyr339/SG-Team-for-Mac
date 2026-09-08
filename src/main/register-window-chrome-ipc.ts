@@ -31,3 +31,20 @@ export function registerWindowChromeIpc(getWindow: () => BrowserWindow | undefin
   })
   return () => ipcMain.removeHandler(IPC.windowSetChromeColorMode)
 }
+
+/** 原生全屏状态只影响窗口装饰；dom-ready 同步覆盖渲染进程刷新/重载。 */
+export function syncWindowFullscreen(window: BrowserWindow): void {
+  const publish = (): void => {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send(IPC.windowFullscreenChanged, window.isFullScreen())
+    }
+  }
+  window.on('enter-full-screen', publish)
+  window.on('leave-full-screen', publish)
+  window.webContents.on('dom-ready', publish)
+  window.once('closed', () => {
+    window.removeListener('enter-full-screen', publish)
+    window.removeListener('leave-full-screen', publish)
+    window.webContents.removeListener('dom-ready', publish)
+  })
+}

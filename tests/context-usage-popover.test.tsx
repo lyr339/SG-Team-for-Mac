@@ -40,6 +40,15 @@ describe('ContextUsagePopover', () => {
     container.remove()
   })
 
+  it('draws a hollow ring from the actual ratio, with no progress for zero or unknown', async () => {
+    for (const [ratio, expected] of [[0.327, '32.7 100'], [1, '100 100'], [0, null], [undefined, null]] as const) {
+      await act(async () => root.render(<ContextUsagePopover usage={ratio === undefined ? undefined : { ratio }} />))
+      expect(container.querySelector('.composer-context-ring__track')).not.toBeNull()
+      expect(container.querySelector('.composer-context-ring__progress')?.getAttribute('stroke-dasharray') ?? null).toBe(expected)
+      expect(container.querySelector('.composer-context > i')).toBeNull()
+    }
+  })
+
   it('opens the Cursor-native category breakdown on pointer hover', async () => {
     await act(async () => root.render(<ContextUsagePopover usage={usage} />))
     const meter = container.querySelector<HTMLDivElement>('.context-meter')!

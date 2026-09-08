@@ -59,7 +59,7 @@ describe('theme surface contracts', () => {
     // 会话名册：厂商色只落在模型名前的 7px 色块上，文字保持中性，不给整行染色。
     expect(styles).toMatch(/\.session-row__model > i\s*\{[^}]*var\(--model-provider-fg/)
     expect(styles).not.toMatch(/\.session-row__model\s*\{[^}]*var\(--model-provider-fg/)
-    expect(styles).toMatch(/\.composer-model > b\s*\{[^}]*var\(--model-provider-fg/)
+    expect(styles).toMatch(/\.composer-model\s*\{[^}]*var\(--plate-ink/)
   })
 
   it('keeps the session roster on the inspector language: one frame, hairlines, accent only for selection', () => {
@@ -81,8 +81,39 @@ describe('theme surface contracts', () => {
     expect(styles).not.toContain('.session-filters')
   })
 
+  it('animates sidebar tracks without removing grid cells or squeezing their content', () => {
+    expect(styles).toContain('.resizable-columns--2.is-first-pane-collapsed { grid-template-columns: minmax(0, 0px) 0px minmax(var(--resizable-final-min), 1fr); }')
+    expect(styles).toContain('.shell-columns, .workspace-dock { transition: grid-template-columns 240ms cubic-bezier(0.2, 0.8, 0.2, 1); }')
+    expect(styles).toContain('.session-sidebar-pane > * { position: absolute; inset: 0 auto 0 0; width: var(--resizable-pane-0); }')
+    expect(styles).toContain('body.is-resizing-columns .resizable-columns { transition: none; }')
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.shell-columns, \.workspace-dock \{ transition: none; \}/)
+    expect(styles).toContain('.session-sidebar-pane > * { position: static; width: auto; }')
+  })
+
+  it('unifies composer model and parameters without coloured badge boxes', () => {
+    expect(styles).toContain('.composer-model-params > i { font: inherit; font-style: normal; white-space: nowrap; }')
+    expect(styles).not.toContain('.composer-model > i.is-')
+    expect(styles).toMatch(/\.model-logo-slot::after\s*\{[^}]*height: 18px;[^}]*var\(--plate-edge/)
+    expect(styles).toMatch(/\.composer-model-params\s*\{[^}]*height: 18px;[^}]*var\(--plate-edge/)
+  })
+
+  it('keeps context pressure colours independent from session connectivity', () => {
+    expect(styles).toMatch(/\.session-row__ring-arc\s*\{\s*stroke: var\(--color-text-success\)/)
+    expect(styles).toContain('.session-row__ring.is-afternoon .session-row__ring-arc { stroke: var(--sky-afternoon); }')
+    expect(styles).toContain('.session-row__ring.is-dusk .session-row__ring-arc { stroke: var(--sky-dusk); }')
+    expect(styles).not.toContain('.session-row.is-offline .session-row__ring-arc')
+  })
+
+  it('keeps composer action labels visible and wraps instead of clipping on narrow layouts', () => {
+    expect(styles).not.toMatch(/\.composer-tool span\s*\{\s*display:\s*none/)
+    expect(styles).toMatch(/\.composer-topbar__left\s*\{[^}]*flex-wrap: wrap/)
+    expect(styles).toMatch(/\.composer-tool\s*\{[^}]*flex: 0 0 auto/)
+    expect(styles).toContain('--plate-bg: #eee2d3;')
+  })
+
   it('keeps native window controls outside content while centering navigation on macOS and Windows', () => {
     expect(styles).toContain('html[data-platform="darwin"] { --window-control-safe-left: 84px; }')
+    expect(styles).toContain('html[data-platform="darwin"][data-native-fullscreen="true"] { --window-control-safe-left: 0px; }')
     expect(styles).toContain('html[data-platform="win32"] { --window-control-safe-right: 138px; }')
     expect(styles).toMatch(/\.topbar\s*\{[^}]*margin:\s*0;[^}]*padding:\s*0 calc\(var\(--window-control-safe-right\) \+ var\(--topbar-gutter\)\)/s)
     expect(styles).toMatch(/\.topbar-nav\s*\{[^}]*translateX\(calc\(\(var\(--window-control-safe-right\) - var\(--window-control-safe-left\)\) \/ 2\)\)/s)

@@ -1,3 +1,4 @@
+import { WINDOW_MIN_WIDTH } from '../shared/window-layout'
 import { app, BrowserWindow, nativeImage, safeStorage, shell } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -32,7 +33,7 @@ import { TeamOrchestrator } from '../application/team-orchestrator'
 import { CursorAccountVault } from '../application/cursor-account-vault'
 import { cursorRuntimeMatchMessage, verifyCursorRuntimeAccountMatch } from '../application/cursor-runtime-account-verify'
 import { registerCursorAccountIpc } from './register-cursor-account-ipc'
-import { registerWindowChromeIpc, WINDOW_TOPBAR_HEIGHT } from './register-window-chrome-ipc'
+import { registerWindowChromeIpc, syncWindowFullscreen, WINDOW_TOPBAR_HEIGHT } from './register-window-chrome-ipc'
 import { AozaiCardVault } from '../application/aozai-card-vault'
 import { AozaiService, type AozaiFetch } from '../application/aozai-service'
 import { registerAozaiIpc } from './register-aozai-ipc'
@@ -140,7 +141,7 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 1_050,
+    minWidth: WINDOW_MIN_WIDTH,
     minHeight: 680,
     show: false,
     backgroundColor: '#ffffff',
@@ -160,6 +161,7 @@ function createWindow(): void {
     }
   })
 
+  syncWindowFullscreen(mainWindow)
   mainWindow.once('ready-to-show', () => mainWindow?.show())
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     const protocol = new URL(url).protocol
@@ -702,7 +704,9 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   disposeTeamContinuityIpc = registerTeamContinuityIpc(
     teamFailoverService,
     teamControlService,
-    () => mainWindow
+    () => mainWindow,
+    // 离线职责迁移可附带上下文交接：上下文在迁移前解析、迁移后投递，见 manualHandoffWithContext。
+    sessionHandoffService
   )
   createWindow()
   app.on('activate', () => {

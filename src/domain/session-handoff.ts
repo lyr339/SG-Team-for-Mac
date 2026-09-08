@@ -28,9 +28,25 @@ export interface SessionTranscriptLocation {
   resolution: 'workspace' | 'global' | 'expected'
 }
 
+/** 席位在当前运行中的角色（来自 TeamMemberView）；备用/未编入运行的通道没有。 */
+export interface SessionHandoffSeatRole {
+  /** 角色名，如「架构实现」；独立席位为「独立执行 N」。 */
+  name: string
+  /** 席位名，如「实现席」；独立席位为「独立席 N」。 */
+  slotName: string
+  templateKey: string
+}
+
+/** 团队席位 = 编入运行且不是独立席位；交接消息据此决定是否附团队接收方说明。 */
+export function isTeamSeatRole(role: SessionHandoffSeatRole | undefined): boolean {
+  return Boolean(role && role.templateKey !== 'solo')
+}
+
 export interface SessionHandoffContext {
   channelId: string
   displayName: string
+  /** 席位在当前运行中的角色；无角色（备用通道）时缺省。 */
+  role?: SessionHandoffSeatRole
   composerId?: string
   modelName?: string
   transcript?: SessionTranscriptLocation
@@ -103,18 +119,38 @@ function transcriptStateLine(transcript: SessionTranscriptLocation, issuedAt: nu
     + `若文件修改时间早于本消息发出时间（${formatHandoffTime(issuedAt)}），说明原会话尚未落盘，请等待约 30 秒后重读，最多重试 3 次。`
 }
 
+/**
+ * 团队接收方说明。角色简报要求「不要读取 Cursor 历史聊天」且主控「只有用户明确要求才拆任务」，
+ * 交接消息必须显式把自己定性为用户指令，否则模型会拒读转录，或把「接续上下文」当成开工指令。
+ */
+const TEAM_RECIPIENT_NOTE = '本消息是用户发起的上下文交接，不是任务板任务，也不是团队协作消息：'
+  + '读取上述文档属于本次用户指令，不受「不要读取或复述 Cursor 历史聊天」的简报约束；'
+  + '不要据此调用 team_task plan / claim 拆解或领取任务，不要 team_message broadcast，也不要向主控上报为进度。'
+  + '读完后仍按角色简报继续工作。'
+
+/** 来源席位标签：有角色时用「角色 · 席位」（独立席位只用席位名），否则回退到会话显示名。 */
+function sourceSeatLabel(input: { displayName: string; role?: SessionHandoffSeatRole }): string {
+  const role = input.role
+  if (!role) return input.displayName
+  return role.templateKey === 'solo' ? role.slotName : `${role.name} · ${role.slotName}`
+}
+
 export function buildSessionHandoffMessage(input: {
   sourceChannelId: string
   sourceDisplayName: string
+  sourceRole?: SessionHandoffSeatRole
   sourceModelName?: string
   target: SessionHandoffTarget
+  /** 接收方是团队席位（主控/实现/验收…）：附团队接收方说明。 */
+  targetIsTeamSeat?: boolean
   issuedAt: number
   transcript: SessionTranscriptLocation
   recordPath?: string
   note?: string
 }): string {
   const { target } = input
-  const source = `CH-${input.sourceChannelId}（${input.sourceDisplayName}${input.sourceModelName ? ` · ${input.sourceModelName}` : ''}）`
+  const seat = sourceSeatLabel({ displayName: input.sourceDisplayName, role: input.sourceRole })
+  const source = `CH-${input.sourceChannelId}（${seat}${input.sourceModelName ? ` · ${input.sourceModelName}` : ''}）`
   const heading = target.kind === 'self'
     ? `${SESSION_HANDOFF_MARKER}${source} 上一段会话的上下文 · ${formatHandoffTime(input.issuedAt)}`
     : `${SESSION_HANDOFF_MARKER}来自 ${source} · ${formatHandoffTime(input.issuedAt)}`
@@ -136,6 +172,7 @@ export function buildSessionHandoffMessage(input: {
       `   ${input.recordPath}`
     )
   }
+  if (input.targetIsTeamSeat) lines.push('', TEAM_RECIPIENT_NOTE)
   const note = input.note?.trim().slice(0, SESSION_HANDOFF_NOTE_MAX_CHARS)
   if (note) lines.push('', `交接说明：${note}`)
   lines.push(

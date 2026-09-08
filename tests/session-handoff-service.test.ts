@@ -6,7 +6,12 @@ import { SessionHandoffService } from '../src/application/session-handoff-servic
 import { RevealPathPolicy } from '../src/application/reveal-path-policy'
 import type { AgentSession } from '../src/domain/agent-session'
 import type { ConversationEntry } from '../src/domain/conversation-entry'
-import { emptyTeamControlSnapshot, type TeamControlSnapshot } from '../src/domain/team-control'
+import {
+  emptyTeamControlSnapshot,
+  type RuntimeBinding,
+  type TeamControlSnapshot,
+  type TeamMemberView
+} from '../src/domain/team-control'
 import { CursorComposerTelemetryReader, cursorProjectDirectoryNames } from '../src/infrastructure/cursor/cursor-composer-telemetry'
 import type { DesktopSnapshot, SendMessageInput } from '../src/shared/desktop-api'
 
@@ -89,6 +94,70 @@ function harness(options: { sessionToken?: string; transcriptExists?: boolean } 
   return { service, sent, root, projectsRoot, transcriptDir }
 }
 
+/** 团队运行：CH-1 实现席（有 Composer）、CH-3 验收席、CH-7 备用通道（已接入、未编入）。 */
+function teamHarness() {
+  const root = mkdtempSync(join(tmpdir(), 'sg-handoff-team-'))
+  const projectsRoot = join(root, 'projects')
+  const transcriptDir = join(projectsRoot, 'Users-lyr-Downloads-20260904', 'agent-transcripts', COMPOSER)
+  mkdirSync(transcriptDir, { recursive: true })
+  writeFileSync(join(transcriptDir, `${COMPOSER}.jsonl`), '{"role":"user"}\n', 'utf8')
+  const run = {
+    id: 'team-run:ws:main', workspaceId: 'ws', name: '测试 · 主运行', goal: '做完交接', templateId: 'software-core-v1',
+    status: 'running' as const, createdAt: 1, updatedAt: 1
+  }
+  const binding = (channelId: string, slotId: string, composerId?: string): RuntimeBinding => ({
+    id: `b-${channelId}`, workspaceId: 'ws', runId: run.id, slotId, channelId, agentSessionId: `agent-${channelId}`, generation: 'g1',
+    installedAt: 1, launchStatus: 'acknowledged', launchDetail: '', lastCheckInNote: '', composerBindingKey: `key-${channelId}`,
+    composerId, sessionToken: `token-${channelId}`
+  })
+  const member = (channelId: string, slotId: string, templateKey: string, roleName: string, slotName: string, composerId?: string): TeamMemberView => ({
+    slot: { id: slotId, runId: run.id, roleId: `role-${slotId}`, name: slotName, avatarId: 'architect', channelId, order: 0, createdAt: 1, updatedAt: 1 },
+    role: { id: `role-${slotId}`, runId: run.id, key: templateKey, templateKey, name: roleName, mission: '', instructions: '', capabilities: [], skills: [], accent: 'mint', order: 0 },
+    binding: binding(channelId, slotId, composerId),
+    readiness: 'active'
+  })
+  const members = [
+    member('1', 'slot-builder', 'builder', '架构实现', '实现席', COMPOSER),
+    member('3', 'slot-reviewer', 'reviewer', '质量验证', '验收席')
+  ]
+  const teamSnapshot: TeamControlSnapshot = {
+    ...emptyTeamControlSnapshot(),
+    activeWorkspaceId: 'ws',
+    workspaces: [{ id: 'ws', name: '20260904测试', path: '/Users/lyr/Downloads/20260904测试', createdAt: 1, updatedAt: 1 }],
+    runs: [run],
+    activeRun: run,
+    bindings: members.map((item) => item.binding!),
+    members
+  }
+  const sessions = [
+    session('1', { displayName: '架构实现 · CH-1', roleName: '实现席', roleTemplateKey: 'builder', composerId: COMPOSER, modelName: 'Claude Opus' }),
+    session('3', { displayName: '质量验证 · CH-3', roleName: '验收席', roleTemplateKey: 'reviewer' }),
+    session('7', { displayName: 'SG Team CH-7', roleName: '未绑定外置团队', roleTemplateKey: undefined })
+  ]
+  const desktop: DesktopSnapshot = {
+    connection: { state: 'connected', endpoint: 'shiguang://local-channel-runtime', attempt: 0, lastError: '' },
+    sessions,
+    conversations: { '1': [] },
+    protocolIssues: [],
+    updatedAt: 1
+  }
+  const sent: SendMessageInput[] = []
+  const reader = new CursorComposerTelemetryReader({ projectsRoot })
+  const service = new SessionHandoffService({
+    team: { getSnapshot: () => teamSnapshot },
+    sessions: {
+      getSnapshot: () => desktop,
+      sendMessage: (input) => { sent.push(input); return { commandId: `cmd-${sent.length}` } },
+      currentSessionToken: (channelId) => teamSnapshot.bindings.find((item) => item.channelId === channelId)?.sessionToken
+    },
+    locateTranscript: (composerId, workspacePath) => reader.locateTranscript(composerId, workspacePath),
+    conversationsOf: (channelId) => desktop.conversations[channelId],
+    handoffRoot: join(root, 'handoff'),
+    now: () => new Date(2026, 8, 8, 17, 0).getTime()
+  })
+  return { service, sent, teamSnapshot, desktop }
+}
+
 describe('cursorProjectDirectoryNames', () => {
   it('derives the ASCII-stripped directory Cursor actually uses for non-ASCII workspace names first', () => {
     expect(cursorProjectDirectoryNames('/Users/lyr/Downloads/20260904测试')[0]).toBe('Users-lyr-Downloads-20260904')
@@ -167,5 +236,57 @@ describe('SessionHandoffService', () => {
   it('refuses to hand off a channel without a bound composer', () => {
     const { service } = harness({ sessionToken: 'seat-A' })
     expect(() => service.deliver({ sourceChannelId: '2', target: { kind: 'self' } })).toThrowError(/尚未绑定 Cursor Composer/)
+  })
+})
+
+describe('SessionHandoffService · 团队席位', () => {
+  it('resolves the seat role for team channels and none for standby channels', () => {
+    const { service } = teamHarness()
+    expect(service.context('1').role).toEqual({ name: '架构实现', slotName: '实现席', templateKey: 'builder' })
+    expect(service.context('3').role).toEqual({ name: '质量验证', slotName: '验收席', templateKey: 'reviewer' })
+    expect(service.context('7').role).toBeUndefined()
+    expect(service.context('7').holdSupported).toBe(false)
+  })
+
+  it('briefs a team recipient and names the source by role, but keeps the plain form for a standby recipient', () => {
+    const { service, sent } = teamHarness()
+    service.deliver({ sourceChannelId: '1', target: { kind: 'channel', channelId: '3' } })
+    expect(sent[0]?.channelId).toBe('3')
+    expect(sent[0]?.text).toContain('【会话交接】来自 CH-1（架构实现 · 实现席 · Claude Opus）')
+    expect(sent[0]?.text).toContain('本消息是用户发起的上下文交接，不是任务板任务')
+
+    service.deliver({ sourceChannelId: '1', target: { kind: 'channel', channelId: '7' } })
+    expect(sent[1]?.channelId).toBe('7')
+    expect(sent[1]?.text).not.toContain('不是任务板任务')
+
+    // 本会话（等待新会话）：接收方就是自己这个团队席位，同样附团队说明
+    service.deliver({ sourceChannelId: '1', target: { kind: 'self' } })
+    expect(sent[2]).toMatchObject({ channelId: '1', holdUntilNewSession: true })
+    expect(sent[2]?.text).toContain('你是该席位重建后的新会话')
+    expect(sent[2]?.text).toContain('不是任务板任务')
+  })
+
+  it('delivers from a pre-resolved source after the seat binding has moved to the replacement channel', () => {
+    const { service, sent, teamSnapshot, desktop } = teamHarness()
+    const source = service.context('1')
+    expect(source.transcript?.exists).toBe(true)
+
+    // 模拟 rebindSlot*：实现席的绑定改指向 CH-7，原通道不再有绑定与 Composer
+    const builder = teamSnapshot.members[0]!
+    builder.binding = { ...builder.binding!, channelId: '7', composerId: undefined, sessionToken: undefined }
+    teamSnapshot.bindings = teamSnapshot.members.map((member) => member.binding!)
+    desktop.sessions[0] = { ...desktop.sessions[0]!, composerId: undefined }
+
+    // 迁移后再解析原通道已经找不到上下文文档——这正是必须先解析再迁移的原因
+    expect(() => service.deliver({ sourceChannelId: '1', target: { kind: 'channel', channelId: '7' } }))
+      .toThrowError(/尚未绑定 Cursor Composer/)
+
+    const result = service.deliverFrom(source, { kind: 'channel', channelId: '7' })
+    expect(result).toMatchObject({ targetChannelId: '7', held: false, transcriptPath: source.transcript!.path })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ channelId: '7' })
+    expect(sent[0]?.text).toContain('来自 CH-1（架构实现 · 实现席 · Claude Opus）')
+    // 接手通道此刻已是实现席：按目标现在的角色附团队说明
+    expect(sent[0]?.text).toContain('不是任务板任务')
   })
 })

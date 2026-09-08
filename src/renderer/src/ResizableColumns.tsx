@@ -25,7 +25,12 @@ interface ResizableColumnsProps {
   storageKey: string
   /** 两栏布局中固定宽度栏所在边；默认左侧。 */
   fixedPaneSide?: 'start' | 'end'
-  /** 首栏收起态由外层导航控制；组件只负责布局。 */
+  /**
+   * 首栏收起（仅 fixedPaneSide='start' 的两栏布局）：与 endPaneCollapsed 同一套机制——
+   * 首栏与分隔条的轨道收到 0 但都留在网格里，轨道数不变，CSS 才能对 grid-template-columns
+   * 做滑动过渡；首栏子树保持挂载（滚动位置、拖拽手势、焦点漫游状态不丢），由调用方设置
+   * inert / aria-hidden。紧凑断点（≤760px）下分栏退化为堆叠，收起态不生效（见 useCompactLayout）。
+   */
   firstPaneCollapsed?: boolean
   /**
    * 末栏收起（仅 fixedPaneSide='end' 的两栏布局）：末栏与分隔条的轨道收到 0，但都留在网格里，
@@ -37,6 +42,26 @@ interface ResizableColumnsProps {
 }
 
 const STORAGE_PREFIX = 'sg-team.layout:v1:'
+const COMPACT_LAYOUT_QUERY = '(max-width: 760px)'
+
+/**
+ * 紧凑断点：分栏网格退化为堆叠（styles.css 的 760px 媒体查询），首栏收起在此不生效。
+ * 分栏组件与外层壳共用同一判定，壳层给首栏加的 inert / aria-hidden 才能与实际收起态一致。
+ */
+export function useCompactLayout(): boolean {
+  const [compact, setCompact] = useState(() => (
+    typeof window !== 'undefined' && window.matchMedia?.(COMPACT_LAYOUT_QUERY).matches === true
+  ))
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const query = window.matchMedia(COMPACT_LAYOUT_QUERY)
+    const update = (): void => setCompact(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+  return compact
+}
 
 function readStoredSizes(storageKey: string, specs: readonly ResizablePaneSpec[]): number[] {
   try {
@@ -76,9 +101,7 @@ export function ResizableColumns({
 }: ResizableColumnsProps): React.JSX.Element {
   const items = Children.toArray(children)
   const [committedSizes, setCommittedSizes] = useState(() => readStoredSizes(storageKey, paneSpecs))
-  const [compactLayout, setCompactLayout] = useState(() => (
-    typeof window !== 'undefined' && window.matchMedia?.('(max-width: 760px)').matches === true
-  ))
+  const compactLayout = useCompactLayout()
   const containerRef = useRef<HTMLDivElement>(null)
   const sizesRef = useRef(committedSizes)
   const specsRef = useRef(paneSpecs)
@@ -116,15 +139,6 @@ export function ResizableColumns({
   }, [storageKey])
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return
-    const query = window.matchMedia('(max-width: 760px)')
-    const update = (): void => setCompactLayout(query.matches)
-    update()
-    query.addEventListener('change', update)
-    return () => query.removeEventListener('change', update)
-  }, [])
-
-  useEffect(() => {
     const container = containerRef.current
     if (!container || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(([entry]) => {
@@ -136,7 +150,7 @@ export function ResizableColumns({
     })
     observer.observe(container)
     return () => observer.disconnect()
-  }, [applySizes, committedSizes])
+  }, [applySizes, committedSizes, finalPaneMinSize])
 
   useEffect(() => () => dragCleanupRef.current?.(), [])
 
@@ -217,8 +231,10 @@ export function ResizableColumns({
     '--resizable-final-min': `${finalPaneMinSize}px`,
     ...Object.fromEntries(sizesRef.current.map((size, index) => [`--resizable-pane-${index}`, `${size}px`]))
   } as CSSProperties
-  const collapsed = items.length === 2 && firstPaneCollapsed && !compactLayout
+  const collapsed = items.length === 2 && fixedPaneSide === 'start' && firstPaneCollapsed && !compactLayout
   const endCollapsed = items.length === 2 && fixedPaneSide === 'end' && endPaneCollapsed
+  // 收起的那一侧分隔条留在网格里（轨道数不变才能过渡），但退出可达性树与 Tab 序列。
+  const dividerHidden = collapsed || endCollapsed
 
   return (
     <div
@@ -226,7 +242,7 @@ export function ResizableColumns({
       ref={containerRef}
       style={style}
     >
-      {collapsed ? items.at(-1) : items.flatMap((item, index) => {
+      {items.flatMap((item, index) => {
         const output: ReactNode[] = [item]
         if (index < items.length - 1) {
           const spec = paneSpecs[index]
@@ -237,12 +253,12 @@ export function ResizableColumns({
               aria-valuemax={spec?.maxSize}
               aria-valuemin={spec?.minSize}
               aria-valuenow={Math.round(sizesRef.current[index] ?? spec?.defaultSize ?? 0)}
-              aria-hidden={endCollapsed || undefined}
+              aria-hidden={dividerHidden || undefined}
               className="resizable-divider"
               data-resize-divider={index}
               key={`divider-${index}`}
               role="separator"
-              tabIndex={endCollapsed ? -1 : undefined}
+              tabIndex={dividerHidden ? -1 : undefined}
               title="拖拽调整宽度；双击恢复默认"
               onDoubleClick={() => resetDivider(index)}
               onKeyDown={(event) => resizeWithKeyboard(index, event)}

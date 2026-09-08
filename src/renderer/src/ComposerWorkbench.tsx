@@ -22,7 +22,8 @@ import {
 import { planAttachmentIntake } from './attachment-rules'
 import { sniffedAttachmentMimeType } from '../../domain/conversation-entry'
 import { ContextUsagePopover } from './ContextUsagePopover'
-import { modelProviderClass, modelProviderLabel } from './model-provider'
+import { modelProvider, modelProviderClass, modelProviderLabel } from './model-provider'
+import { ModelProviderLogo } from './ModelProviderLogo'
 import { EraseIcon, ExportIcon, HandoffIcon } from './UiIcons'
 
 interface ComposerWorkbenchProps {
@@ -632,8 +633,15 @@ export function ComposerWorkbench({
           title={`${profileTitle}${profileKnown ? ` · ${modelProviderLabel(profile?.modelId ?? session.modelName, profileName)}` : ''}`}
           aria-label={`运行配置：${formatExecutionProfile(profile, session.modelName)}`}
         >
-          <b>{profileName}</b>
-          {badges.map((badge) => <i key={badge} className={`is-${badgeTone(badge)}`}>{badge}</i>)}
+          <b>
+            <ModelProviderLogo provider={profileKnown ? modelProvider(profile?.modelId ?? session.modelName, profileName) : 'other'} />
+            <span className="composer-model-name">{profileName}</span>
+          </b>
+          {badges.length > 0 && (
+            <span className="composer-model-params">
+              {badges.map((badge) => <i key={badge} className={`is-${badgeTone(badge)}`}>{badge}</i>)}
+            </span>
+          )}
         </div>
         <ContextUsagePopover usage={session.contextUsage} />
         {sendError && <span className="composer-error" role="alert">{sendError}</span>}

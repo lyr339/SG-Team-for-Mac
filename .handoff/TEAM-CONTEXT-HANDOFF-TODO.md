@@ -1,5 +1,24 @@
 # 接手待办：团队席位接入「会话上下文交接」
 
+> **状态（2026-09-08）：阶段 A–D 已全部落地（工作树，未提交）。** 与下文原方案的有意偏差：
+> - 阶段 A 团队席位的开放口径改为与独立席位一致：`activeRun.status !== 'completed'` 即开放上下文交接
+>   （含 draft / ready 未 launch 但已一键创建会话的情形）；只有「团队席位 + 离线 + running/attention」
+>   才走职责迁移。三态判定收口在 `src/renderer/src/handoff-entry.ts`。
+> - 第 1.3 条的开放问题已关闭：`snapshot.sessions` 由 `channel_links.embedded=1` 的全部通道重建，
+>   备用通道一定在内，弹窗不需要另传 standby 会话；只传 `standbyChannelIds` 用于标注与排序。
+> - 阶段 B 的团队接收方说明除「不是任务板任务」外，还显式解除角色简报「不要读取或复述 Cursor
+>   历史聊天」对本次读取的约束，并禁止据此 plan / claim / broadcast / 上报——否则模型会拒读转录
+>   或把「接续上下文」当成开工指令。接收方是否团队席位按**目标通道**此刻的角色判断（备用通道不附）。
+> - 阶段 D 不能按「迁移成功后再调 deliverSessionHandoff」实现：`rebindSlot*` 会把原席位绑定的
+>   channel_id 改成接手通道并清空 composer_id，迁移后 `context(原通道)` 已定位不到转录。改为主进程内
+>   编排 `src/application/manual-handoff-with-context.ts`：迁移前解析上下文 → 迁移 → 用预解析上下文
+>   投递接手通道；`manualHandoff` IPC 入参扩展 `includeContext`（不新增 IPC 通道），投递失败不回滚
+>   迁移，结果在 `contextHandoff` 里由迁移弹窗结果页展示。
+> - 已知限制（按用户偏好保留手动语义，不做自动转投）：团队席位选「本会话（等待新会话）」后若被
+>   `TeamFailoverService` 自动接替，保持位消息留在原通道队列——备用接管清空令牌取不到、原通道在本轮
+>   已无席位，之后也无法再从该通道解析上下文文档。用户可在原通道会话页撤回这条消息；要把上下文交给
+>   接手者，应在席位离线后走「交接」→ 职责迁移弹窗并勾选「同时交接上下文文档」，而不是等自动接替。
+>
 > 状态（2026-09-04）：待办，未动工。独立席位的上下文交接已在 `47d261f` 落地并提交；
 > 本文档只覆盖把同一能力扩展到团队席位（lead / builder / reviewer / …）的工作。
 >

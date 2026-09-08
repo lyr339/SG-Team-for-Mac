@@ -37,17 +37,19 @@ describe('SessionRailCard（名册行）', () => {
     expect(html).toContain('session-row is-offline')
     expect(html).toContain('已离线')
     expect(html).toContain('排队 2')
-    expect(html).toContain('42 分钟前')
+    expect(html).not.toContain('42 分钟前')
+    expect(html).toContain('开始 —')
+    expect(html).toContain('结束 —')
     expect(html).toContain('session-row__ring-track')
     expect(html).not.toContain('session-row__ring-arc')
-    expect(html).toContain('session-row__context is-unknown')
+    expect(html).not.toContain('session-row__context')
     expect(html).toContain('上下文用量待读取')
     // 角色名与通道号拆成两段：名可截断、号用等宽数字。
     expect(html).toMatch(/<strong class="session-row__name">主控协调<\/strong><small class="session-row__channel">CH-1<\/small>/)
     expect(html).not.toContain('主控席 · CH-1')
   })
 
-  it('上下文光环弧长即百分比，天色档位同时落在光环与数字上；实时增删紧随其后', () => {
+  it('保留上下文光环和悬停详情，移除重复百分比，保留实时增删', () => {
     const html = renderToStaticMarkup(
       <SessionRailCard
         session={{
@@ -67,15 +69,40 @@ describe('SessionRailCard（名册行）', () => {
     expect(html).toContain('运行中')
     expect(html).toContain('session-row__ring is-afternoon')
     expect(html).toContain('stroke-dasharray="72 100"')
-    expect(html).toContain('session-row__context is-afternoon')
-    expect(html).toContain('>72%<')
+    expect(html).not.toContain('session-row__context')
+    expect(html).not.toContain('>72%<')
+    expect(html).toContain('上下文 72%')
     expect(html).toContain('session-row__changes')
     expect(html).toContain('+75')
     expect(html).toContain('−17')
-    expect(html.indexOf('session-row__context')).toBeLessThan(html.indexOf('session-row__changes'))
     // 在线行不显示「N 分钟前」。
     expect(html).not.toContain('session-row__seen')
   })
+
+  it('uses the recorded disconnect time as the end time, not the current clock', () => {
+    const html = renderToStaticMarkup(<SessionRailCard session={{ ...session, startedAt: NOW - 60_000,
+      disconnectedAt: NOW, lastSeenAt: NOW }} selected={false} onOpen={() => {}} now={NOW} />)
+    expect(html).toContain('开始 09:59')
+    expect(html).toContain('结束 10:00')
+    expect(html).not.toContain('结束待确认')
+  })
+
+  it('does not show the stale disconnect time after reconnecting', () => {
+    const html = renderToStaticMarkup(<SessionRailCard session={{ ...session, online: true,
+      connected: true, status: 'waiting', disconnectedAt: NOW }} selected={false} onOpen={() => {}} now={NOW} />)
+    expect(html).toContain('进行中')
+    expect(html).not.toContain('结束 10:00')
+  })
+
+  it.each([[0.327, 'clear'], [0.6, 'afternoon'], [0.85, 'dusk']] as const)(
+    'preserves context phase at ratio %s even when offline', (ratio, tone) => {
+      const html = renderToStaticMarkup(<SessionRailCard session={{ ...session, contextUsage: { ratio } }}
+        selected={false} onOpen={() => {}} />)
+      expect(html).toContain('session-row is-offline')
+      expect(html).toContain(`session-row__ring is-${tone}`)
+      expect(html).toContain('session-row__ring-arc')
+    }
+  )
 
   it('模型只做身份：厂商色块 + 中性文字，选中态用 aria-current 表达', () => {
     const html = renderToStaticMarkup(

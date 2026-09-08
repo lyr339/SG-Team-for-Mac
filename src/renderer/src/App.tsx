@@ -15,11 +15,13 @@ import { SessionWorkspace } from './SessionWorkspace'
 import { SessionSidebar } from './SessionSidebar'
 import { WorkspaceInspector } from './WorkspaceInspector'
 import { RunPage } from './run/RunPage'
-import { LobbyAccountTile, type LobbyAccountTileProps } from './lobby/LobbyAccountTile'
+import { SettingsPage } from './settings/SettingsPage'
+import type { SettingsPageProps } from './settings/settings-view'
 import { TeamSetupPage } from './team/TeamSetupPage'
 import { ManualHandoffDialog } from './team/ManualHandoffDialog'
 import { SessionHandoffDialog } from './SessionHandoffDialog'
-import type { TeamHandoffOptions } from '../../domain/team-handoff'
+import { resolveHandoffEntry } from './handoff-entry'
+import type { ManualTeamHandoffOutcome, TeamHandoffOptions } from '../../domain/team-handoff'
 import type { CursorAccountMetadata, CursorRuntimeAccountMatch } from '../../domain/cursor-account'
 import type { CursorMembershipStatus } from '../../domain/cursor-membership'
 import type { CursorUpdatePreferences } from '../../domain/cursor-update'
@@ -718,19 +720,9 @@ export function App(): React.JSX.Element {
   const selectedMember = teamControl.members.find((member) => (
     (member.binding?.channelId ?? member.slot.channelId) === selectedSession?.channelId
   ))
-  const selectedHandoffSlotId = selectedMember?.binding
-    && !selectedMember.runtime?.online
-    && teamControl.activeRun
-    && ['running', 'attention'].includes(teamControl.activeRun.status)
-    ? selectedMember.slot.id
-    : undefined
-  // 独立席位的「交接」= 上下文交接：定位当前 Cursor 会话的转录文档并投递到本会话（等待新会话）
-  // 或其他会话的队列。团队席位沿用离线职责交接（AgentSlot 迁移）。
-  const soloSelected = selectedSession?.roleTemplateKey === 'solo'
-  const soloHandoffReady = Boolean(soloSelected && teamControl.activeRun && teamControl.activeRun.status !== 'completed')
-  const handoffTitle = soloSelected
-    ? (soloHandoffReady ? '交接会话上下文：投递转录文档路径到本会话（等待新会话）或其他会话' : '当前运行已结束，无法交接')
-    : (selectedHandoffSlotId ? '把离线职责交给其他在线空闲 Agent' : undefined)
+  // 「交接」三态：离线团队席位 → 职责迁移（可附带上下文）；其余在运行中的席位（独立或团队、
+  // 在线或离线）→ 上下文交接；运行已结束 / 非本轮席位 → 禁用并说明原因。
+  const handoffEntry = resolveHandoffEntry({ member: selectedMember, run: teamControl.activeRun })
   const [contextHandoffChannel, setContextHandoffChannel] = useState<string>()
   const loadHandoffContext = useCallback((channelId: string) => (
     window.sgDesktop.getSessionHandoffContext({ channelId })
@@ -778,16 +770,21 @@ export function App(): React.JSX.Element {
     }
   }, [])
 
-  const confirmManualHandoff = useCallback(async (agentSessionId: string): Promise<void> => {
-    if (!handoffOptions) return
+  // 迁移成功后弹窗停在结果页（职责与上下文文档各自的结果），由用户点「完成」关闭；
+  // 会话区先切到接手通道，关闭后正好落在接手者的会话上。
+  const confirmManualHandoff = useCallback(async (
+    input: { agentSessionId: string; includeContext: boolean }
+  ): Promise<ManualTeamHandoffOutcome | undefined> => {
+    if (!handoffOptions) return undefined
     setHandoffBusy(true)
     setHandoffError('')
     try {
-      const result = await window.sgDesktop.manualHandoff({
+      const { team, ...outcome } = await window.sgDesktop.manualHandoff({
         sourceSlotId: handoffOptions.sourceSlotId,
-        replacementAgentSessionId: agentSessionId
+        replacementAgentSessionId: input.agentSessionId,
+        includeContext: input.includeContext
       })
-      acceptTeamControl(result.team)
+      acceptTeamControl(team)
       const [tasks, messages, desktop] = await Promise.all([
         window.sgDesktop.getTaskPoolSnapshot(),
         window.sgDesktop.getTeamCollaborationSnapshot(),
@@ -796,12 +793,13 @@ export function App(): React.JSX.Element {
       acceptTaskPool(tasks)
       acceptCollaboration(messages)
       acceptSnapshot(desktop)
-      const replacementChannel = result.team.members
+      const replacementChannel = team.members
         .find((member) => member.slot.id === handoffOptions.sourceSlotId)?.binding?.channelId
       if (replacementChannel) setSelectedChannelId(replacementChannel)
-      setHandoffOptions(undefined)
+      return outcome
     } catch (reason) {
       setHandoffError(reason instanceof Error ? reason.message : String(reason))
+      return undefined
     } finally {
       setHandoffBusy(false)
     }
@@ -838,7 +836,7 @@ export function App(): React.JSX.Element {
   }, [applyWorkspaceSelection])
 
 
-  const accountPanel: LobbyAccountTileProps = {
+  const accountPanel: SettingsPageProps = {
     accounts: cursorAccounts,
     busy: cursorAccountBusy,
     error: cursorAccountError,
@@ -1082,13 +1080,7 @@ export function App(): React.JSX.Element {
       onOpenProjectConfiguration={() => changeModule('run')}
     >
       {activeModule === 'account' ? (
-        <div className="lobby-page configuration-page">
-          <div className="configuration-frame">
-            <main className="configuration-panel" aria-label="账号与 Cursor 配置">
-              <LobbyAccountTile {...accountPanel} />
-            </main>
-          </div>
-        </div>
+        <SettingsPage {...accountPanel} />
       ) : activeModule === 'run' && teamSetup ? (
         <TeamSetupPage
           key={teamSetup.draftId}
@@ -1203,10 +1195,12 @@ export function App(): React.JSX.Element {
           entries={snapshot.conversations[selectedSession.channelId] ?? []}
           currentProjectName={activeProjectName}
           onBack={() => { setSessionListRequested(true); setSelectedChannelId(undefined) }}
-          onHandoff={soloSelected
-            ? (soloHandoffReady ? () => setContextHandoffChannel(selectedSession.channelId) : undefined)
-            : (selectedHandoffSlotId ? () => void openManualHandoff(selectedHandoffSlotId) : undefined)}
-          handoffTitle={handoffTitle}
+          onHandoff={handoffEntry.kind === 'context'
+            ? () => setContextHandoffChannel(selectedSession.channelId)
+            : handoffEntry.kind === 'roles'
+              ? () => void openManualHandoff(handoffEntry.slotId)
+              : undefined}
+          handoffTitle={handoffEntry.title}
           onWithdrawQueued={async (entryId) => {
             const ok = await window.sgDesktop.withdrawQueuedMessage({ channelId: selectedSession.channelId, entryId })
             if (!ok) throw new Error('这条消息已被 Agent 取走，无法撤回')
@@ -1249,6 +1243,7 @@ export function App(): React.JSX.Element {
         error={handoffError}
         onClose={() => { if (!handoffBusy) setHandoffOptions(undefined) }}
         onConfirm={confirmManualHandoff}
+        onOpenSession={(channelId) => { setSelectedChannelId(channelId); setSessionListRequested(false) }}
       />
     ) : null}
     {contextHandoffChannel && contextHandoffSession ? (
@@ -1256,6 +1251,7 @@ export function App(): React.JSX.Element {
         key={contextHandoffChannel}
         session={contextHandoffSession}
         sessions={visibleSnapshot.sessions}
+        standbyChannelIds={teamControl.standbyChannels.map((channel) => channel.channelId)}
         loadContext={loadHandoffContext}
         deliver={async (input) => {
           const result = await deliverHandoff(input)

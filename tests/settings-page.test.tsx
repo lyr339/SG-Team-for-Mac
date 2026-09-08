@@ -5,19 +5,19 @@ import {
   type AccountAutomationRun
 } from '../src/domain/account-automation'
 import {
-  LobbyAccountTile,
   accountFlowStatesFor,
   automationDurationText,
   automationFailedStepHint,
-  type LobbyAccountTileProps
-} from '../src/renderer/src/lobby/LobbyAccountTile'
+  type SettingsPageProps
+} from '../src/renderer/src/settings/settings-view'
+import { SettingsPage } from '../src/renderer/src/settings/SettingsPage'
 
-const accounts: LobbyAccountTileProps['accounts'] = [
+const accounts: SettingsPageProps['accounts'] = [
   { id: 'account:1', label: 'work@example.com', maskedToken: '••••9f2k', active: true, createdAt: 1, updatedAt: 1 },
   { id: 'account:2', label: 'spare@example.com', maskedToken: '••••41qz', active: false, createdAt: 2, updatedAt: 2 }
 ]
 
-function propsFor(overrides: Partial<LobbyAccountTileProps> = {}): LobbyAccountTileProps {
+function propsFor(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
   return {
     accounts,
     busy: false,
@@ -105,29 +105,18 @@ describe('automationDurationText', () => {
   })
 })
 
-describe('LobbyAccountTile', () => {
-  it('renders the five-step flow with accessible state labels in idle phase', () => {
-    const html = renderToStaticMarkup(<LobbyAccountTile {...propsFor()} />)
-
-    expect(html).toContain('aria-label="账号自动化流程"')
-    expect(html).toContain('flow-status-icon is-done')
-    expect(html).toContain('m5.2 10.2 3.1 3.1 6.6-7')
-    expect(html).not.toContain('>✓<')
-    for (const [index, title, state] of [
-      [1, '获取 Token', '完成'],
-      [2, '倒计时', '就绪'],
-      [3, '奥仔处理', '就绪'],
-      [4, '账号加固', '等待'],
-      [5, '收尾', '等待']
-    ] as const) {
-      expect(html).toContain(`aria-label="步骤 ${index}：${title}，${state}"`)
-    }
+describe('SettingsPage', () => {
+  it('renders settings navigation without an idle pipeline taking up the page', () => {
+    const html = renderToStaticMarkup(<SettingsPage {...propsFor()} />)
+    expect(html).toContain('aria-label="设置分组"')
+    for (const label of ['账号', '导入来源', '自动化', '奥仔服务', 'Cursor 维护']) expect(html).toContain(label)
+    expect(html).not.toContain('aria-label="账号自动化流程"')
     expect(html).not.toContain('lobby-account__columns')
   })
 
   it('会员等级移入当前账号卡：Free Plan 使用绿色等级类并带刷新按钮', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         runtimeMatch: { status: 'matched', cursorLabel: 'work@example.com', activeLabel: 'work@example.com' },
         membership: { state: 'ok', profile: { tier: 'free', raw: 'free', fetchedAt: 1 } },
         onRefreshMembership: () => {}
@@ -144,7 +133,7 @@ describe('LobbyAccountTile', () => {
     expect(html).toContain('title="刷新此账号会员等级"')
 
     const paid = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         runtimeMatch: { status: 'matched', cursorLabel: 'work@example.com', activeLabel: 'work@example.com' },
         membership: { state: 'ok', profile: { tier: 'pro', raw: 'pro', fetchedAt: 1 } }
       })} />
@@ -166,7 +155,7 @@ describe('LobbyAccountTile', () => {
       ['enterprise', 'is-tier-enterprise', 'Enterprise Plan']
     ] as const) {
       const html = renderToStaticMarkup(
-        <LobbyAccountTile {...propsFor({
+        <SettingsPage {...propsFor({
           membership: { state: 'ok', profile: { tier, raw: tier, fetchedAt: 1 } }
         })} />
       )
@@ -177,7 +166,7 @@ describe('LobbyAccountTile', () => {
 
   it('顶部状态行只保留登录一致性；账号类型不依赖当前选择并可在每张卡常驻', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         runtimeMatch: { status: 'matched', cursorLabel: 'work@example.com', activeLabel: 'work@example.com' },
         membership: { state: 'ok', profile: { tier: 'free', raw: 'free', fetchedAt: 1 } },
         accountMemberships: {
@@ -193,13 +182,13 @@ describe('LobbyAccountTile', () => {
     expect((html.match(/account-membership-plan/g) ?? [])).toHaveLength(2)
 
     // 无信号（未拉取/未登录）：头部回退「当前 xxx」粗体展示
-    const fallback = renderToStaticMarkup(<LobbyAccountTile {...propsFor({})} />)
+    const fallback = renderToStaticMarkup(<SettingsPage {...propsFor({})} />)
     expect(fallback).toContain('<b>work@example.com</b>')
     expect(fallback).not.toContain('account-status-line')
   })
 
   it('延时滑杆与自动化开关同行呈现', () => {
-    const html = renderToStaticMarkup(<LobbyAccountTile {...propsFor()} />)
+    const html = renderToStaticMarkup(<SettingsPage {...propsFor()} />)
     expect(html).toContain('<div class="account-automation__row"><label class="toggle-switch')
     // 双倒计时竖排列于开关右侧：处理前 + 加固前各一根滑杆
     expect(html).toMatch(/account-automation__delays"><div class="account-automation__delay"><span>处理前<\/span>[\s\S]*?type="range"/)
@@ -208,7 +197,7 @@ describe('LobbyAccountTile', () => {
 
   it('合并状态行：mismatch 红点精简文案，title 携带双账号明细', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         runtimeMatch: { status: 'mismatch', cursorLabel: 'other@example.com', activeLabel: 'work@example.com' },
         membership: { state: 'ok', profile: { tier: 'pro', raw: 'pro', fetchedAt: 1 } }
       })} />
@@ -221,12 +210,12 @@ describe('LobbyAccountTile', () => {
 
   it('合并状态行：仅一侧有信号照常渲染；全部无信号不渲染', () => {
     const runtimeOnly = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({ runtimeMatch: { status: 'matched', cursorLabel: 'a@x.com', activeLabel: 'a@x.com' } })} />
+      <SettingsPage {...propsFor({ runtimeMatch: { status: 'matched', cursorLabel: 'a@x.com', activeLabel: 'a@x.com' } })} />
     )
     expect(runtimeOnly).toContain('a@x.com · 一致')
 
     const membershipError = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({ membership: { state: 'error', detail: 'HTTP 503' } })} />
+      <SettingsPage {...propsFor({ membership: { state: 'error', detail: 'HTTP 503' } })} />
     )
     expect(membershipError).toContain('account-status-line is-warn')
     expect(membershipError).toContain('档位获取失败')
@@ -237,14 +226,14 @@ describe('LobbyAccountTile', () => {
       { membership: { state: 'not_logged_in' as const } },
       {}
     ]) {
-      const html = renderToStaticMarkup(<LobbyAccountTile {...propsFor(props)} />)
+      const html = renderToStaticMarkup(<SettingsPage {...propsFor(props)} />)
       expect(html).not.toContain('account-status-line')
     }
   })
 
   it('本地身份一致但服务端 401 时明确区分“身份相同”与“会话有效”', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         runtimeMatch: { status: 'matched', cursorLabel: 'a@x.com', activeLabel: 'a@x.com' },
         membership: { state: 'auth_expired', detail: '服务端已撤销当前会话（HTTP 401）' }
       })} />
@@ -256,7 +245,7 @@ describe('LobbyAccountTile', () => {
 
   it('keeps every existing feature entry point', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, browserHost: 'external' },
         onImportFromFingerprint: async () => {}
       })} />
@@ -288,7 +277,7 @@ describe('LobbyAccountTile', () => {
 
   it('shows the countdown scene with remaining seconds and a cancel button', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationRun: runFor({
           phase: 'countdown',
           message: '将在 6.5s 后自动处理当前账号（可取消）',
@@ -309,7 +298,7 @@ describe('LobbyAccountTile', () => {
 
   it('streams the live message on the processing step', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationRun: runFor({ phase: 'processing', message: '奥仔：正在提交 Session Token 处理…', startedAt: 1_000 })
       })}
       />
@@ -322,7 +311,7 @@ describe('LobbyAccountTile', () => {
 
   it('summarizes a done run with duration on the finish step', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationRun: runFor({
           phase: 'done',
           message: '自动化完成：已处理、账号已加固、本地记录已移除',
@@ -341,7 +330,7 @@ describe('LobbyAccountTile', () => {
   it('shows the full error message when the run failed', () => {
     const message = '奥仔处理失败：卡密余额不足，请先充值或更换卡密（本地账号已保留）'
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationRun: runFor({ phase: 'failed', message, startedAt: 10_000, finishedAt: 20_000 })
       })}
       />
@@ -367,7 +356,7 @@ describe('LobbyAccountTile', () => {
 
   it('marks a cancelled run without pretending progress', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationRun: runFor({ phase: 'cancelled', message: '已取消本次自动化', startedAt: 10_000, finishedAt: 14_000 })
       })}
       />
@@ -380,16 +369,16 @@ describe('LobbyAccountTile', () => {
 
   it('labels the countdown step as off when automation is disabled', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({ automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: false, delaySec: 10 } })} />
+      <SettingsPage {...propsFor({ automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: false, delaySec: 10 } })} />
     )
 
-    expect(html).toContain('aria-label="步骤 2：倒计时，未开启"')
+    expect(html).not.toContain('aria-label="账号自动化流程"')
     expect(html).toContain('会话创建后自动处理账号')
   })
 
   it('renders the browser source segment with fingerprint default in step 1', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         bitProfiles: [
           { id: 'bit-proxy', name: '代理', seq: 1 },
           { id: 'bit-direct', name: '直连', seq: 2 }
@@ -416,7 +405,7 @@ describe('LobbyAccountTile', () => {
 
   it('已选指纹窗口时下拉按钮直接显示窗口名（自绘 MenuSelect 选中态）', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
         bitProfiles: [
           { id: 'bit-proxy', name: '代理', seq: 1 },
@@ -434,7 +423,7 @@ describe('LobbyAccountTile', () => {
 
   it('external source shows edge hint and browser import as quick action', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, browserHost: 'external' },
         bitProfiles: [{ id: 'bit-proxy', name: '代理', seq: 1 }],
         onImportFromFingerprint: async () => {}
@@ -450,13 +439,13 @@ describe('LobbyAccountTile', () => {
 
   it('fingerprint import button disabled until a window is picked', () => {
     const noWindow = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({ onImportFromFingerprint: async () => {} })} />
+      <SettingsPage {...propsFor({ onImportFromFingerprint: async () => {} })} />
     )
     expect(noWindow).toContain('请先在上方选择指纹浏览器窗口')
     // 未选窗口时按钮渲染为 disabled
     expect(noWindow).toMatch(/disabled=""[^>]*>导入中…|从指纹浏览器导入（推荐）</)
     const picked = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
         onImportFromFingerprint: async () => {}
       })} />
@@ -466,7 +455,7 @@ describe('LobbyAccountTile', () => {
 
   it('renders the open-login-page quick action beside the fingerprint import (fingerprint host)', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
         onImportFromFingerprint: async () => {},
         onOpenFingerprintLogin: async () => {}
@@ -477,13 +466,13 @@ describe('LobbyAccountTile', () => {
 
     // 未选窗口 → 渲染但 disabled（与指纹导入按钮同语义，title 引导选择窗口）
     const noWindow = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({ onOpenFingerprintLogin: async () => {} })} />
+      <SettingsPage {...propsFor({ onOpenFingerprintLogin: async () => {} })} />
     )
     expect(noWindow).toMatch(/disabled=""[^>]*title="请先在上方选择指纹浏览器窗口"[^>]*>打开网页登录</)
 
     // 自动化活跃阶段禁用：此时导航的正是自动化链在用的 tab（破坏就绪探测/轮换基准）
     const active = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' },
         automationRun: runFor({ phase: 'processing', message: '奥仔自助处理中…', startedAt: 1 }),
         onOpenFingerprintLogin: async () => {}
@@ -494,7 +483,7 @@ describe('LobbyAccountTile', () => {
 
   it('hides the open-login-page action for the external browser host', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, browserHost: 'external' },
         onOpenFingerprintLogin: async () => {}
       })} />
@@ -504,7 +493,7 @@ describe('LobbyAccountTile', () => {
 
   it('shows the roxy api key input in step 1 when key missing (all platforms)', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         roxyApiKeyStatus: { saved: false },
         onSaveRoxyApiKey: async () => {}
       })} />
@@ -515,7 +504,7 @@ describe('LobbyAccountTile', () => {
 
   it('shows saved roxy key mask instead of the input', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         roxyApiKeyStatus: { saved: true, maskedKey: '6192****eada' },
         onSaveRoxyApiKey: async () => {}
       })} />
@@ -527,7 +516,7 @@ describe('LobbyAccountTile', () => {
 
   it('shows the fingerprint browser fetch failure message inside the source card', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         bitProfilesMessage: 'RoxyBrowser Local API 不可达——请确认 RoxyBrowser 客户端已运行且 API 状态为 Enabled'
       })} />
     )
@@ -538,7 +527,7 @@ describe('LobbyAccountTile', () => {
 
   it('countdown step has no browser controls, only the follow note', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' }
       })} />
     )
@@ -551,7 +540,7 @@ describe('LobbyAccountTile', () => {
 
   it('macos: external browser host remains selectable (fingerprint provider is Roxy on both platforms)', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         platform: 'darwin',
         roxyApiKeyStatus: { saved: true, maskedKey: '6192****eada' },
         onSaveRoxyApiKey: async () => {}
@@ -565,7 +554,7 @@ describe('LobbyAccountTile', () => {
 
   it('hides the external browser segment on windows', () => {
     const html = renderToStaticMarkup(
-      <LobbyAccountTile {...propsFor({
+      <SettingsPage {...propsFor({
         platform: 'win32',
         automationSettings: { ...DEFAULT_ACCOUNT_AUTOMATION_SETTINGS, enabled: true, delaySec: 10, bitProfileId: 'bit-proxy' }
       })} />

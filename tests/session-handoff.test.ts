@@ -66,6 +66,53 @@ describe('session handoff message', () => {
     const noteLine = text.split('\n').find((line) => line.startsWith('交接说明：'))!
     expect(noteLine.length).toBe('交接说明：'.length + 2_000)
   })
+
+  it('names the source by role and seat for team seats, and briefs a team recipient that this is a user instruction, not a task', () => {
+    const text = buildSessionHandoffMessage({
+      sourceChannelId: '2',
+      sourceDisplayName: '架构实现 · CH-2',
+      sourceRole: { name: '架构实现', slotName: '实现席', templateKey: 'builder' },
+      sourceModelName: 'Claude Opus',
+      target: { kind: 'channel', channelId: '3' },
+      targetIsTeamSeat: true,
+      issuedAt,
+      transcript,
+      note: '接着做 inspector 的 diff 刷新。'
+    })
+    expect(text).toContain('【会话交接】来自 CH-2（架构实现 · 实现席 · Claude Opus） · 2026-09-04 20:05')
+    expect(text).not.toContain('架构实现 · CH-2')
+    // 团队接收方说明：定性为用户指令、解除「不要读 Cursor 历史聊天」的约束、禁止拆任务/领任务/广播/上报
+    const noteIndex = text.indexOf('本消息是用户发起的上下文交接，不是任务板任务')
+    expect(noteIndex).toBeGreaterThan(text.indexOf(transcript.path))
+    expect(noteIndex).toBeLessThan(text.indexOf('交接说明：'))
+    expect(text).toContain('不受「不要读取或复述 Cursor 历史聊天」的简报约束')
+    expect(text).toContain('不要据此调用 team_task plan / claim')
+    expect(text).toContain('不要 team_message broadcast')
+    expect(text).toContain('读完后仍按角色简报继续工作')
+  })
+
+  it('keeps the plain form for solo seats and non-team recipients', () => {
+    const solo = buildSessionHandoffMessage({
+      sourceChannelId: '1',
+      sourceDisplayName: '独立执行 1 · CH-1',
+      sourceRole: { name: '独立执行 1', slotName: '独立席 1', templateKey: 'solo' },
+      target: { kind: 'self' },
+      targetIsTeamSeat: false,
+      issuedAt,
+      transcript
+    })
+    expect(solo).toContain('【会话交接】CH-1（独立席 1） 上一段会话的上下文')
+    expect(solo).not.toContain('不是任务板任务')
+    const standbyTarget = buildSessionHandoffMessage({
+      sourceChannelId: '2',
+      sourceDisplayName: '架构实现 · CH-2',
+      sourceRole: { name: '架构实现', slotName: '实现席', templateKey: 'builder' },
+      target: { kind: 'channel', channelId: '7' },
+      issuedAt,
+      transcript
+    })
+    expect(standbyTarget).not.toContain('不是任务板任务')
+  })
 })
 
 describe('session handoff record (拾光侧会话记录)', () => {

@@ -22,6 +22,33 @@ const session: AgentSession = {
 }
 
 describe('ComposerWorkbench', () => {
+  it.each([
+    ['claude-fable-5.1', 'anthropic'], ['gpt-5.6', 'openai'], ['gemini-pro', 'google'],
+    ['grok', 'xai'], ['kimi-k3', 'moonshot'], ['glm', 'zhipu'], ['composer', 'cursor'],
+    ['auto', 'auto'], ['custom-model', 'other']
+  ])('adds the matching decorative logo for %s without inventing configuration', (modelName, provider) => {
+    const html = renderToStaticMarkup(<ComposerWorkbench session={{ ...session, modelName }}
+      draft="" canSend notWaiting={false} submitting={false} sendError="" onDraftChange={() => {}} onSubmit={() => {}} />)
+    const plaque = html.match(/<div class="composer-model [\s\S]*?<\/div>/)![0]
+    expect(plaque).toContain(`data-provider="${provider}"`)
+    expect(plaque).toContain('aria-hidden="true"')
+    expect(plaque).not.toContain('<button')
+    expect(plaque).not.toContain('<i ')
+    expect(plaque).not.toContain('composer-model-params')
+  })
+
+  it('preserves actual parameter labels and distinguishes reasoning Max from Max Mode', () => {
+    const html = renderToStaticMarkup(<ComposerWorkbench session={{ ...session, executionProfile: {
+      scope: 'cursor-composer-current', modelId: 'gpt-5.6', displayName: 'GPT-5.6',
+      options: ['Max Mode', 'Max', '1M', 'Think', 'Fast'], maxMode: true
+    } }} draft="" canSend notWaiting={false} submitting={false} sendError="" onDraftChange={() => {}} onSubmit={() => {}} />)
+    expect(html).toContain('class="is-effort">Max</i>')
+    expect(html).toContain('class="is-max">Max Mode</i>')
+    expect(html).toContain('class="is-context">1M</i>')
+    expect(html).toContain('class="is-think">Think</i>')
+    expect(html).toContain('class="is-fast">Fast</i>')
+  })
+
   it('renders the focused composer toolbar, duration and attached files', () => {
     const html = renderToStaticMarkup(
       <ComposerWorkbench

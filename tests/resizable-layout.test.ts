@@ -43,3 +43,21 @@ describe('resizable layout', () => {
     expect(fitPaneSizes([260, 520], setupSpecs, 600, 290)).toEqual([210, 390])
   })
 })
+
+describe('desktop session width budget', () => {
+  it('preserves the conversation floor with both sidebars at every permitted desktop width', async () => {
+    const { SESSION_CONTENT_MIN_WIDTH: min, SESSION_SIDEBAR_SPEC: left, SESSION_INSPECTOR_SPEC: right, WINDOW_MIN_WIDTH } = await import('../src/shared/window-layout')
+    // 最小窗口仍有实际拖拽空间；左右两栏都能从最小宽度向外调整。
+    expect(resizePane([left.minSize], [left], 0, 9999, WINDOW_MIN_WIDTH - 28, min + right.minSize + 10)[0]).toBeGreaterThan(left.minSize + 80)
+    expect(resizePane([right.minSize], [right], 0, 9999, WINDOW_MIN_WIDTH - 28 - left.defaultSize - 10, min)[0]).toBeGreaterThan(right.minSize + 60)
+    for (const width of [WINDOW_MIN_WIDTH, 1600, 1920]) {
+      const available = width - 28
+      const leftSize = resizePane([left.defaultSize], [left], 0, 9999, available, min + right.minSize + 10)[0]!
+      const dockWidth = available - leftSize - 10
+      const rightSize = resizePane([right.defaultSize], [right], 0, 9999, dockWidth, min)[0]!
+      expect(dockWidth - rightSize - 10).toBeGreaterThanOrEqual(min)
+      expect(leftSize).toBeGreaterThanOrEqual(left.minSize)
+      expect(rightSize).toBeGreaterThanOrEqual(right.minSize)
+    }
+  })
+})

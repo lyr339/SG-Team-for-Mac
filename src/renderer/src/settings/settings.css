@@ -1,0 +1,574 @@
+/* ============================================================
+   拾光 · 设置页（账号与 Cursor，方案 A：左侧导航 + 右侧分组）
+   叶子组件沿用 styles.css / lobby.css 的既有类名与变量；
+   本文件只负责页面骨架、导航、分组外壳与运行状态横幅。
+   设计原则（docs/DESIGN-SYSTEM.md）：边框优先、圆角 9-17px、
+   状态色仅表状态、正文炭灰；动效全部尊重 prefers-reduced-motion。
+   ============================================================ */
+
+.settings-page {
+  height: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 26px;
+  padding: 22px 24px 36px;
+  overflow: auto;
+  color: var(--text);
+  background: transparent;
+}
+
+/* ---------- 左侧分组导航 ---------- */
+.settings-nav {
+  position: sticky;
+  top: 22px;
+  align-self: start;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-nav__caption {
+  margin: 0 0 8px;
+  padding: 0 10px;
+  color: var(--faint);
+  font-size: var(--fs-10);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.settings-nav__item {
+  position: relative;
+  min-width: 0;
+  min-height: 35px;
+  display: grid;
+  grid-template-columns: 19px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  color: var(--text-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  font-size: var(--fs-11);
+  font-weight: 550;
+  text-align: left;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.settings-nav__item:hover:not(.is-active) {
+  color: var(--text);
+  background: var(--surface-soft);
+}
+
+.settings-nav__item.is-active {
+  color: var(--accent-deep);
+  background: var(--accent-wash);
+}
+
+.settings-nav__item.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2.5px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.settings-nav__item:focus-visible {
+  outline: 2px solid var(--accent-border-strong);
+  outline-offset: 1px;
+}
+
+.settings-nav__icon {
+  width: 17px;
+  height: 17px;
+  justify-self: center;
+  opacity: 0.9;
+}
+
+.settings-nav__item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.settings-nav__dot.is-running {
+  background: var(--blue);
+  animation: settings-nav-dot-pulse 1.6s ease-in-out infinite;
+}
+
+.settings-nav__dot.is-alert { background: var(--red); }
+.settings-nav__dot.is-attention { background: var(--amber); }
+
+@keyframes settings-nav-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--blue) 32%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 0%, transparent); }
+}
+
+/* ---------- 右侧内容区 ---------- */
+.settings-content {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.settings-content__head {
+  display: grid;
+  gap: 3px;
+  padding: 2px 2px 0;
+  animation: settings-enter 170ms ease-out;
+}
+
+.settings-content__head h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-17);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.settings-content__head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+}
+
+.settings-groups {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  animation: settings-enter 170ms ease-out;
+}
+
+@keyframes settings-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.settings-error { margin: 0; }
+
+/* ---------- 分组区块外壳 ---------- */
+.settings-section {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--color-border-tertiary);
+  border-radius: 14px;
+  box-shadow: var(--shadow-hairline);
+}
+
+.settings-section__head {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: var(--border-width-regular) solid var(--line-faint);
+}
+
+.settings-section__title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.settings-section__title strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-section__title small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-10);
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-section__aside {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-section__meta {
+  color: var(--faint);
+  font-size: var(--fs-10);
+  white-space: nowrap;
+}
+
+.settings-count {
+  min-width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0 6px;
+  color: var(--accent);
+  background: var(--accent-wash);
+  border: var(--border-width-regular) solid var(--accent-border);
+  border-radius: 6px;
+  font: 600 var(--fs-10)/1 var(--mono);
+  font-style: normal;
+}
+
+.settings-section__body {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+/* ---------- 账号分组 ---------- */
+.settings-status-strip {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border: 1px solid var(--color-border-tertiary);
+  border-radius: 12px;
+  box-shadow: var(--shadow-hairline);
+}
+
+.settings-status-strip .lobby-account__current { min-width: 0; }
+
+.settings-account-list {
+  max-height: none;
+  padding: 0;
+  gap: 6px;
+  overflow: visible;
+}
+
+.settings-account-list > article {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  background: var(--surface-pure);
+  border: 1px solid var(--color-border-tertiary);
+  border-radius: 12px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.settings-account-list > article.is-active {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.settings-account-list > article > button:first-child {
+  min-height: 46px;
+  gap: 9px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  transition: background 140ms ease;
+}
+
+.settings-account-list > article > button:first-child:hover:not(:disabled) {
+  background: var(--surface-soft);
+}
+
+.settings-account-list > article.is-active > button:first-child {
+  background: color-mix(in srgb, var(--anthropic-orange) 6%, var(--surface-solid));
+}
+
+.settings-account-list article button > i {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.settings-account-list .lobby-account__row-actions {
+  min-height: 32px;
+  padding: 3px 6px;
+  background: transparent;
+  border-top: var(--border-width-regular) solid var(--line-faint);
+}
+
+.settings-empty {
+  margin: 0;
+  padding: 18px 4px;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  text-align: center;
+}
+
+.settings-empty button {
+  margin-left: 6px;
+  padding: 0;
+  color: var(--accent-deep);
+  background: none;
+  border: 0;
+  font-size: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---------- 导入来源分组 ---------- */
+.settings-page .account-browser {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 面板自带的头部与分组外壳重复（标题/说明/徽章均已在 section 头呈现）。 */
+.settings-page .account-browser__head { display: none; }
+
+.settings-page .account-browser__modes { padding: 0 0 10px; }
+.settings-page .account-browser__config { padding: 0; }
+.settings-page .account-browser__system-note { margin: 0; }
+
+.settings-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings-import-actions button {
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  overflow: hidden;
+  color: var(--text-soft);
+  background: var(--surface-solid);
+  border: 1px solid var(--color-border-tertiary);
+  border-radius: 9px;
+  font-size: var(--fs-10);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.settings-import-actions button:hover:not(:disabled) {
+  color: var(--accent-deep);
+  background: var(--accent-wash);
+  border-color: var(--accent-border);
+}
+
+.settings-import-actions button:disabled { opacity: 0.48; }
+
+.settings-import-actions button.is-active {
+  color: var(--text-soft);
+  background: var(--surface-soft);
+  border-color: var(--line);
+}
+
+.settings-import-actions .lobby-account__quick-primary {
+  color: var(--accent-deep);
+  background: var(--accent-wash);
+  border-color: var(--accent-border);
+}
+
+.settings-import-actions .lobby-account__quick-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--anthropic-orange) 12%, var(--color-background-primary));
+}
+
+.settings-page .lobby-account__note { margin: 2px 0 0; -webkit-line-clamp: none; display: block; }
+
+.settings-add-form {
+  margin-top: 2px;
+  background: var(--canvas);
+  border: var(--border-width-regular) solid var(--color-border-tertiary);
+  border-radius: 10px;
+}
+
+.settings-add-form input { min-height: 32px; }
+
+/* ---------- 自动化分组：运行状态横幅（设置页签名元素） ---------- */
+.settings-flow-banner {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--blue) 5%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--blue-border) 65%, transparent);
+  border-radius: 14px;
+  box-shadow: var(--shadow-hairline);
+  animation: settings-enter 200ms ease-out;
+}
+
+.settings-flow-banner.is-done {
+  background: color-mix(in srgb, var(--color-text-success) 5%, var(--surface));
+  border-color: color-mix(in srgb, var(--color-border-success) 65%, transparent);
+}
+
+.settings-flow-banner.is-failed {
+  background: color-mix(in srgb, var(--red) 4%, var(--surface));
+  border-color: color-mix(in srgb, var(--red-border) 55%, transparent);
+}
+
+.settings-flow-banner.is-cancelled {
+  background: var(--surface);
+  border-color: var(--color-border-tertiary);
+}
+
+.settings-flow-track {
+  display: flex;
+  align-items: flex-start;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-flow-track__step {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--fs-10);
+  line-height: 1.2;
+  text-align: center;
+}
+
+/* 步骤间连接线：除末步外向右延伸，完成态染绿。 */
+.settings-flow-track__step::after {
+  content: '';
+  position: absolute;
+  top: 11px;
+  left: calc(50% + 16px);
+  right: calc(-50% + 16px);
+  height: 1px;
+  background: var(--line);
+}
+
+.settings-flow-track__step:last-child::after { display: none; }
+.settings-flow-track__step.is-done::after { background: var(--color-border-success); }
+
+.settings-flow-track__step .flow-status-icon {
+  width: 22px;
+  height: 22px;
+  box-shadow: 0 0 0 3px transparent;
+}
+
+.settings-flow-track__step.is-running { color: var(--blue); font-weight: 600; }
+.settings-flow-track__step.is-done { color: var(--color-text-success); }
+.settings-flow-track__step.is-failed { color: var(--red); font-weight: 600; }
+.settings-flow-track__step.is-ready { color: var(--accent-deep); }
+
+.settings-flow-banner__live {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-flow-banner__duration {
+  margin: 0;
+  color: var(--faint);
+  font-size: var(--fs-10);
+}
+
+.settings-automation {
+  gap: 6px;
+  margin-top: 0;
+  padding-top: 2px;
+  border-top: 0;
+}
+
+/* ---------- 奥仔 / 维护分组：叶子块在区块内去带化 ---------- */
+.settings-aozai {
+  padding: 0;
+  background: transparent;
+  border-block: 0;
+}
+
+.settings-aozai.account-aozai .account-aozai__card { flex-wrap: wrap; gap: 6px; }
+.settings-aozai.account-aozai .account-aozai__code { flex: 0 0 auto; }
+.settings-aozai.account-aozai .account-aozai__meta { flex: 1 1 120px; }
+.settings-aozai.account-aozai .account-aozai__setup { gap: 6px; }
+.settings-aozai.account-aozai .account-aozai__setup input,
+.settings-aozai.account-aozai .account-aozai__setup button { min-height: 32px; }
+
+.settings-maintenance {
+  padding: 0;
+  background: transparent;
+  border-bottom: 0;
+  gap: 6px;
+}
+
+.settings-maintenance .cursor-maintenance__action em { padding: 2px 6px; }
+
+/* ---------- 窄断点：导航折叠为顶部横排 ---------- */
+@media (max-width: 760px) {
+  .settings-page {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    padding: 14px 12px 24px;
+  }
+
+  .settings-nav {
+    position: static;
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .settings-nav__caption { display: none; }
+
+  .settings-nav__item {
+    flex: 0 0 auto;
+    grid-template-columns: 17px auto;
+    min-height: 32px;
+  }
+
+  .settings-nav__item.is-active::before {
+    top: auto;
+    left: 10px;
+    right: 10px;
+    bottom: 0;
+    width: auto;
+    height: 2.5px;
+  }
+
+  .settings-flow-track__step span { font-size: 9px; }
+}
+
+/* ---------- 动效收敛 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav__item,
+  .settings-account-list > article,
+  .settings-account-list > article > button:first-child,
+  .settings-import-actions button {
+    transition: none;
+  }
+
+  .settings-content__head,
+  .settings-groups,
+  .settings-flow-banner { animation: none; }
+
+  .settings-nav__dot.is-running { animation: none; }
+}
+
+/* 分组常驻保留输入和进行中的反馈；隐藏分组不参与布局/焦点。 */
+.settings-groups > [hidden] { display: none; }
+
+.settings-groups > div:not([hidden]) { display: grid; gap: 16px; }

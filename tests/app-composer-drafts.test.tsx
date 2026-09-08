@@ -208,7 +208,7 @@ describe('App 输入框草稿与附件按通道隔离', () => {
     const accountButton = container.querySelector<HTMLButtonElement>('.account-button')!
     expect(accountButton.getAttribute('aria-label')).toBe('账号与 Cursor')
     await act(async () => accountButton.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })))
-    expect(container.querySelector('main[aria-label="账号与 Cursor 配置"]')).toBeTruthy()
+    expect(container.querySelector('.settings-page[aria-label="账号与 Cursor 配置"]')).toBeTruthy()
     expect(container.querySelector('.account-button')?.getAttribute('aria-pressed')).toBe('true')
     await act(async () => container.querySelector<HTMLButtonElement>('.account-button')!.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })))
     expect(composerTextarea().getAttribute('aria-label')).toContain('CH-2')

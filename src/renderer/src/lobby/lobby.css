@@ -196,146 +196,7 @@
   font-style: normal;
 }
 
-/* ---------- 账号自动化流程列表 ---------- */
-.lobby-account__flow {
-  display: grid;
-  margin: 0;
-  padding: 2px 14px 12px;
-  list-style: none;
-}
-
-.flow-step {
-  position: relative;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  column-gap: 9px;
-}
-
-.flow-step__rail {
-  position: relative;
-  display: flex;
-  justify-content: center;
-}
-
-.flow-step__rail::after {
-  content: '';
-  position: absolute;
-  top: 34px;
-  bottom: 0;
-  left: 50%;
-  width: 1px;
-  background: var(--line);
-}
-
-.flow-step:last-child .flow-step__rail::after { display: none; }
-.flow-step.is-done .flow-step__rail::after { background: var(--color-border-success); }
-
-.flow-step__rail > .flow-status-icon {
-  width: 26px;
-  height: 26px;
-  margin-top: 9px;
-  transition: color 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
-}
-
-.flow-step.is-running .flow-step__rail > .flow-status-icon { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-text-info) 12%, transparent); }
-.flow-step.is-done .flow-step__rail > .flow-status-icon { box-shadow: 0 0 0 3px var(--color-background-primary); }
-
-.flow-step__body {
-  min-width: 0;
-  display: grid;
-  gap: 8px;
-  align-content: start;
-  padding: 9px 0 16px;
-}
-
-.flow-step__head {
-  min-width: 0;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.flow-step__head > strong {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text);
-  font-size: var(--fs-12);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.flow-step__meta {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--faint);
-  font-size: var(--fs-10);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.flow-step__state {
-  margin-left: auto;
-  flex: 0 0 auto;
-  height: 20px;
-  display: inline-grid;
-  place-items: center;
-  min-width: 52px;
-  align-items: center;
-  padding: 0 7px;
-  border: var(--border-width-regular) solid var(--line);
-  border-radius: 6px;
-  font-size: var(--fs-10);
-  font-style: normal;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-  transition: color 180ms ease, background 180ms ease, border-color 180ms ease;
-}
-
-.flow-step__state.is-waiting,
-.flow-step__state.is-cancelled,
-.flow-step__state.is-off {
-  color: var(--muted);
-  background: var(--surface-soft);
-  border-color: var(--line);
-}
-
-.flow-step__state.is-ready {
-  color: var(--accent-deep);
-  background: var(--accent-wash);
-  border-color: var(--accent-border);
-}
-
-.flow-step__state.is-running {
-  color: var(--blue);
-  background: var(--blue-soft);
-  border-color: var(--blue-border);
-}
-
-.flow-step__state.is-done {
-  color: var(--color-text-success);
-  background: var(--color-background-success);
-  border-color: var(--color-border-success);
-}
-
-.flow-step__state.is-failed {
-  color: var(--red);
-  background: var(--red-soft);
-  border-color: var(--red-border);
-}
-
-.flow-step__desc {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--fs-10);
-  line-height: 1.5;
-}
-
+/* 设置页沿用的流程反馈与倒计时叶子样式。 */
 .flow-step__hint {
   margin: 0;
   color: var(--faint);
@@ -802,16 +663,11 @@
 
 @media (max-width: 760px) {
   .configuration-frame { padding: 10px 10px 16px; }
-  .lobby-account__flow {
-    padding-right: 10px;
-    padding-left: 10px;
-  }
 
 }
 
 @media (prefers-reduced-motion: reduce) {
   .lobby-tile,
-  .flow-step__rail > .flow-status-icon,
   .lobby-account__list > article > button:first-child {
     transition: none;
   }

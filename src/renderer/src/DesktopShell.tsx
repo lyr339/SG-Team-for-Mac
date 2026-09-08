@@ -1,3 +1,5 @@
+import { SESSION_CONTENT_MIN_WIDTH, SESSION_SIDEBAR_SPEC, SESSION_INSPECTOR_SPEC } from '../../shared/window-layout'
+import { RESIZE_HANDLE_SIZE } from './resizable-layout'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DesktopSnapshot } from '../../shared/desktop-api'
 import type { CursorWorkspaceDetection } from '../../domain/cursor-workspace'
@@ -9,7 +11,7 @@ import {
   SessionsIcon
 } from './UiIcons'
 import { BrandMark } from './BrandMark'
-import { ResizableColumns } from './ResizableColumns'
+import { ResizableColumns, useCompactLayout } from './ResizableColumns'
 import { AppearanceSettings } from './AppearanceSettings'
 import { WorkspaceMenu } from './WorkspaceMenu'
 
@@ -75,8 +77,8 @@ const MODULE_LABELS: Record<AppModule, string> = {
 
 const MODULE_ORDER: AppModule[] = ['sessions', 'run', 'account']
 const CONTEXT_SIDEBAR_SPECS = [{ defaultSize: 270, minSize: 220, maxSize: 500 }] as const
-const SESSION_SIDEBAR_SPECS = [{ defaultSize: 326, minSize: 286, maxSize: 420 }] as const
-const INSPECTOR_SPECS = [{ defaultSize: 420, minSize: 300, maxSize: 720 }] as const
+const SESSION_SIDEBAR_SPECS = [SESSION_SIDEBAR_SPEC] as const
+const INSPECTOR_SPECS = [SESSION_INSPECTOR_SPEC] as const
 const INSPECTOR_OPEN_KEY = 'sg-team.layout:v1:workspace-inspector:open'
 const SESSION_SIDEBAR_COLLAPSED_KEY = 'sg-team.layout:v1:shell.sessions.v2:collapsed'
 // 快捷键提示平台化：mac 显示 ⌘，其余平台（Windows）显示 Ctrl+；事件侧已兼容两键。
@@ -119,8 +121,12 @@ export function DesktopShell({
   const onlineCount = teamSessions.filter((session) => session.online).length
   const link = cursorLinkState(snapshot)
   const issues = snapshot.protocolIssues
+  const compactLayout = useCompactLayout()
   const inspectorVisible = activeModule === 'sessions' && Boolean(rightPanel) && showInspector
   const sidebarVisible = activeModule === 'sessions' && !sessionSidebarCollapsed
+  // 实际收起态：紧凑断点下分栏堆叠、首栏收起不生效，inert / aria-hidden 必须跟随同一判定，
+  // 否则堆叠布局里可见的会话栏会被错误地设为不可交互。
+  const sidebarCollapsed = activeModule === 'sessions' && sessionSidebarCollapsed && !compactLayout
 
   const setInspectorVisible = (value: boolean): void => {
     setShowInspector(value)
@@ -306,18 +312,23 @@ export function DesktopShell({
           <ResizableColumns
             className="shell-columns"
             dividerLabels={[activeModule === 'sessions' ? '调整会话列表宽度' : '调整团队侧栏宽度']}
-            finalPaneMinSize={420}
+            finalPaneMinSize={activeModule === 'sessions'
+              ? SESSION_CONTENT_MIN_WIDTH + (inspectorVisible ? SESSION_INSPECTOR_SPEC.minSize + RESIZE_HANDLE_SIZE : 0)
+              : 420}
             key={activeModule === 'sessions' ? 'shell.sessions' : 'shell.context'}
             paneSpecs={activeModule === 'sessions' ? SESSION_SIDEBAR_SPECS : CONTEXT_SIDEBAR_SPECS}
             storageKey={activeModule === 'sessions' ? 'shell.sessions.v2' : 'shell.context'}
-            firstPaneCollapsed={activeModule === 'sessions' && sessionSidebarCollapsed}
+            firstPaneCollapsed={sidebarCollapsed}
           >
-            {sidebar}
+            {/* 会话栏常驻：开合只收放首栏轨道（与右栏同一套滑动过渡），名册子树不重挂载。 */}
+            <div className="session-sidebar-pane" inert={sidebarCollapsed} aria-hidden={sidebarCollapsed}>
+              {sidebar}
+            </div>
             {/* 停靠栏常驻：开合只收放末栏轨道（滑动过渡），中栏与右栏子树都不重挂载。 */}
             <ResizableColumns
               className="workspace-dock"
               dividerLabels={['调整右侧工作区宽度']}
-              finalPaneMinSize={400}
+              finalPaneMinSize={activeModule === 'sessions' ? SESSION_CONTENT_MIN_WIDTH : 400}
               fixedPaneSide="end"
               paneSpecs={INSPECTOR_SPECS}
               storageKey="shell.workspace-inspector"

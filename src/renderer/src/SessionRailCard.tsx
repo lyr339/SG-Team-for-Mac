@@ -5,7 +5,6 @@ import {
   contextTone,
   formatContextUsage,
   formatFullClock,
-  formatRelativeClock,
   modelDisplayName
 } from './format'
 import { AgentAvatar } from './AgentAvatar'
@@ -34,7 +33,7 @@ interface SessionRailCardProps {
 
 /**
  * 名册里的一行：头像（含上下文光环）+ 角色名 / 通道号 / 状态 + 模型 / 指标。
- * 状态语义只落在一个 7px 的点上；上下文压力的精确值在指标行，光环是它的一眼版。
+ * 状态语义只落在一个 7px 的点上；上下文精确值保留在头像悬停详情中。
  */
 function SessionRailCardView({
   session,
@@ -62,7 +61,18 @@ function SessionRailCardView({
     telemetryDetail,
     draggable ? '拖动可调整同组内的顺序' : ''
   ].filter(Boolean).join('\n')
-  const lastSeen = offline && session.lastSeenAt ? session.lastSeenAt : undefined
+  const start = session.startedAt && Number.isFinite(session.startedAt) && session.startedAt > 0 ? session.startedAt : undefined
+  const end = offline && session.disconnectedAt && Number.isFinite(session.disconnectedAt) && session.disconnectedAt > 0
+    ? session.disconnectedAt : undefined
+  const today = new Date(now ?? Date.now())
+  const timeLabel = (timestamp: number): string => {
+    const date = new Date(timestamp)
+    const prefix = date.toDateString() === today.toDateString() ? '' : `${date.getMonth() + 1}/${date.getDate()} `
+    return `${prefix}${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  }
+  const startLabel = start ? timeLabel(start) : undefined
+  const endLabel = !offline ? '进行中' : '结束 —'
+
 
   return (
     <button
@@ -77,7 +87,7 @@ function SessionRailCardView({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
     >
-      <span className="session-row__avatar">
+      <span className="session-row__avatar" title={percent === undefined ? '上下文用量待读取' : `上下文 ${formatContextUsage(session.contextUsage)}`}>
         <AgentAvatar
           avatarId={session.avatarId}
           name={session.displayName}
@@ -104,13 +114,12 @@ function SessionRailCardView({
           >
             <i aria-hidden="true" /><span>{runtimeName}</span>
           </span>
+          <span className="session-row__time">
+            {start ? <time dateTime={new Date(start).toISOString()} title={`开始 ${formatFullClock(start)}`}>开始 {startLabel}</time> : '开始 —'}
+          </span>
+        </span>
+        <span className="session-row__line session-row__line--meta">
           <span className="session-row__metrics">
-            <b
-              className={`session-row__context${sky ? ` is-${sky}` : ''}${percent === undefined ? ' is-unknown' : ''}`}
-              title={percent === undefined ? '上下文用量待读取' : `上下文 ${formatContextUsage(session.contextUsage)}`}
-            >
-              {percent === undefined ? '—' : `${Math.round(percent)}%`}
-            </b>
             {session.changes ? (
               <span
                 className="session-row__changes"
@@ -120,14 +129,12 @@ function SessionRailCardView({
                 <b>+{session.changes.additions}</b><em>−{session.changes.deletions}</em>
               </span>
             ) : null}
-            {lastSeen ? (
-              <time className="session-row__seen" dateTime={new Date(lastSeen).toISOString()} title={`最近活性 ${formatFullClock(lastSeen)}`}>
-                {formatRelativeClock(lastSeen, now)}
-              </time>
-            ) : null}
             {session.queueDepth > 0 ? (
               <span className="session-row__queue" title="排队等待 Agent 处理的消息">排队 {session.queueDepth}</span>
             ) : null}
+          </span>
+          <span className="session-row__time">
+            {end ? <time dateTime={new Date(end).toISOString()} title={`结束（离线时间）${formatFullClock(end)}`}>结束 {timeLabel(end)}</time> : endLabel}
           </span>
         </span>
       </span>

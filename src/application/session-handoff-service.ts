@@ -5,10 +5,13 @@ import {
   buildSessionHandoffMessage,
   buildSessionHandoffRecord,
   handoffRecordFileName,
+  isTeamSeatRole,
   SESSION_HANDOFF_NOTE_MAX_CHARS,
   type SessionHandoffContext,
   type SessionHandoffRequest,
   type SessionHandoffResult,
+  type SessionHandoffSeatRole,
+  type SessionHandoffTarget,
   type SessionTranscriptLocation
 } from '../domain/session-handoff'
 import type { TeamControlSnapshot } from '../domain/team-control'
@@ -29,6 +32,14 @@ export interface SessionHandoffPorts {
   handoffRoot: string
   now?: () => number
   onerror?: (error: unknown) => void
+}
+
+/** 通道在当前运行中的席位角色（独立席位也算，templateKey='solo'）；备用/未编入通道无。 */
+function seatRoleOf(team: TeamControlSnapshot, channelId: string): SessionHandoffSeatRole | undefined {
+  const member = team.members.find((candidate) => (candidate.binding?.channelId ?? candidate.slot.channelId) === channelId)
+  return member
+    ? { name: member.role.name, slotName: member.slot.name, templateKey: member.role.templateKey }
+    : undefined
 }
 
 /**
@@ -55,9 +66,11 @@ export class SessionHandoffService {
     const entries = (this.ports.conversationsOf(id) ?? []).filter((entry) => !entry.silent)
     const users = entries.filter((entry) => entry.role === 'user')
     const assistants = entries.filter((entry) => entry.role === 'assistant')
+    const role = seatRoleOf(team, id)
     return {
       channelId: id,
       displayName: session?.displayName ?? `CH-${id}`,
+      ...(role ? { role } : {}),
       composerId,
       modelName: session?.executionProfile?.displayName ?? session?.modelName,
       transcript: composerId ? this.ports.locateTranscript(composerId, workspacePath) : undefined,
@@ -70,11 +83,18 @@ export class SessionHandoffService {
   }
 
   deliver(request: SessionHandoffRequest): SessionHandoffResult {
-    const source = this.context(request.sourceChannelId)
+    return this.deliverFrom(this.context(request.sourceChannelId), request.target, request.note)
+  }
+
+  /**
+   * 用已解析好的来源上下文投递。职责迁移会改写原席位绑定（channel_id 换成接手通道、
+   * composer_id 清空），迁移后再 context(原通道) 已定位不到转录——调用方须在迁移前解析，
+   * 迁移成功后再用这里投递。
+   */
+  deliverFrom(source: SessionHandoffContext, target: SessionHandoffTarget, note?: string): SessionHandoffResult {
     if (!source.composerId || !source.transcript) {
       throw new Error(`CH-${source.channelId} 尚未绑定 Cursor Composer，找不到它的上下文文档`)
     }
-    const target = request.target
     const targetChannelId = target.kind === 'self' ? source.channelId : String(target.channelId ?? '').trim()
     if (!/^\d+$/.test(targetChannelId)) throw new Error('目标通道无效')
     if (target.kind === 'channel' && targetChannelId === source.channelId) {
@@ -88,15 +108,20 @@ export class SessionHandoffService {
     const held = target.kind === 'self' && source.holdSupported
     const team = this.ports.team.getSnapshot()
     const recordPath = this.writeRecord(source, issuedAt, team)
+    // 接收方是否团队席位按目标通道此刻的角色判断：本会话 = 来源自己的角色；
+    // 其他通道 = 该通道在运行中的角色（备用通道无角色 → 不附团队说明）。
+    const targetRole = target.kind === 'self' ? source.role : seatRoleOf(team, targetChannelId)
     const text = buildSessionHandoffMessage({
       sourceChannelId: source.channelId,
       sourceDisplayName: source.displayName,
+      sourceRole: source.role,
       sourceModelName: source.modelName,
       target,
+      targetIsTeamSeat: isTeamSeatRole(targetRole),
       issuedAt,
       transcript: source.transcript,
       recordPath,
-      note: request.note?.trim().slice(0, SESSION_HANDOFF_NOTE_MAX_CHARS) || undefined
+      note: note?.trim().slice(0, SESSION_HANDOFF_NOTE_MAX_CHARS) || undefined
     })
     const accepted = this.ports.sessions.sendMessage({
       channelId: targetChannelId,

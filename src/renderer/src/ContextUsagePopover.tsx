@@ -50,7 +50,6 @@ export function ContextUsagePopover({ usage }: ContextUsagePopoverProps): React.
   const categories = breakdown?.categories ?? []
   const categoryTotal = categories.reduce((total, category) => total + category.estimatedTokens, 0)
   const remaining = Math.max(0, (limit ?? categoryTotal) - categoryTotal)
-  const ringStyle = { '--composer-context': `${percent ?? 0}%` } as CSSProperties
 
   const cancelClose = (): void => {
     if (closeTimer.current) clearTimeout(closeTimer.current)
@@ -118,7 +117,13 @@ export function ContextUsagePopover({ usage }: ContextUsagePopoverProps): React.
         aria-label={`上下文占用 ${compactPercent(percent)}，查看原生统计`}
         onClick={() => setOpen((value) => !value)}
       >
-        <i style={ringStyle} aria-hidden="true" />
+        <svg className="composer-context-ring" viewBox="0 0 32 32" aria-hidden="true">
+          <circle className="composer-context-ring__track" cx="16" cy="16" r="13" />
+          {percent !== undefined && percent > 0 ? (
+            <circle className="composer-context-ring__progress" cx="16" cy="16" r="13"
+              pathLength="100" strokeDasharray={`${percent} 100`} />
+          ) : null}
+        </svg>
         <span>上下文 {compactPercent(percent)}</span>
       </button>
 

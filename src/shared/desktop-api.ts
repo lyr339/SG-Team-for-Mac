@@ -9,7 +9,7 @@ import type { AgentSkillCatalogEntry } from '../domain/agent-skill'
 import type { TeamRoleTemplate } from '../domain/team-control'
 import type { CursorAccountMetadata, CursorRuntimeAccountMatch } from '../domain/cursor-account'
 import type { CursorMembershipStatus } from '../domain/cursor-membership'
-import type { ManualTeamHandoffInput, ManualTeamHandoffResult, TeamHandoffOptions } from '../domain/team-handoff'
+import type { ManualTeamHandoffInput, ManualTeamHandoffOutcome, TeamHandoffOptions } from '../domain/team-handoff'
 import type { CursorWorkspaceDetection } from '../domain/cursor-workspace'
 import type { CursorModelOption, CursorModelSelection } from '../domain/cursor-model'
 import type { AozaiCardStatus, AozaiProcessResult, AozaiProgressEvent } from '../domain/aozai-service'
@@ -306,8 +306,11 @@ export interface SgDesktopApi {
   setSlotModelSelection(channelId: string, selection: CursorModelSelection): Promise<TeamControlSnapshot>
   getTeamCollaborationSnapshot(): Promise<TeamCollaborationSnapshot>
   getManualHandoffOptions(slotId: string): Promise<TeamHandoffOptions>
-  manualHandoff(input: ManualTeamHandoffInput): Promise<{
-    handoff: ManualTeamHandoffResult
+  /**
+   * 离线团队席位的职责迁移（AgentSlot 换绑 / 主控权限转移）。`includeContext` 为真时，
+   * 主进程在迁移前解析原席位上下文文档、迁移成功后投递给接手通道，结果在 contextHandoff。
+   */
+  manualHandoff(input: ManualTeamHandoffInput): Promise<ManualTeamHandoffOutcome & {
     team: TeamControlSnapshot
   }>
   onSnapshot(listener: (snapshot: DesktopSnapshot) => void): () => void
@@ -379,6 +382,7 @@ export const IPC = {
   accountAutomationSaveRoxyApiKey: 'account-automation:save-roxy-api-key',
   accountAutomationProgress: 'account-automation:progress',
   windowSetChromeColorMode: 'window:set-chrome-color-mode',
+  windowFullscreenChanged: 'window:fullscreen-changed',
   getSnapshot: 'sg-team-session:get-snapshot',
   sendMessage: 'sg-team-session:send-message',
   withdrawQueuedMessage: 'sg-team-session:withdraw-queued-message',
